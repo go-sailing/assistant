@@ -71,7 +71,8 @@
   /* 布局 */
   --page-padding: 16px;
   --navbar-height: 44px;
-  --tabbar-height: 49px;
+  /* v0.2.0：底部 Tab 已下线；保留变量一个版本周期避免外部引用报错，值置 0 */
+  --tabbar-height: 0px;
   --chat-input-height: 52px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);

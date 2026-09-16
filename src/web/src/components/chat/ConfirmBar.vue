@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ConfirmBlock } from '@/types'
-import { formatEventRange } from '@/utils/time'
+import type { ConfirmBlock, SeriesDetail } from '@/types'
+import { formatEventCardTime, formatEventRange } from '@/utils/time'
 import AppButton from '../AppButton.vue'
 
 const props = defineProps<{
@@ -12,24 +12,35 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>()
 
+/** 系列卡的 total_count 只存在于系列对象上（CalendarEvent 无此字段） */
+function totalCountOf(event: unknown): number | null {
+  const n = (event as SeriesDetail | undefined)?.total_count
+  return typeof n === 'number' ? n : null
+}
+
 const isDelete = computed(
   () =>
     props.block.action === 'delete_task' ||
     props.block.action === 'delete_list' ||
     props.block.action === 'delete_event' ||
+    props.block.action === 'delete_event_series' ||
     props.block.action === 'batch_update_events'
 )
 
 /** 日程类危险操作：影响对象来自 affected_events */
 const isEventAction = computed(
-  () => props.block.action === 'delete_event' || props.block.action === 'batch_update_events'
+  () =>
+    props.block.action === 'delete_event' ||
+    props.block.action === 'delete_event_series' ||
+    props.block.action === 'batch_update_events'
 )
 
-/** 操作描述（含影响条数） */
+/** 操作描述（含影响条数）；服务端已给出权威文案时优先展示 */
 const description = computed(() => {
   const { action, count, affected } = props.block
   const first = affected[0]?.title
   const firstEvent = (props.block.affected_events ?? [])[0]
+  const total = totalCountOf(firstEvent)
   switch (action) {
     case 'delete_task':
       return count > 1 ? `确认删除这 ${count} 个任务？` : `确认删除「${first || '该任务'}」？`
@@ -39,6 +50,17 @@ const description = computed(() => {
       return `确认批量修改这 ${count} 个任务？`
     case 'delete_event':
       return `确认删除日程「${firstEvent?.title || '该日程'}」？`
+    case 'delete_event_series':
+      // 循环系列整条删除：文案必须含总次数与不可恢复（UX 7.2）
+      return (
+        props.block.description ||
+        `确认删除循环日程「${firstEvent?.title || '该系列'}」？共 ${total ?? count} 次安排将全部删除，不可恢复`
+      )
+    case 'complete_task_cascade':
+      return (
+        props.block.description ||
+        `「${first || '该任务'}」还有 ${Math.max(count - 1, 0)} 个子任务未完成，标记完成后将一并完成`
+      )
     case 'batch_update_events':
       return `确认批量处理这 ${count} 个日程？`
     default:
@@ -46,9 +68,21 @@ const description = computed(() => {
   }
 })
 
+/** 确认按钮文案：级联/系列删除用醒目动作文案，避免笼统「确认执行」 */
+const confirmText = computed(() => {
+  switch (props.block.action) {
+    case 'delete_event_series':
+      return '删除整条循环'
+    case 'complete_task_cascade':
+      return '全部标记完成'
+    default:
+      return '确认执行'
+  }
+})
+
 /** 结果态文案 */
 const resultText = computed(() => {
-  const { action, count } = props.block
+  const { action, count, affected } = props.block
   if (props.state === 'canceled') return '已取消，未执行任何修改'
   if (props.state === 'stale') return '该确认已失效'
   switch (action) {
@@ -60,6 +94,13 @@ const resultText = computed(() => {
       return `已更新 ${count} 个任务`
     case 'delete_event':
       return '已删除该日程'
+    case 'delete_event_series':
+      return '已删除整条循环日程'
+    case 'complete_task_cascade': {
+      const first = affected[0]?.title
+      const sub = count - 1
+      return sub > 0 ? `已标记完成「${first || '该任务'}」及 ${sub} 个子任务` : '已标记完成'
+    }
     case 'batch_update_events':
       return `已处理 ${count} 个日程`
     default:
@@ -67,12 +108,16 @@ const resultText = computed(() => {
   }
 })
 
-/** 预览项：任务标题或日程标题 */
+/** 预览项：任务标题或日程标题（系列按「首/下次时间 + 总次数」呈现） */
 const preview = computed(() => {
   if (isEventAction.value) {
-    return (props.block.affected_events ?? [])
-      .slice(0, 3)
-      .map((e) => ({ id: e.id, label: `${formatEventRange(e)} ${e.title}` }))
+    const isSeries = props.block.action === 'delete_event_series'
+    return (props.block.affected_events ?? []).slice(0, 3).map((e) => {
+      const total = totalCountOf(e)
+      const when = isSeries ? formatEventCardTime(e) : formatEventRange(e)
+      const times = isSeries && total !== null ? ` · 共 ${total} 次` : ''
+      return { id: e.id, label: `${when} ${e.title}${times}` }
+    })
   }
   return props.block.affected.slice(0, 3).map((t) => ({ id: t.id, label: t.title }))
 })
@@ -104,7 +149,7 @@ const restCount = computed(() => Math.max(0, props.block.count - preview.value.l
           :loading="state === 'loading'"
           @click="emit('confirm')"
         >
-          确认执行
+          {{ confirmText }}
         </AppButton>
       </div>
     </template>

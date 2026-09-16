@@ -47,6 +47,24 @@ export const config = {
     conflictScanLimit: num('EVENT_CONFLICT_SCAN_LIMIT', 50),
     /** 日程列表/批量预取上限 */
     listMaxLimit: num('EVENT_LIST_MAX_LIMIT', 200),
+    /* ----- v0.2.0 循环日程（系统设计文档 9.3） ----- */
+    /** 创建/整条改期循环冲突扫描窗口（天） */
+    recurrenceConflictWindowDays: num('EVENT_RECURRENCE_CONFLICT_WINDOW_DAYS', 90),
+    /** count 上限及单次展开种子上限 */
+    seriesMaxCount: num('EVENT_SERIES_MAX_COUNT', 730),
+    /** until 距首次实例最大年限 */
+    seriesMaxUntilYears: num('EVENT_SERIES_MAX_UNTIL_YEARS', 5),
+    /** interval 上限 */
+    recurIntervalMax: num('EVENT_RECUR_INTERVAL_MAX', 99),
+    /** 系列详情实例分页大小 */
+    occurrencePageSize: num('EVENT_OCCURRENCE_PAGE_SIZE', 20),
+  },
+  /** v0.2.0 子任务配置 */
+  task: {
+    /** 子任务最大层级（根为 1） */
+    maxDepth: num('TASK_MAX_DEPTH', 5),
+    /** 子树查询节点上限 */
+    treeMaxNodes: num('TASK_TREE_MAX_NODES', 200),
   },
   rateLimit: {
     authPerMin: num('RATE_LIMIT_AUTH_PER_MIN', 20),

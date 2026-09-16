@@ -13,12 +13,23 @@ const dueAtSchema = z
     '截止时间格式不正确'
   );
 
+/** 宽容布尔：兼容 "true"/"false" 字符串（前端 query 与模型输出都可能给字符串） */
+const boolish = z.preprocess((v) => {
+  if (typeof v === 'string') {
+    if (v.toLowerCase() === 'true') return true;
+    if (v.toLowerCase() === 'false') return false;
+  }
+  return v;
+}, z.boolean());
+
 const createSchema = z.object({
   title: z.string().min(1, '请输入任务标题'),
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtSchema.optional(),
   list_id: optionalId.optional(),
+  /** v0.2.0：挂到某个父任务下 */
+  parent_id: optionalId.optional(),
 });
 
 const updateSchema = z.object({
@@ -27,6 +38,8 @@ const updateSchema = z.object({
   priority: priorityEnum.optional(),
   due_at: dueAtSchema.optional(),
   list_id: optionalId.optional(),
+  /** v0.2.0：移动层级，显式 null = 移出为根任务 */
+  parent_id: optionalId.optional(),
 });
 
 const listQuerySchema = z.object({
@@ -38,6 +51,18 @@ const listQuerySchema = z.object({
   sort: z.string().optional(),
   page: z.coerce.number().int().positive().optional(),
   page_size: z.coerce.number().int().positive().max(100).optional(),
+  /** v0.2.0：只看根任务（任务首页默认）/ 只看某个任务的直接子任务 */
+  root_only: boolish.optional(),
+  parent_id: z.coerce.number().int().positive().optional(),
+});
+
+const subtreeQuerySchema = z.object({
+  depth: z.coerce.number().int().positive().max(5).optional(),
+});
+
+const completeSchema = z.object({
+  /** 级联完成后端二次提交标记（4010 之后带 true 重发） */
+  cascade: boolish.optional(),
 });
 
 const batchSchema = z.object({
@@ -110,6 +135,37 @@ taskRoutes.get(
   })
 );
 
+/** v0.2.0 子树：扁平节点数组（depth/进度），行内展开传 depth=1 */
+taskRoutes.get(
+  '/tasks/:id/subtree',
+  asyncHandler(async (req, res) => {
+    const user = getUser(req);
+    const id = parse(idParam, req.params.id, '任务 ID');
+    const { depth } = parse(subtreeQuerySchema, req.query, '查询参数');
+    ok(res, await taskService.getSubtree(user.id, id, depth));
+  })
+);
+
+/** v0.2.0 面包屑：根 → 父 → 当前 */
+taskRoutes.get(
+  '/tasks/:id/ancestors',
+  asyncHandler(async (req, res) => {
+    const user = getUser(req);
+    const id = parse(idParam, req.params.id, '任务 ID');
+    ok(res, await taskService.getAncestorPath(user.id, id));
+  })
+);
+
+/** v0.2.0 可挂载父任务候选（排除自身与全部后代，同清单） */
+taskRoutes.get(
+  '/tasks/:id/parent-candidates',
+  asyncHandler(async (req, res) => {
+    const user = getUser(req);
+    const id = parse(idParam, req.params.id, '任务 ID');
+    ok(res, await taskService.listParentCandidates(user.id, id));
+  })
+);
+
 /** 该任务的全部任务日程（任务详情「日程安排」分区） */
 taskRoutes.get(
   '/tasks/:id/events',
@@ -137,7 +193,9 @@ taskRoutes.post(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
-    ok(res, await taskService.setStatus(user.id, id, 'completed'));
+    const { cascade } = parse(completeSchema, req.body ?? {}, '任务参数');
+    // 有未完成后代且未确认级联时，服务层抛 4010，前端确认后带 cascade=true 重发
+    ok(res, await taskService.setStatus(user.id, id, 'completed', { cascade: cascade === true }));
   })
 );
 
@@ -155,6 +213,7 @@ taskRoutes.delete(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
+    // v0.2.0：删除整棵子树，返回任务与日程的级联计数
     const result = await taskService.remove(user.id, id);
     ok(res, { id, ...result });
   })

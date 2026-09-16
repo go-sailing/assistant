@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
+import { useDrawerStore } from '@/stores/drawer'
 
 const props = withDefaults(
   defineProps<{
@@ -14,6 +16,12 @@ const props = withDefaults(
 )
 
 const router = useRouter()
+const route = useRoute()
+const drawer = useDrawerStore()
+
+/** v0.2.0：一级页（日程/任务/助手）左侧渲染汉堡菜单，底部 Tab 已下线 */
+const MENU_ROUTE_NAMES = new Set(['calendar-month', 'task-home', 'conversation-list'])
+const showMenu = computed(() => MENU_ROUTE_NAMES.has(String(route.name ?? '')))
 
 function goBack(): void {
   if (window.history.state && window.history.state.back) {
@@ -27,6 +35,14 @@ function goBack(): void {
 <template>
   <header class="navbar">
     <div class="navbar__left">
+      <button
+        v-if="showMenu"
+        class="navbar__menu pressable"
+        aria-label="打开菜单"
+        @click="drawer.openDrawer('hamburger')"
+      >
+        <AppIcon name="list" :size="22" />
+      </button>
       <button v-if="showBack" class="navbar__back pressable" aria-label="返回" @click="goBack">
         <span class="navbar__arrow" aria-hidden="true">‹</span>
         <span v-if="backText" class="navbar__back-text">{{ backText }}</span>
@@ -67,6 +83,15 @@ function goBack(): void {
   line-height: var(--font-heading-m-lh);
   font-weight: 600;
   text-align: center;
+}
+.navbar__menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -12px;
+  color: var(--text-primary);
 }
 .navbar__back {
   display: flex;

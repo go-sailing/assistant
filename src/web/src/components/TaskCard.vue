@@ -5,6 +5,7 @@ import { dueTone, formatDue } from '@/utils/time'
 import AppCheckbox from './AppCheckbox.vue'
 import AppIcon from './AppIcon.vue'
 import PriorityFlag from './PriorityFlag.vue'
+import ProgressBar from './tasks/ProgressBar.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -13,8 +14,10 @@ const props = withDefaults(
     clickable?: boolean
     /** 候选卡片等场景隐藏右侧箭头 */
     showArrow?: boolean
+    /** v0.2.0 子任务进度展示：bar 含进度条 / count 仅计数 */
+    subtaskDisplay?: 'bar' | 'count'
   }>(),
-  { clickable: true, showArrow: true }
+  { clickable: true, showArrow: true, subtaskDisplay: 'bar' }
 )
 
 const emit = defineEmits<{
@@ -25,6 +28,14 @@ const emit = defineEmits<{
 const completed = computed(() => props.task.status === 'completed')
 const tone = computed(() => dueTone(props.task))
 const timeText = computed(() => formatDue(props.task.due_at))
+const hasSubtasks = computed(() => props.task.subtask_total > 0)
+const allSubtasksDone = computed(
+  () => hasSubtasks.value && props.task.subtask_completed >= props.task.subtask_total
+)
+/** 半选：父任务未完成但已有子任务完成（父状态独立，不全选也不自动打勾） */
+const indeterminate = computed(
+  () => !completed.value && hasSubtasks.value && props.task.subtask_completed > 0 && !allSubtasksDone.value
+)
 </script>
 
 <template>
@@ -40,6 +51,7 @@ const timeText = computed(() => formatDue(props.task.due_at))
     >
       <AppCheckbox
         :checked="completed"
+        :indeterminate="indeterminate"
         :size="20"
         :label="`标记「${task.title}」完成`"
         @toggle="emit('toggle', task)"
@@ -58,6 +70,19 @@ const timeText = computed(() => formatDue(props.task.due_at))
             >{{ timeText }}</span
           >
           <PriorityFlag :priority="task.priority" />
+        </p>
+
+        <!-- 子任务进度：全部完成时进度条转 success 色 -->
+        <p v-if="hasSubtasks" class="card__progress">
+          <span class="card__progress-text">
+            <template v-if="allSubtasksDone">子任务已全部完成</template>
+            <template v-else>子任务 {{ task.subtask_completed }}/{{ task.subtask_total }}</template>
+          </span>
+          <ProgressBar
+            v-if="subtaskDisplay === 'bar'"
+            :total="task.subtask_total"
+            :completed="task.subtask_completed"
+          />
         </p>
       </div>
       <AppIcon v-if="showArrow && clickable" name="chevron-right" :size="18" color="#B5B9C4" />
@@ -115,6 +140,23 @@ const timeText = computed(() => formatDue(props.task.due_at))
 }
 .card__time--warning {
   color: var(--color-warning);
+}
+.card__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 2px;
+}
+.card__progress-text {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.card__progress :deep(.progress) {
+  flex: 1;
+  min-width: 40px;
 }
 .card__footer {
   display: flex;

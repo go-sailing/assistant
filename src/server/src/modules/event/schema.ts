@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { config } from '../../config';
 
 /**
  * 日程参数校验：REST 路由与 LLM 工具执行器共用同一套 schema，
@@ -6,6 +7,8 @@ import { z } from 'zod';
  */
 
 export const eventTypeEnum = z.enum(['normal', 'task']);
+/** v0.2.0：写操作作用域 */
+export const eventScopeEnum = z.enum(['series', 'this', 'following']);
 
 /** 宽容布尔：兼容模型传 "true"/"false" 字符串的情况 */
 const boolish = z.preprocess((v) => {
@@ -22,6 +25,9 @@ const isoTime = z
   .min(1, '时间不能为空')
   .refine((v) => !Number.isNaN(new Date(v).getTime()), '时间格式不正确');
 
+/** v0.2.0：循环实例身份键，必须是 ISO 时间串 */
+export const occurrenceKeyField = isoTime;
+
 export const tzField = z.string().min(1).max(64).optional();
 export const dateField = z
   .string()
@@ -29,6 +35,57 @@ export const dateField = z
   .optional();
 
 const idsField = z.coerce.number().int().positive();
+
+/* ------------------- v0.2.0 循环规则 ------------------- */
+
+const weekdayArray = z
+  // 严格数字：不接受 "1" 这类字符串混淆（TC-SEC-025）
+  .array(z.number().int().min(0).max(6))
+  .min(1, '请至少选择一天')
+  .max(7)
+  .transform((arr) => [...new Set(arr)].sort((a, b) => a - b));
+
+const monthRuleSchema = z.object({
+  type: z.enum(['day_of_month', 'day_of_week']),
+  day: z.number().int().min(1).max(31).optional(),
+  ord: z.union([z.literal(-1), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),
+  weekday: z.number().int().min(0).max(6).optional(),
+});
+
+/**
+ * 结束条件字段在所有分支均可出现，交由 Service 的 validateRule 做「矛盾组合」校验
+ * （如 end_type=never 却带 until/count），避免被 zod 静默剥离（TC-SEC-025c）。
+ */
+const endFields = {
+  count: z.coerce.number().int().min(1).max(config.event.seriesMaxCount).optional(),
+  until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD').optional(),
+};
+
+const recurrenceBase = {
+  freq: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
+  interval: z.coerce.number().int().min(1).max(config.event.recurIntervalMax).default(1),
+  by_week_days: weekdayArray.optional(),
+  month_rule: monthRuleSchema.optional(),
+  ...endFields,
+};
+
+/**
+ * 结构化校验（freq 枚举 / interval 边界 / 星期去重 / end_type 判别联合）；
+ * until、count 的语义边界（截止早于首次、超 5 年等）由 Service validateRule 抛 4011。
+ */
+export const recurrenceSchema = z.discriminatedUnion('end_type', [
+  z.object({ ...recurrenceBase, end_type: z.literal('never') }),
+  z.object({
+    ...recurrenceBase,
+    end_type: z.literal('count'),
+    count: z.coerce.number().int().min(1).max(config.event.seriesMaxCount),
+  }),
+  z.object({
+    ...recurrenceBase,
+    end_type: z.literal('until'),
+    until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD'),
+  }),
+]);
 
 /**
  * 创建日程。
@@ -43,6 +100,8 @@ const createEventBase = z.object({
   all_day: boolish.optional(),
   start_at: isoTime,
   end_at: isoTime,
+  /** v0.2.0：重复规则（任务日程禁循环在 Service 层抛 4016，此处不做结构外拦截） */
+  recurrence: recurrenceSchema.nullish(),
   confirm_conflict: boolish.optional(),
 });
 
@@ -72,6 +131,7 @@ export const createEventSchema = z.preprocess((raw) => {
  * 编辑日程。
  * 注意：这里**显式接受** event_type/task_id，由服务层统一拒绝（4003）并回灌模型，
  * 而不是静默剥离 —— 后者会让模型误以为改类型成功了。
+ * v0.2.0：新增 scope（series 默认 / this / following）、occurrence_key、recurrence。
  */
 export const updateEventSchema = z.object({
   title: z.string().nullish(),
@@ -82,7 +142,15 @@ export const updateEventSchema = z.object({
   end_at: isoTime.optional(),
   event_type: eventTypeEnum.optional(),
   task_id: idsField.nullish(),
+  recurrence: recurrenceSchema.nullish(),
+  scope: eventScopeEnum.optional(),
+  occurrence_key: occurrenceKeyField.optional(),
   confirm_conflict: boolish.optional(),
+});
+
+export const deleteEventSchema = z.object({
+  scope: z.enum(['series', 'this']).optional(),
+  occurrence_key: occurrenceKeyField.optional(),
 });
 
 export const listEventsSchema = z.object({
@@ -94,6 +162,20 @@ export const listEventsSchema = z.object({
   event_type: eventTypeEnum.optional(),
   sort: z.string().optional(),
   limit: z.coerce.number().int().positive().max(200).optional(),
+  /** v0.2.0：只看某个系列的实例 / 只看循环 / 含已取消 */
+  series_id: idsField.optional(),
+  recurring_only: boolish.optional(),
+  include_cancelled: boolish.optional(),
+});
+
+export const seriesDetailQuerySchema = z.object({
+  tz: tzField,
+  section: z.enum(['upcoming', 'past']).optional(),
+  cursor: z.string().optional(),
+});
+
+export const restoreOccurrenceSchema = z.object({
+  occurrence_key: occurrenceKeyField,
 });
 
 export const searchEventsSchema = z.object({

@@ -6,11 +6,17 @@ import type {
   CalendarEvent,
   ChatMessage,
   ConflictBlock,
+  ConflictDateGroup,
   ConfirmBlock,
   ErrorBlock,
   EventConflictBrief,
+  EventScope,
   MessageBlock,
+  Occurrence,
   RawMessage,
+  ScopeBlock,
+  SeriesDetail,
+  SubtaskGroup,
   Task,
 } from '@/types'
 import { useToastStore } from './toast'
@@ -20,6 +26,17 @@ import { useEventSyncStore } from './eventSync'
 /** 生成幂等键（重发沿用同一个，服务端据此去重） */
 export function genClientMsgId(): string {
   return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/** 作用域选项文案（澄清块按钮与结构化回传共用同一文案，与 UX 6.3 文案表一致） */
+export function scopeLabel(scope: EventScope): string {
+  if (scope === 'this') return '仅本次'
+  if (scope === 'following') return '本次及以后'
+  return '整条系列'
+}
+
+function isScope(v: unknown): v is EventScope {
+  return v === 'this' || v === 'following' || v === 'series'
 }
 
 /** 云端消息 → 渲染消息（历史与实时共用同一套 blocks 渲染） */
@@ -191,10 +208,32 @@ export const useChatStore = defineStore('chat', () => {
             msg.thinking = false
             const tasks = Array.isArray(data.tasks) ? (data.tasks as Task[]) : []
             const events = Array.isArray(data.events) ? (data.events as CalendarEvent[]) : []
-            if (tasks.length || events.length) msg.blocks.push({ type: 'cards', tasks, events })
+            const series = Array.isArray(data.series) ? (data.series as SeriesDetail[]) : []
+            const occurrences = Array.isArray(data.occurrences)
+              ? (data.occurrences as Occurrence[])
+              : []
+            const subtaskGroups = Array.isArray(data.subtask_groups)
+              ? (data.subtask_groups as SubtaskGroup[])
+              : []
+            if (
+              tasks.length ||
+              events.length ||
+              series.length ||
+              occurrences.length ||
+              subtaskGroups.length
+            ) {
+              msg.blocks.push({
+                type: 'cards',
+                tasks,
+                events,
+                series,
+                occurrences,
+                subtask_groups: subtaskGroups,
+              })
+            }
             taskSync.markDirty()
-            // 日程卡片出现即说明日程可能发生变化，日历 Tab 需重拉
-            if (events.length || tasks.length) eventSync.markDirty()
+            // 卡片出现即说明日程可能发生变化，日历 Tab 需重拉
+            eventSync.markDirty()
             break
           }
           case 'clarify': {
@@ -208,6 +247,30 @@ export const useChatStore = defineStore('chat', () => {
               candidates,
               events,
             })
+            break
+          }
+          case 'scope': {
+            // 循环实例写操作的作用域澄清块：点选后由 pickScope 作为下一条结构化消息回传
+            msg.thinking = false
+            const ref = (data.ref && typeof data.ref === 'object' ? data.ref : {}) as {
+              series_id?: unknown
+              occurrence_key?: unknown
+            }
+            const block: ScopeBlock = {
+              type: 'scope',
+              tool: data.tool === 'delete_event' ? 'delete_event' : 'update_event',
+              question: typeof data.question === 'string' ? data.question : '',
+              options: (Array.isArray(data.options) ? data.options : []).filter(isScope),
+              ref: {
+                series_id: Number(ref.series_id ?? 0),
+                occurrence_key:
+                  typeof ref.occurrence_key === 'string' && ref.occurrence_key
+                    ? ref.occurrence_key
+                    : null,
+              },
+              recommended: isScope(data.recommended) ? data.recommended : 'this',
+            }
+            msg.blocks.push(block)
             break
           }
           case 'conflict': {
@@ -225,11 +288,23 @@ export const useChatStore = defineStore('chat', () => {
                     ? 'none'
                     : 'overlap',
               message: typeof data.message === 'string' ? data.message : undefined,
+              // v0.2.0：循环冲突按日期分组（服务端已取前 5 组，其余以计数呈现）
+              conflict_dates: Array.isArray(data.conflict_dates)
+                ? (data.conflict_dates as ConflictDateGroup[])
+                : [],
+              conflict_dates_total:
+                typeof data.conflict_dates_total === 'number'
+                  ? data.conflict_dates_total
+                  : undefined,
+              conflict_total:
+                typeof data.conflict_total === 'number' ? data.conflict_total : undefined,
             }
             msg.blocks.push(block)
             break
           }
           case 'confirm': {
+            // action 为字符串透传（含 v0.2.0 的 delete_event_series / complete_task_cascade），
+            // 文案与危险级别差异在 ConfirmBar 内按 action 处理
             msg.thinking = false
             const block: ConfirmBlock = {
               type: 'confirm',
@@ -376,6 +451,28 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * 作用域澄清选择：本地折叠为「已选择：xxx」，并把结构化选择结果作为下一条用户消息发出，
+   * 由模型据此带上 scope/occurrence_key 重新调用工具（前端不重放任何写请求）。
+   */
+  function pickScope(
+    convId: string | number,
+    msg: ChatMessage,
+    blockIndex: number,
+    block: ScopeBlock,
+    scope: EventScope
+  ): void {
+    if (streamingByConv.value[keyOf(convId)]) return
+    const label = scopeLabel(scope)
+    msg.clarifyPicked = { ...(msg.clarifyPicked || {}), [blockIndex]: label }
+    const { series_id, occurrence_key } = block.ref || { series_id: 0 }
+    const keyPart = occurrence_key ? `，occurrence_key=${occurrence_key}` : ''
+    void send(
+      convId,
+      `关于循环日程 #${series_id} 的这次操作，作用域选择：${label}(${scope})${keyPart}`
+    )
+  }
+
+  /**
    * 冲突处理：两个动作都只是把决定交回助手。
    * 「仍要安排」由模型带 confirm_conflict=true 重新调用工具完成写入，避免前端绕过门控直接写库。
    */
@@ -410,6 +507,7 @@ export const useChatStore = defineStore('chat', () => {
     cancelAction,
     pickCandidate,
     pickEventCandidate,
+    pickScope,
     conflictForce,
     conflictChange,
     clearConversation,

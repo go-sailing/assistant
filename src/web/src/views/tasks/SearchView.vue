@@ -20,7 +20,42 @@ const searched = ref(false)
 const loading = ref(false)
 const error = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
+/** 全量任务表：用于本地拼父子路径（不新增接口） */
+const taskMap = ref<Record<string, Task>>({})
 let timer: number | undefined
+
+/** 命中子任务时按需拉取一次全量任务，供路径拼装 */
+async function ensureTaskMap(): Promise<void> {
+  if (Object.keys(taskMap.value).length) return
+  try {
+    const res = await taskApi.fetchTasks({ page: 1, page_size: 200 })
+    const map: Record<string, Task> = {}
+    ;(res.list || []).forEach((t) => {
+      map[String(t.id)] = t
+    })
+    taskMap.value = map
+  } catch {
+    // 路径提示失败不影响搜索结果本身
+  }
+}
+
+function parentOf(id: number | null): Task | null {
+  if (id === null) return null
+  return taskMap.value[String(id)] ?? null
+}
+
+/** 父子路径：根 / 父（当前项不重复展示） */
+function pathOf(task: Task): string {
+  const parts: string[] = []
+  let cur = parentOf(task.parent_id)
+  let guard = 5
+  while (cur && guard > 0) {
+    parts.unshift(cur.title)
+    cur = parentOf(cur.parent_id)
+    guard -= 1
+  }
+  return parts.join(' / ')
+}
 
 async function runSearch(): Promise<void> {
   const kw = keyword.value.trim()
@@ -34,6 +69,7 @@ async function runSearch(): Promise<void> {
   try {
     results.value = await taskApi.searchTasks(kw)
     searched.value = true
+    if (results.value.some((t) => t.parent_id !== null)) await ensureTaskMap()
   } catch (e) {
     results.value = []
     searched.value = true
@@ -135,6 +171,7 @@ onMounted(() => {
           :key="String(t.id)"
           :task="t"
           :keyword="keyword.trim()"
+          :path="pathOf(t)"
           @detail="goDetail"
           @toggle="onToggle"
           @remove="onRemove"

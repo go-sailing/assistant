@@ -3,8 +3,17 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as convApi from '@/api/conversations'
 import * as taskApi from '@/api/tasks'
+import { restoreOccurrence } from '@/api/events'
 import { errorText } from '@/api/client'
-import type { CalendarEvent, ConfirmBlock, Conversation, Task } from '@/types'
+import type {
+  CalendarEvent,
+  ConfirmBlock,
+  Conversation,
+  EventScope,
+  Occurrence,
+  ScopeBlock,
+  Task,
+} from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppModal from '@/components/AppModal.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -211,6 +220,45 @@ function onEventPick(
   chat.pickEventCandidate(convId.value, msg, blockIndex, event)
 }
 
+/** 作用域澄清点选：折叠本块并把结构化选择回传助手，由模型重新调用工具 */
+function onScopePick(
+  msg: (typeof messages.value)[number],
+  blockIndex: number,
+  block: ScopeBlock,
+  scope: EventScope
+): void {
+  chat.pickScope(convId.value, msg, blockIndex, block, scope)
+}
+
+/** 恢复本次安排：直接调接口（非危险操作），并用云端返回的实例刷新卡片 */
+async function onOccurrenceRestore(occ: Occurrence): Promise<void> {
+  try {
+    const updated = await restoreOccurrence(occ.series_id ?? occ.id, occ.occurrence_key)
+    if (updated) updateOccurrenceEverywhere(updated)
+    eventSync.markDirty()
+    toast.show('已恢复本次安排')
+  } catch (e) {
+    toast.show(errorText(e))
+  }
+}
+
+/** 恢复后刷新所有消息中的同一次实例卡片（系列 id + occurrence_key 唯一定位） */
+function updateOccurrenceEverywhere(updated: Occurrence): void {
+  messages.value.forEach((m) => {
+    m.blocks.forEach((b) => {
+      if (b.type !== 'cards') return
+      ;(b.occurrences ?? []).forEach((o) => {
+        if (
+          String(o.series_id) === String(updated.series_id) &&
+          o.occurrence_key === updated.occurrence_key
+        ) {
+          Object.assign(o, updated)
+        }
+      })
+    })
+  })
+}
+
 /** 「仍要安排」把决定交回助手，由模型带 confirm_conflict=true 重新调用工具 */
 function onConflictForce(): void {
   chat.conflictForce(convId.value)
@@ -299,6 +347,8 @@ async function confirmDelete(): Promise<void> {
             @event-task="onEventTask"
             @event-toggle="onEventToggle"
             @event-pick="onEventPick"
+            @occurrence-restore="onOccurrenceRestore"
+            @scope-pick="onScopePick"
             @conflict-change="onConflictChange"
             @conflict-force="onConflictForce"
             @confirm="onConfirm(item.msg, $event)"

@@ -26,7 +26,7 @@ const routes: RouteRecordRaw[] = [
     path: '/calendar',
     name: 'calendar-month',
     component: () => import('@/views/calendar/MonthView.vue'),
-    meta: { requiresAuth: true, tab: 'calendar' },
+    meta: { requiresAuth: true },
   },
   {
     path: '/calendar/day',
@@ -46,6 +46,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/calendar/TaskPickerView.vue'),
     meta: { requiresAuth: true },
   },
+  // v0.2.0：循环系列详情（须在 /calendar/:id 之前注册）
+  {
+    path: '/calendar/series/:id',
+    name: 'event-series',
+    component: () => import('@/views/calendar/SeriesDetailView.vue'),
+    meta: { requiresAuth: true },
+  },
   {
     path: '/calendar/:id',
     name: 'event-detail',
@@ -62,7 +69,7 @@ const routes: RouteRecordRaw[] = [
     path: '/tasks',
     name: 'task-home',
     component: () => import('@/views/tasks/TaskHomeView.vue'),
-    meta: { requiresAuth: true, tab: 'tasks' },
+    meta: { requiresAuth: true },
   },
   {
     path: '/tasks/new',
@@ -98,7 +105,7 @@ const routes: RouteRecordRaw[] = [
     path: '/chat',
     name: 'conversation-list',
     component: () => import('@/views/chat/ConversationListView.vue'),
-    meta: { requiresAuth: true, tab: 'chat' },
+    meta: { requiresAuth: true },
   },
   {
     path: '/chat/:id',

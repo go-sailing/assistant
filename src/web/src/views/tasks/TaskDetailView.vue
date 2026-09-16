@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as taskApi from '@/api/tasks'
 import * as eventApi from '@/api/events'
-import { errorText } from '@/api/client'
+import { ApiError, errorText } from '@/api/client'
 import type { CalendarEvent, Task } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppButton from '@/components/AppButton.vue'
@@ -12,6 +12,10 @@ import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
 import PriorityFlag from '@/components/PriorityFlag.vue'
 import StateError from '@/components/StateError.vue'
+import ParentBreadcrumb from '@/components/tasks/ParentBreadcrumb.vue'
+import ParentPickerSheet from '@/components/tasks/ParentPickerSheet.vue'
+import ProgressBar from '@/components/tasks/ProgressBar.vue'
+import SubtaskTree from '@/components/tasks/SubtaskTree.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
@@ -24,12 +28,22 @@ const taskSync = useTaskSyncStore()
 const eventSync = useEventSyncStore()
 
 const task = ref<Task | null>(null)
+/** 面包屑链：根 → 父 → 当前 */
+const ancestors = ref<Task[]>([])
+/** 整棵子树（根 + 全部后代），用于子任务分区与删除计数 */
+const subtree = ref<Task[]>([])
+const subtreeError = ref('')
 const events = ref<CalendarEvent[]>([])
 const loading = ref(true)
 const error = ref('')
 const actionLoading = ref(false)
 const sheetVisible = ref(false)
-const cascadeVisible = ref(false)
+const pickerVisible = ref(false)
+
+/** 级联完成确认（4010） */
+const cascadeComplete = ref<{ count: number } | null>(null)
+/** 删除级联告知（计数 >0 时先明示后果） */
+const deleteCascade = ref<{ subTasks: number; events: number } | null>(null)
 
 const taskId = computed(() => String(route.params.id))
 const fromChat = computed(() => route.query.from === 'chat')
@@ -39,24 +53,68 @@ const overdueText = computed(() => {
   if (!task.value || !overdue.value) return ''
   return `已逾期 ${overdueDays(task.value.due_at)} 天`
 })
+const hasSubtasks = computed(() => (task.value?.subtask_total ?? 0) > 0)
+const allSubtasksDone = computed(
+  () => hasSubtasks.value && (task.value?.subtask_completed ?? 0) >= (task.value?.subtask_total ?? 0)
+)
+/** 子树至少包含根自身，保证行内添加子任务能拿到同清单信息 */
+const subtreeNodes = computed<Task[]>(() =>
+  subtree.value.length ? subtree.value : task.value ? [task.value] : []
+)
+
+const deleteText = computed(() => {
+  const info = deleteCascade.value
+  if (!info) return ''
+  const parts: string[] = []
+  if (info.subTasks > 0) parts.push(`${info.subTasks} 个子任务`)
+  if (info.events > 0) parts.push(`${info.events} 条日程安排`)
+  return parts.length ? `将同时删除 ${parts.join('及')}，且不可恢复。` : '删除后不可恢复。'
+})
+
+function incompleteCount(e: unknown): number {
+  const details = e instanceof ApiError ? (e.details as { incomplete_descendant_count?: number } | null) : null
+  return details?.incomplete_descendant_count ?? 0
+}
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
+  subtreeError.value = ''
   try {
-    const [t, evs] = await Promise.all([
+    const [t, evs, anc, sub] = await Promise.all([
       taskApi.fetchTask(taskId.value),
       // 排期列表失败不阻塞任务详情展示
       eventApi.fetchTaskEvents(taskId.value).catch(() => [] as CalendarEvent[]),
+      taskApi.fetchAncestors(taskId.value).catch(() => [] as Task[]),
+      taskApi.fetchSubtree(taskId.value).catch(() => [] as Task[]),
     ])
     task.value = t
     events.value = evs
+    ancestors.value = anc
+    subtree.value = sub
+    if (!sub.length && t.subtask_total > 0) subtreeError.value = '子任务加载失败'
   } catch (e) {
     task.value = null
     events.value = []
+    ancestors.value = []
+    subtree.value = []
     error.value = errorText(e)
   } finally {
     loading.value = false
+  }
+}
+
+/** 子任务分区数据变化：刷新任务进度与子树 */
+async function onSubtreeChanged(): Promise<void> {
+  try {
+    const [t, sub] = await Promise.all([
+      taskApi.fetchTask(taskId.value),
+      taskApi.fetchSubtree(taskId.value),
+    ])
+    task.value = t
+    subtree.value = sub
+  } catch {
+    // 刷新失败保留现状，不打断操作
   }
 }
 
@@ -65,9 +123,73 @@ async function toggleStatus(): Promise<void> {
   if (!t || actionLoading.value) return
   actionLoading.value = true
   try {
-    task.value = t.status === 'completed' ? await taskApi.uncompleteTask(t.id) : await taskApi.completeTask(t.id)
+    if (t.status === 'completed') {
+      // 取消父完成不级联
+      task.value = await taskApi.uncompleteTask(t.id)
+      toast.show('已恢复未完成')
+    } else {
+      try {
+        task.value = await taskApi.completeTask(t.id)
+        toast.show('已标记完成')
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 4010) {
+          cascadeComplete.value = { count: incompleteCount(e) }
+          return
+        }
+        throw e
+      }
+    }
     taskSync.markDirty()
-    toast.show(task.value.status === 'completed' ? '已标记完成' : '已恢复未完成')
+    await onSubtreeChanged()
+  } catch (e) {
+    toast.show(errorText(e))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+/** 确认后带 cascade 一并完成未完成后代 */
+async function confirmCascadeComplete(): Promise<void> {
+  const t = task.value
+  cascadeComplete.value = null
+  if (!t) return
+  actionLoading.value = true
+  try {
+    task.value = await taskApi.completeTask(t.id, true)
+    taskSync.markDirty()
+    toast.show('已标记完成')
+    await onSubtreeChanged()
+  } catch (e) {
+    toast.show(errorText(e))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+/** 移动层级：选择父任务（null = 移出为根任务） */
+async function onPickParent(parentId: number | null): Promise<void> {
+  pickerVisible.value = false
+  const t = task.value
+  if (!t) return
+  const currentParent = t.parent_id === null ? null : String(t.parent_id)
+  if (parentId === null && currentParent === null) {
+    toast.show('已是顶层任务')
+    return
+  }
+  if (parentId !== null && currentParent !== null && String(parentId) === currentParent) {
+    toast.show('已是该父任务的子任务')
+    return
+  }
+  actionLoading.value = true
+  try {
+    const updated = await taskApi.updateTask(t.id, { parent_id: parentId })
+    if (updated.revived_parent) {
+      toast.show(`父任务「${updated.revived_parent.title}」已自动恢复为未完成`)
+    } else {
+      toast.show('已移动')
+    }
+    taskSync.markDirty()
+    await load()
   } catch (e) {
     toast.show(errorText(e))
   } finally {
@@ -76,12 +198,16 @@ async function toggleStatus(): Promise<void> {
 }
 
 /**
- * 删除任务：有排期时先弹出级联告知（与对话侧文案一致），
- * 确认文案必须明示将同时删除 N 条日程安排。
+ * 删除任务：计数来自已加载的整棵子树与任务自身日程数，
+ * 有级联影响时先弹确认并明示数量。
  */
 function askDelete(): void {
-  if (events.value.length > 0) {
-    cascadeVisible.value = true
+  const t = task.value
+  if (!t) return
+  const subTasks = Math.max(0, subtree.value.length - 1, t.subtask_total)
+  const eventCount = t.event_count ?? events.value.length
+  if (subTasks > 0 || eventCount > 0) {
+    deleteCascade.value = { subTasks, events: eventCount }
     return
   }
   sheetVisible.value = true
@@ -91,13 +217,18 @@ async function remove(): Promise<void> {
   const t = task.value
   if (!t) return
   sheetVisible.value = false
-  cascadeVisible.value = false
+  deleteCascade.value = null
   try {
     const res = await taskApi.deleteTask(t.id)
     taskSync.markDirty()
     eventSync.markDirty()
-    const cascaded = res.deleted_event_count ?? 0
-    toast.show(cascaded > 0 ? `已删除任务及其 ${cascaded} 条日程安排` : '已删除')
+    // 响应计数为权威值：任务数含自身
+    const subTasks = Math.max(0, (res.deleted_task_count ?? 1) - 1)
+    const eventCount = res.deleted_event_count ?? 0
+    const parts: string[] = []
+    if (subTasks > 0) parts.push(`${subTasks} 个子任务`)
+    if (eventCount > 0) parts.push(`${eventCount} 条日程安排`)
+    toast.show(parts.length ? `已删除任务及其 ${parts.join('、')}` : '已删除')
     router.replace('/tasks')
   } catch (e) {
     toast.show(errorText(e))
@@ -133,6 +264,9 @@ onMounted(load)
       </button>
       <span v-else class="detail__edit" />
     </header>
+
+    <!-- 父子面包屑：根 › … › 当前 -->
+    <ParentBreadcrumb v-if="!loading && !error" :nodes="ancestors" />
 
     <div class="page-body detail__body">
       <p v-if="loading" class="detail__loading">加载中…</p>
@@ -204,6 +338,37 @@ onMounted(load)
           <p v-else class="detail__schedule-empty">还没有安排执行时段</p>
         </section>
 
+        <!-- 子任务分区：进度 + 树 + 行内添加 -->
+        <section class="detail__subtasks">
+          <div class="detail__subtasks-head">
+            <h2 class="detail__subtasks-title">
+              子任务<span v-if="hasSubtasks" class="detail__subtasks-count">
+                （{{ task.subtask_completed }}/{{ task.subtask_total }}）</span
+              >
+            </h2>
+            <button class="detail__subtasks-move pressable" :disabled="actionLoading" @click="pickerVisible = true">
+              <AppIcon name="chevron-right" :size="14" color="#3D5AFE" />
+              移动
+            </button>
+          </div>
+
+          <div v-if="hasSubtasks" class="detail__subtasks-progress">
+            <span class="detail__subtasks-progress-text">
+              <template v-if="allSubtasksDone">子任务已全部完成</template>
+              <template v-else>子任务 {{ task.subtask_completed }}/{{ task.subtask_total }}</template>
+            </span>
+            <ProgressBar :total="task.subtask_total" :completed="task.subtask_completed" />
+          </div>
+
+          <p v-if="subtreeError" class="detail__subtasks-hint detail__subtasks-hint--error">
+            {{ subtreeError }}
+            <button class="detail__subtasks-retry pressable" @click="load">重试</button>
+          </p>
+
+          <!-- 树容器：更深层级由树内部懒加载 -->
+          <SubtaskTree :nodes="subtreeNodes" :root-id="task.id" @changed="onSubtreeChanged" />
+        </section>
+
         <section class="detail__times">
           <p>创建于 {{ formatShort(task.created_at) }}</p>
           <p v-if="task.completed_at">完成于 {{ formatShort(task.completed_at) }}</p>
@@ -218,6 +383,7 @@ onMounted(load)
       </template>
     </div>
 
+    <!-- 无级联影响时的简单确认 -->
     <AppActionSheet
       :visible="sheetVisible"
       title="删除后不可恢复"
@@ -226,15 +392,35 @@ onMounted(load)
       @cancel="sheetVisible = false"
     />
 
-    <!-- 有排期时的级联删除告知：条数由排期列表真实条数计算 -->
+    <!-- 有子任务或日程时的级联删除告知 -->
     <AppModal
-      :visible="cascadeVisible"
+      :visible="!!deleteCascade"
       title="删除任务？"
-      :text="`将同时删除该任务的 ${events.length} 条日程安排，且不可恢复。`"
+      :text="deleteText"
       confirm-text="删除"
       danger
       @confirm="remove"
-      @cancel="cascadeVisible = false"
+      @cancel="deleteCascade = null"
+    />
+
+    <!-- 父任务带未完成子任务：级联完成确认 -->
+    <AppModal
+      :visible="!!cascadeComplete"
+      :title="task ? `标记「${task.title}」完成？` : ''"
+      :text="cascadeComplete ? `还有 ${cascadeComplete.count} 个子任务未完成，标记后将一并标记完成。` : ''"
+      confirm-text="全部完成"
+      @confirm="confirmCascadeComplete"
+      @cancel="cascadeComplete = null"
+    />
+
+    <!-- 移动层级：选择父任务 / 移出为根任务 -->
+    <ParentPickerSheet
+      :visible="pickerVisible"
+      title="移动到…"
+      :task-id="taskId"
+      :current-parent-id="task ? task.parent_id : null"
+      @select="onPickParent"
+      @cancel="pickerVisible = false"
     />
   </div>
 </template>
@@ -277,7 +463,8 @@ onMounted(load)
   color: var(--color-primary);
 }
 .detail__body {
-  padding-bottom: calc(var(--sp-6) + var(--safe-bottom));
+  /* 底部留白避让右下角 FAB（UXUI 2：内容底部留白 ≥ 80pt） */
+  padding-bottom: calc(96px + var(--safe-bottom));
 }
 .detail__loading {
   padding: var(--sp-6);
@@ -399,6 +586,69 @@ onMounted(load)
   margin-top: var(--sp-2);
   font-size: var(--font-caption);
   color: var(--text-disabled);
+}
+.detail__subtasks {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-3);
+  background: var(--bg-card);
+}
+.detail__subtasks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4);
+}
+.detail__subtasks-title {
+  font-size: var(--font-caption);
+  color: var(--text-secondary);
+}
+.detail__subtasks-count {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.detail__subtasks-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 var(--sp-2);
+  font-size: var(--font-body-m);
+  color: var(--color-primary);
+}
+.detail__subtasks-move:disabled {
+  opacity: 0.45;
+}
+.detail__subtasks-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-1) var(--sp-4) var(--sp-2);
+}
+.detail__subtasks-progress-text {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.detail__subtasks-progress :deep(.progress) {
+  flex: 1;
+  min-width: 60px;
+}
+.detail__subtasks-hint {
+  padding: var(--sp-1) var(--sp-4);
+  font-size: var(--font-caption);
+  color: var(--text-secondary);
+}
+.detail__subtasks-hint--error {
+  color: var(--color-danger);
+}
+.detail__subtasks-retry {
+  min-height: 32px;
+  padding: 0 var(--sp-1);
+  font-size: var(--font-caption);
+  color: var(--color-primary);
 }
 .detail__times {
   margin-top: var(--sp-2);

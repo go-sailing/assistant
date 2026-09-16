@@ -5,11 +5,14 @@ import * as eventApi from '@/api/events'
 import * as taskApi from '@/api/tasks'
 import { ApiError, errorText } from '@/api/client'
 import type {
+  ConflictDateGroup,
   ConflictDetail,
   ConflictLevel,
   EventConflictBrief,
   EventPayload,
+  EventScope,
   EventType,
+  RecurrenceRule,
 } from '@/types'
 import {
   formatDue,
@@ -26,6 +29,7 @@ import AppInput from '@/components/AppInput.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
 import StateError from '@/components/StateError.vue'
 import ConflictSheet from '@/components/calendar/ConflictSheet.vue'
+import RepeatSheet from '@/components/calendar/RepeatSheet.vue'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
 
@@ -36,6 +40,15 @@ const eventSync = useEventSyncStore()
 
 const editId = computed(() => (route.name === 'event-edit' ? String(route.params.id) : ''))
 const typeLocked = computed(() => !!editId.value)
+/** v0.2.0：实例编辑带 scope=this/following 与 occurrence_key；整条编辑带 scope=series */
+const scopeParam = computed(() => (typeof route.query.scope === 'string' ? route.query.scope : ''))
+const occurrenceKey = computed(() =>
+  typeof route.query.occurrence_key === 'string' ? route.query.occurrence_key : ''
+)
+/** 实例视角（本次 / 本次及以后）：不展示重复设置行 */
+const scopedToOccurrence = computed(
+  () => !!occurrenceKey.value && (scopeParam.value === 'this' || scopeParam.value === 'following')
+)
 
 const eventType = ref<EventType>('normal')
 const title = ref('')
@@ -61,6 +74,46 @@ const loadError = ref('')
 const conflictVisible = ref(false)
 const conflicts = ref<EventConflictBrief[]>([])
 const conflictLevel = ref<ConflictLevel>('overlap')
+const conflictScope = ref<'series' | 'occurrence'>('occurrence')
+const conflictDateGroups = ref<ConflictDateGroup[]>([])
+const conflictDatesTotal = ref(0)
+const conflictTotal = ref(0)
+
+/* ---------------- v0.2.0 循环规则 ---------------- */
+const recurrence = ref<RecurrenceRule | null>(null)
+/** 服务端下发的规则摘要；刚在弹层里改过则为端上同规则预览（保存后以服务端摘要为准） */
+const recurrenceSummary = ref('')
+const repeatVisible = ref(false)
+/** 编辑整条系列：表单需展示并提交重复规则 */
+const isSeriesEdit = computed(() => !!editId.value && (!!recurrence.value || scopeParam.value === 'series'))
+/** 任务日程不支持循环，因此不渲染"重复"行 */
+const showRepeatRow = computed(() => eventType.value === 'normal' && !scopedToOccurrence.value)
+
+const headTitle = computed(() => {
+  if (!editId.value) return '新建日程'
+  if (scopeParam.value === 'this') return '编辑本次安排'
+  if (scopeParam.value === 'following') return '从本次起'
+  if (isSeriesEdit.value) return '编辑循环日程'
+  return '编辑日程'
+})
+const submitText = computed(() => {
+  if (!editId.value) return '保 存'
+  if (scopeParam.value === 'this') return '保存本次'
+  if (scopeParam.value === 'following') return '保存'
+  if (isSeriesEdit.value) return '保存整条'
+  return '保 存'
+})
+
+function openRepeat(): void {
+  repeatVisible.value = true
+}
+
+/** 规则弹层确认：只存规则 + 预览摘要，保存时随 body 提交 */
+function onRepeatConfirm(rule: RecurrenceRule, preview: string): void {
+  recurrence.value = rule
+  recurrenceSummary.value = preview
+  repeatVisible.value = false
+}
 
 /** 用户手动改过结束时间后，开始时间变化不再自动跟随 */
 let endTouched = false
@@ -299,7 +352,8 @@ async function loadEvent(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    const ev = await eventApi.fetchEvent(editId.value)
+    // 实例视角取实例（带覆盖后的字段），整条视角取系列主记录（= 首次时间锚点）
+    const ev = await eventApi.fetchEvent(editId.value, occurrenceKey.value || undefined)
     eventType.value = ev.event_type
     title.value = ev.title
     taskId.value = ev.task_id ? String(ev.task_id) : ev.task ? String(ev.task.id) : ''
@@ -316,6 +370,8 @@ async function loadEvent(): Promise<void> {
     const last = new Date(e.getTime() - 1)
     endDay.value = toDateKey(last.getTime() >= s.getTime() ? last : s)
     endTouched = true
+    recurrence.value = ev.recurrence ?? null
+    recurrenceSummary.value = ev.recurrence_summary ?? ''
   } catch (e) {
     loadError.value = errorText(e)
   } finally {
@@ -340,6 +396,16 @@ function buildPayload(confirmConflict: boolean): EventPayload {
     }
   }
   if (eventType.value === 'normal') payload.title = title.value.trim()
+
+  // 循环：创建时携带规则；实例作用域只提交本次/本次及以后，不夹带规则
+  if (editId.value && (scopeParam.value === 'this' || scopeParam.value === 'following')) {
+    payload.scope = scopeParam.value as EventScope
+    if (occurrenceKey.value) payload.occurrence_key = occurrenceKey.value
+  } else if (recurrence.value) {
+    payload.recurrence = recurrence.value
+    if (editId.value) payload.scope = 'series'
+  }
+
   if (confirmConflict) payload.confirm_conflict = true
   return payload
 }
@@ -363,6 +429,15 @@ function goBackAfterSave(): void {
   else router.replace('/calendar')
 }
 
+/** 保存成功文案随作用域复述，避免用户忘记改的是哪一部分 */
+function successText(): string {
+  if (!editId.value) return '已保存'
+  if (scopeParam.value === 'this') return '已修改本次安排'
+  if (scopeParam.value === 'following') return '已更新从本次起的安排'
+  if (isSeriesEdit.value) return '已更新整条系列'
+  return '已保存'
+}
+
 async function submit(confirmConflict = false): Promise<void> {
   if (saving.value) return
   formError.value = ''
@@ -375,21 +450,36 @@ async function submit(confirmConflict = false): Promise<void> {
     pickerDraft = null
     conflictVisible.value = false
     eventSync.markDirty()
-    toast.show('已保存')
+    toast.show(successText())
     goBackAfterSave()
   } catch (e) {
     if (e instanceof ApiError && e.code === 4009) {
       // 冲突不是错误：把后端返回的重叠明细交给用户决定
-      const detail = (e.details || {}) as Partial<ConflictDetail>
-      conflicts.value = detail.conflicts || []
-      conflictLevel.value = detail.conflict_level || 'overlap'
-      conflictVisible.value = true
+      applyConflictDetail(e.details)
     } else {
       formError.value = errorText(e)
     }
   } finally {
     saving.value = false
   }
+}
+
+/** 4009 兼容三种形态：整条系列（按日期分组）/ 单次实例 / 旧版单次日程 */
+function applyConflictDetail(details: unknown): void {
+  const detail = (details || {}) as Partial<ConflictDetail> & {
+    scope?: string
+    conflict_dates?: ConflictDateGroup[]
+    conflict_dates_total?: number
+    conflict_total?: number
+  }
+  conflictLevel.value = detail.conflict_level || 'overlap'
+  const isSeries = detail.scope === 'series' || (detail.conflict_dates?.length ?? 0) > 0
+  conflictScope.value = isSeries ? 'series' : 'occurrence'
+  conflictDateGroups.value = detail.conflict_dates || []
+  conflictDatesTotal.value = detail.conflict_dates_total || detail.conflict_dates?.length || 0
+  conflictTotal.value = detail.conflict_total || 0
+  conflicts.value = detail.conflicts || []
+  conflictVisible.value = true
 }
 
 function cancel(): void {
@@ -415,7 +505,7 @@ watch(
   <div class="page form">
     <header class="form__head">
       <button class="form__cancel pressable" @click="cancel">取消</button>
-      <span class="form__title">{{ editId ? '编辑日程' : '新建日程' }}</span>
+      <span class="form__title">{{ headTitle }}</span>
       <span class="form__placeholder" />
     </header>
 
@@ -426,6 +516,18 @@ watch(
 
       <template v-else>
         <p v-if="formError" class="form__alert">{{ formError }}</p>
+
+        <!-- 作用域复述：进入表单后始终可见，避免用户忘记改的是哪一部分 -->
+        <p v-if="scopedToOccurrence" class="form__scope">
+          <AppIcon name="repeat" :size="14" color="var(--color-primary)" />
+          <span>
+            {{
+              scopeParam === 'this'
+                ? '仅修改本次安排，其他日期不受影响'
+                : '从本次起使用新安排，之前的安排保留'
+            }}
+          </span>
+        </p>
 
         <section class="form__group form__group--plain">
           <div class="form__type" :class="{ 'form__type--locked': typeLocked }">
@@ -535,6 +637,25 @@ watch(
           </div>
         </section>
 
+        <!-- v0.2.0：重复设置行（任务日程不渲染） -->
+        <section v-if="showRepeatRow" class="form__group form__group--rows">
+          <button
+            class="form__row pressable"
+            @click="openRepeat"
+          >
+            <AppIcon name="repeat" :size="18" color="#6B7080" />
+            <span class="form__row-label">重复</span>
+            <span
+              class="form__row-value form__row-value--summary ellipsis"
+              :class="{ 'form__row-value--empty': !recurrence }"
+            >
+              {{ recurrenceSummary || '不重复' }}
+            </span>
+            <AppIcon name="chevron-right" :size="18" color="#B5B9C4" />
+          </button>
+          <p v-if="isSeriesEdit" class="form__hint">修改后将更新整条系列的全部安排</p>
+        </section>
+
         <section class="form__group form__stack">
           <AppInput v-model="location" label="地点" placeholder="添加地点" :maxlength="200" />
           <AppInput
@@ -547,7 +668,9 @@ watch(
         </section>
 
         <div class="form__submit">
-          <AppButton type="primary" :loading="saving" @click="submit(false)">保 存</AppButton>
+          <AppButton type="primary" :loading="saving" @click="submit(false)">
+            {{ submitText }}
+          </AppButton>
         </div>
       </template>
     </div>
@@ -557,8 +680,22 @@ watch(
       :conflicts="conflicts"
       :level="conflictLevel"
       :saving="saving"
+      :scope="conflictScope"
+      :date-groups="conflictDateGroups"
+      :dates-total="conflictDatesTotal"
+      :total="conflictTotal"
       @cancel="conflictVisible = false"
       @confirm="submit(true)"
+    />
+
+    <RepeatSheet
+      :visible="repeatVisible"
+      :first-start="startIso || ''"
+      :first-end="endIso || ''"
+      :all-day="allDay"
+      :initial="recurrence"
+      @confirm="onRepeatConfirm"
+      @cancel="repeatVisible = false"
     />
   </div>
 </template>
@@ -634,6 +771,25 @@ watch(
   padding: var(--sp-2) var(--sp-4);
   font-size: var(--font-caption);
   color: var(--text-secondary);
+}
+/* 作用域复述条：primary 浅底 + repeat 图标，与循环身份三重编码一致 */
+.form__scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--sp-3) var(--sp-4) 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--color-primary-light);
+  border-radius: var(--radius-card);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-primary);
+}
+/* 规则摘要单行省略：与标签共处一行时只截断值本身 */
+.form__row-value--summary {
+  min-width: 0;
+  max-width: 56%;
+  text-align: right;
 }
 .form__row {
   position: relative;

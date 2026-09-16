@@ -3,16 +3,18 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as taskApi from '@/api/tasks'
 import * as listApi from '@/api/lists'
-import { errorText } from '@/api/client'
+import { ApiError, errorText } from '@/api/client'
 import type { Task, TaskList, TaskSort, TaskStatus } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
-import AppFAB from '@/components/AppFAB.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AppModal from '@/components/AppModal.vue'
+import AppNavBar from '@/components/AppNavBar.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
 import TaskListItem from '@/components/TaskListItem.vue'
+import SubtaskTree from '@/components/tasks/SubtaskTree.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
 
@@ -38,6 +40,18 @@ const listSheetVisible = ref(false)
 const sortSheetVisible = ref(false)
 const actionTask = ref<Task | null>(null)
 const deleteSheetVisible = ref(false)
+const cascadeDeleteVisible = ref(false)
+
+/* v0.2.0 根任务树：展开态 + 首次展开懒加载的下一级节点（会话内缓存） */
+const expandedRoots = ref<Set<string>>(new Set())
+const treeData = ref<Record<string, Task[]>>({})
+const treeLoading = ref<Record<string, boolean>>({})
+const treeError = ref<Record<string, string>>({})
+/** 筛选条件指纹：变化时重置树（组件 key 同步更换） */
+const filterKey = computed(() => `${listId.value}|${status.value}|${sort.value}`)
+
+/** 级联完成确认（父任务带未完成子任务） */
+const cascade = ref<{ task: Task; count: number } | null>(null)
 
 const statusOptions = [
   { label: '全部', value: 'all' },
@@ -45,9 +59,7 @@ const statusOptions = [
   { label: '已完成', value: 'completed' },
 ]
 
-const sortLabel = computed(() =>
-  sort.value === 'created_at_desc' ? '按创建时间' : '按截止时间'
-)
+const sortLabel = computed(() => (sort.value === 'created_at_desc' ? '按创建时间' : '按截止时间'))
 
 const sortItems = [
   { label: '按截止时间', value: 'due_at_asc' },
@@ -85,10 +97,12 @@ async function loadLists(): Promise<void> {
 async function loadTasks(): Promise<void> {
   error.value = ''
   try {
+    // 任务首页只以根任务为排序单位（子任务随父卡展开出现）
     const res = await taskApi.fetchTasks({
       list_id: listId.value === ALL ? undefined : listId.value,
       status: status.value === 'all' ? undefined : status.value,
       sort: sort.value,
+      root_only: true,
       page: 1,
       page_size: 50,
     })
@@ -112,6 +126,22 @@ async function refresh(): Promise<void> {
   refreshing.value = false
 }
 
+/** 切换清单/排序/搜索后重置树展开态与缓存 */
+function resetTree(): void {
+  expandedRoots.value = new Set<string>()
+  treeData.value = {}
+  treeLoading.value = {}
+  treeError.value = {}
+}
+
+function reloadWithTreeReset(): void {
+  resetTree()
+  loading.value = true
+  void loadTasks().finally(() => {
+    loading.value = false
+  })
+}
+
 function openListSheet(): void {
   listSheetVisible.value = true
 }
@@ -124,35 +154,83 @@ function onListSelect(v: string): void {
   }
   if (v === listId.value) return
   listId.value = v
-  loading.value = true
-  void loadTasks().finally(() => {
-    loading.value = false
-  })
+  reloadWithTreeReset()
 }
 
 function onSortSelect(v: string): void {
   sortSheetVisible.value = false
   if (v === sort.value) return
   sort.value = v as TaskSort
-  loading.value = true
-  void loadTasks().finally(() => {
-    loading.value = false
-  })
+  reloadWithTreeReset()
 }
 
 function onStatusChange(v: string): void {
   status.value = v as TaskStatus | 'all'
-  loading.value = true
-  void loadTasks().finally(() => {
-    loading.value = false
-  })
+  reloadWithTreeReset()
 }
 
 function goDetail(task: Task): void {
   router.push(`/tasks/${task.id}`)
 }
 
-/** 勾选完成：乐观更新，失败回弹 */
+function goCreate(): void {
+  router.push('/tasks/new')
+}
+
+function isRootExpanded(task: Task): boolean {
+  return expandedRoots.value.has(String(task.id))
+}
+
+/** 展开根任务：首次展开懒加载下一级（根 + 直接子级） */
+async function toggleRoot(task: Task): Promise<void> {
+  const id = String(task.id)
+  if (expandedRoots.value.has(id)) {
+    expandedRoots.value.delete(id)
+    return
+  }
+  expandedRoots.value.add(id)
+  if (treeData.value[id]) return
+  await loadLevel1(task)
+}
+
+async function loadLevel1(task: Task): Promise<void> {
+  const id = String(task.id)
+  treeLoading.value[id] = true
+  treeError.value[id] = ''
+  try {
+    treeData.value[id] = await taskApi.fetchSubtree(task.id, 1)
+  } catch (e) {
+    treeError.value[id] = errorText(e)
+  } finally {
+    treeLoading.value[id] = false
+  }
+}
+
+function replaceRoot(task: Task): void {
+  const i = tasks.value.findIndex((t) => String(t.id) === String(task.id))
+  if (i >= 0) tasks.value[i] = task
+}
+
+/** 树下发生变更：重取第一级并同步根卡进度（进度为直接子任务口径） */
+async function onTreeChanged(task: Task): Promise<void> {
+  await loadLevel1(task)
+  const nodes = treeData.value[String(task.id)] || []
+  const direct = nodes.filter((n) => n.parent_id !== null && String(n.parent_id) === String(task.id))
+  const i = tasks.value.findIndex((t) => String(t.id) === String(task.id))
+  if (i < 0) return
+  tasks.value[i] = {
+    ...tasks.value[i],
+    subtask_total: direct.length,
+    subtask_completed: direct.filter((d) => d.status === 'completed').length,
+  }
+}
+
+function incompleteCount(e: unknown): number {
+  const details = e instanceof ApiError ? (e.details as { incomplete_descendant_count?: number } | null) : null
+  return details?.incomplete_descendant_count ?? 0
+}
+
+/** 勾选完成：乐观更新，失败回弹；父任务带未完成子任务时走级联确认 */
 async function onToggle(task: Task): Promise<void> {
   const index = tasks.value.findIndex((t) => String(t.id) === String(task.id))
   if (index < 0) return
@@ -167,32 +245,82 @@ async function onToggle(task: Task): Promise<void> {
     const updated = completed
       ? await taskApi.uncompleteTask(original.id)
       : await taskApi.completeTask(original.id)
-    const i = tasks.value.findIndex((t) => String(t.id) === String(original.id))
-    if (i >= 0) tasks.value[i] = updated
-    // 已完成筛选下取消完成，该项不应再出现
-    if (status.value === 'completed' && updated.status !== 'completed') {
+    replaceRoot(updated)
+    // 筛选态与结果不符时移除该项
+    if (
+      (status.value === 'completed' && updated.status !== 'completed') ||
+      (status.value === 'todo' && updated.status === 'completed')
+    ) {
       tasks.value = tasks.value.filter((t) => String(t.id) !== String(original.id))
     }
+    taskSync.markDirty()
+    void refreshTreeAfterStatus(updated)
   } catch (e) {
-    const i = tasks.value.findIndex((t) => String(t.id) === String(original.id))
-    if (i >= 0) tasks.value[i] = original
+    replaceRoot(original)
+    if (!completed && e instanceof ApiError && e.code === 4010) {
+      cascade.value = { task: original, count: incompleteCount(e) }
+      return
+    }
     toast.show(errorText(e) || '操作失败，请重试')
+  }
+}
+
+/** 级联完成：一并标记全部未完成后代 */
+async function confirmCascade(): Promise<void> {
+  const target = cascade.value
+  if (!target) return
+  cascade.value = null
+  try {
+    const updated = await taskApi.completeTask(target.task.id, true)
+    replaceRoot(updated)
+    taskSync.markDirty()
+    toast.show('已标记完成')
+    await refreshTreeAfterStatus(updated)
+  } catch (e) {
+    toast.show(errorText(e))
+  }
+}
+
+/** 状态变化后若树已加载，刷新第一级让勾选态与进度同步 */
+async function refreshTreeAfterStatus(task: Task): Promise<void> {
+  const id = String(task.id)
+  if (!treeData.value[id]) return
+  try {
+    treeData.value[id] = await taskApi.fetchSubtree(task.id, 1)
+  } catch {
+    // 刷新失败保留原树，不阻断主流程
   }
 }
 
 function askDelete(task: Task): void {
   actionTask.value = task
+  if (task.subtask_total > 0) {
+    cascadeDeleteVisible.value = true
+    return
+  }
   deleteSheetVisible.value = true
 }
 
 async function confirmDelete(): Promise<void> {
   const task = actionTask.value
   deleteSheetVisible.value = false
+  cascadeDeleteVisible.value = false
   if (!task) return
   try {
-    await taskApi.deleteTask(task.id)
+    const res = await taskApi.deleteTask(task.id)
     tasks.value = tasks.value.filter((t) => String(t.id) !== String(task.id))
-    toast.show('已删除')
+    treeData.value = Object.fromEntries(
+      Object.entries(treeData.value).filter(([key]) => key !== String(task.id))
+    )
+    // 级联计数来自服务端响应：任务数含自身，子任务数需减 1
+    const subTasks = Math.max(0, (res.deleted_task_count ?? 1) - 1)
+    const events = res.deleted_event_count ?? 0
+    const parts: string[] = []
+    if (subTasks > 0) parts.push(`${subTasks} 个子任务`)
+    if (events > 0) parts.push(`${events} 条日程安排`)
+    toast.show(parts.length ? `已删除任务及其 ${parts.join('、')}` : '已删除')
+    actionTask.value = null
+    taskSync.markDirty()
   } catch (e) {
     toast.show(errorText(e))
   }
@@ -241,12 +369,16 @@ onMounted(async () => {
 
 <template>
   <div class="page home">
-    <header class="home__head">
-      <h1 class="home__title">我的任务</h1>
-      <button class="home__icon-btn pressable" aria-label="搜索任务" @click="router.push('/search')">
-        <AppIcon name="search" :size="24" color="#1A1D26" />
-      </button>
-    </header>
+    <AppNavBar title="任务" :show-back="false">
+      <template #right>
+        <button class="home__icon-btn pressable" aria-label="搜索任务" @click="router.push('/search')">
+          <AppIcon name="search" :size="22" color="#1A1D26" />
+        </button>
+        <button class="home__icon-btn pressable" aria-label="新建任务" @click="goCreate">
+          <AppIcon name="plus" :size="22" color="#1A1D26" />
+        </button>
+      </template>
+    </AppNavBar>
 
     <div class="home__filter">
       <button class="home__list-btn pressable" @click="openListSheet">
@@ -298,14 +430,51 @@ onMounted(async () => {
           :key="String(t.id)"
           :task="t"
           :highlight="String(t.id) === highlightId"
+          :subtask-display="isRootExpanded(t) ? 'bar' : 'count'"
           @detail="goDetail"
           @toggle="onToggle"
           @remove="askDelete"
-        />
+        >
+          <!-- 树展开箭头：仅展开/折叠，不进入详情 -->
+          <template #leading>
+            <button
+              v-if="t.subtask_total > 0"
+              class="home__chevron pressable"
+              type="button"
+              :aria-expanded="isRootExpanded(t)"
+              :aria-label="isRootExpanded(t) ? `收起「${t.title}」的子任务` : `展开「${t.title}」的子任务`"
+              @click.stop="toggleRoot(t)"
+            >
+              <AppIcon
+                name="chevron-right"
+                :size="12"
+                :class="['home__arrow', { 'home__arrow--open': isRootExpanded(t) }]"
+                color="#6B7080"
+              />
+            </button>
+            <span v-else class="home__chevron home__chevron--empty" aria-hidden="true" />
+          </template>
+
+          <template #subtree>
+            <div v-show="isRootExpanded(t)">
+              <p v-if="treeLoading[String(t.id)]" class="home__tree-hint">加载中…</p>
+              <p v-else-if="treeError[String(t.id)]" class="home__tree-hint home__tree-hint--error">
+                {{ treeError[String(t.id)] }}
+                <button class="home__tree-retry pressable" type="button" @click="loadLevel1(t)">重试</button>
+              </p>
+              <!-- 展开子树：更深层级由树内部继续懒加载 -->
+              <SubtaskTree
+                v-if="treeData[String(t.id)]"
+                :key="filterKey"
+                :nodes="treeData[String(t.id)]"
+                :root-id="t.id"
+                @changed="onTreeChanged(t)"
+              />
+            </div>
+          </template>
+        </TaskListItem>
       </ul>
     </div>
-
-    <AppFAB @click="router.push('/tasks/new')" />
 
     <AppActionSheet
       :visible="listSheetVisible"
@@ -328,25 +497,33 @@ onMounted(async () => {
       @select="confirmDelete"
       @cancel="deleteSheetVisible = false"
     />
+
+    <!-- 带子任务的根任务：删除前明示级联后果 -->
+    <AppModal
+      :visible="cascadeDeleteVisible"
+      title="删除任务？"
+      :text="`该任务下还有子任务，将一并删除子任务及其关联的日程安排，且不可恢复。`"
+      confirm-text="删除"
+      danger
+      @confirm="confirmDelete"
+      @cancel="cascadeDeleteVisible = false"
+    />
+
+    <!-- 级联完成确认 -->
+    <AppModal
+      :visible="!!cascade"
+      :title="cascade ? `标记「${cascade.task.title}」完成？` : ''"
+      :text="cascade ? `还有 ${cascade.count} 个子任务未完成，标记后将一并标记完成。` : ''"
+      confirm-text="全部完成"
+      @confirm="confirmCascade"
+      @cancel="cascade = null"
+    />
   </div>
 </template>
 
 <style scoped>
 .home {
   position: relative;
-}
-.home__head {
-  display: flex;
-  align-items: center;
-  height: calc(var(--navbar-height) + var(--safe-top));
-  padding: var(--safe-top) var(--sp-4) 0;
-  background: var(--bg-card);
-}
-.home__title {
-  flex: 1;
-  font-size: var(--font-heading-m);
-  line-height: var(--font-heading-m-lh);
-  font-weight: 600;
 }
 .home__icon-btn {
   display: flex;
@@ -398,6 +575,39 @@ onMounted(async () => {
 }
 .home__list {
   background: var(--bg-card);
-  padding-bottom: var(--sp-8);
+  padding-bottom: calc(var(--safe-bottom) + 96px);
+}
+/* 树展开箭头热区 44pt；负外边距保证与复选框热区不重叠 */
+.home__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-left: -12px;
+  flex-shrink: 0;
+}
+.home__chevron--empty {
+  pointer-events: none;
+}
+.home__arrow {
+  transition: transform 150ms ease;
+}
+.home__arrow--open {
+  transform: rotate(90deg);
+}
+.home__tree-hint {
+  padding: var(--sp-1) var(--sp-4);
+  font-size: var(--font-caption);
+  color: var(--text-secondary);
+}
+.home__tree-hint--error {
+  color: var(--color-danger);
+}
+.home__tree-retry {
+  min-height: 32px;
+  padding: 0 var(--sp-1);
+  font-size: var(--font-caption);
+  color: var(--color-primary);
 }
 </style>

@@ -3,18 +3,21 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as eventApi from '@/api/events'
 import { errorText } from '@/api/client'
-import type { CalendarEvent, MonthDayCount } from '@/types'
+import type { CalendarEvent, MonthDayCount, Occurrence } from '@/types'
 import { formatEventRange, formatDayTitle, formatMonthTitle, fromDateKey, toDateKey } from '@/utils/time'
-import AppFAB from '@/components/AppFAB.vue'
+import AppIcon from '@/components/AppIcon.vue'
 import MonthGrid from '@/components/calendar/MonthGrid.vue'
 import EventTypeTag from '@/components/calendar/EventTypeTag.vue'
+import RecurrenceBadge from '@/components/calendar/RecurrenceBadge.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import StateError from '@/components/StateError.vue'
 import { useEventSyncStore } from '@/stores/eventSync'
+import { useDrawerStore } from '@/stores/drawer'
 
 const router = useRouter()
 const route = useRoute()
 const eventSync = useEventSyncStore()
+const drawer = useDrawerStore()
 
 /** 预览区首屏展示条数，超出折叠 */
 const PREVIEW_LIMIT = 3
@@ -122,6 +125,35 @@ function goDay(): void {
   router.push(`/calendar/day?date=${selectedDate.value}`)
 }
 
+/* ---- v0.2.0：循环实例识别与跳转 ---- */
+
+function occurrenceOf(e: CalendarEvent): Occurrence | null {
+  const occ = e as Occurrence
+  return occ.occurrence_key ? occ : null
+}
+
+function isModified(e: CalendarEvent): boolean {
+  return occurrenceOf(e)?.override_state === 'modified'
+}
+
+/** 同系列实例 id 相同，列表 key 需叠加 occurrence_key */
+function rowKey(e: CalendarEvent): string {
+  return `${e.id}-${occurrenceOf(e)?.occurrence_key ?? ''}`
+}
+
+/** 循环实例进实例详情；单次日程仍沿用「进当日视图」的行为 */
+function onEventClick(e: CalendarEvent): void {
+  const occ = occurrenceOf(e)
+  if (occ) {
+    router.push({
+      path: `/calendar/${occ.series_id ?? e.id}`,
+      query: { occurrence_key: occ.occurrence_key },
+    })
+    return
+  }
+  goDay()
+}
+
 function goNew(): void {
   router.push(`/calendar/new?date=${selectedDate.value}`)
 }
@@ -172,6 +204,9 @@ onMounted(() => {
 <template>
   <div class="page month">
     <header class="month__head">
+      <button class="month__menu pressable" aria-label="打开菜单" @click="drawer.openDrawer('hamburger')">
+        <AppIcon name="list" :size="22" />
+      </button>
       <button class="month__nav pressable" aria-label="上一月" @click="shiftMonth(-1)">‹</button>
       <h1 class="month__title">{{ monthTitle }}</h1>
       <button v-if="!inCurrentMonth" class="month__today pressable" @click="goToday">今天</button>
@@ -210,14 +245,26 @@ onMounted(() => {
 
       <template v-else>
         <ul class="month__list">
-          <li v-for="e in visibleEvents" :key="String(e.id)">
-            <button class="month__row pressable" @click="goDay">
+          <li v-for="e in visibleEvents" :key="rowKey(e)">
+            <button
+              class="month__row pressable"
+              :aria-label="`${formatEventRange(e)} ${e.title}`"
+              @click="onEventClick(e)"
+            >
               <span class="month__row-time">{{ formatEventRange(e) }}</span>
+              <!-- 循环身份：repeat 图标 + 「已调整」胶囊，不只靠颜色 -->
+              <AppIcon
+                v-if="occurrenceOf(e)"
+                name="repeat"
+                :size="14"
+                color="var(--color-primary)"
+              />
               <span
                 class="month__row-title ellipsis"
                 :class="{ 'month__row-title--done': e.task?.status === 'completed' }"
                 >{{ e.title }}</span
               >
+              <RecurrenceBadge v-if="isModified(e)" kind="modified" />
               <EventTypeTag :type="e.event_type" />
             </button>
           </li>
@@ -227,8 +274,6 @@ onMounted(() => {
         </button>
       </template>
     </div>
-
-    <AppFAB label="新建日程" @click="goNew" />
   </div>
 </template>
 
@@ -243,6 +288,15 @@ onMounted(() => {
   height: calc(var(--navbar-height) + var(--safe-top));
   padding: var(--safe-top) var(--sp-4) 0;
   background: var(--bg-card);
+}
+.month__menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -12px;
+  color: var(--text-primary);
 }
 .month__nav {
   display: flex;

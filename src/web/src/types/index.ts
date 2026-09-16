@@ -52,6 +52,26 @@ export interface Task {
   completed_at: string | null
   /** 该任务关联的任务日程数量（详情接口返回，v0.1.0） */
   event_count?: number
+  /* ----- v0.2.0 子任务 ----- */
+  /** 父任务 ID（null = 根任务） */
+  parent_id: number | null
+  /** 相对本次子树查询根的深度（根 = 1） */
+  depth: number
+  /** 直接子任务总数 */
+  subtask_total: number
+  /** 直接子任务已完成数 */
+  subtask_completed: number
+  /** 写操作响应：被自动恢复为未完成的父任务 */
+  revived_parent?: { id: number; title: string } | null
+}
+
+/** v0.2.0：对话卡片中的子任务组（根任务 + 扁平节点） */
+export interface SubtaskGroup {
+  root_task_id: number
+  nodes: Task[]
+  /** 历史卡片刷新时置位：根任务已删除，整组渲染「该任务已删除」占位 */
+  missing?: boolean
+  missing_reason?: 'deleted'
 }
 
 /* ---------------- 日程（v0.1.0） ---------------- */
@@ -60,6 +80,49 @@ export interface Task {
 export type EventType = 'normal' | 'task'
 export type EventSource = 'manual' | 'chat'
 export type ConflictLevel = 'none' | 'overlap' | 'all_day'
+
+/* ---------------- 循环日程（v0.2.0） ---------------- */
+
+export type RecurFreq = 'daily' | 'weekly' | 'monthly' | 'yearly'
+export type RecurEndType = 'never' | 'count' | 'until'
+export type MonthRuleType = 'day_of_month' | 'day_of_week'
+/** 写操作作用域：整条系列 / 仅本次 / 本次及以后 */
+export type EventScope = 'series' | 'this' | 'following'
+/** 实例覆盖状态 */
+export type OverrideState = 'normal' | 'modified' | 'cancelled'
+
+export interface MonthRule {
+  type: MonthRuleType
+  /** day_of_month：1..31（超月落到月末） */
+  day?: number
+  /** day_of_week：第 N 个（-1 = 最后一个） */
+  ord?: -1 | 1 | 2 | 3 | 4
+  /** day_of_week：0=周日 .. 6=周六 */
+  weekday?: number
+}
+
+export interface RecurrenceRule {
+  freq: RecurFreq
+  /** 1..99，默认 1 */
+  interval: number
+  /** 仅 weekly：0..6（0=周日） */
+  by_week_days?: number[]
+  /** 仅 monthly */
+  month_rule?: MonthRule
+  end_type: RecurEndType
+  /** end_type=count：1..730 */
+  count?: number
+  /** end_type=until：YYYY-MM-DD（用户时区日期，含当天） */
+  until?: string
+}
+
+/** 循环冲突按日期分组（4009 body） */
+export interface ConflictDateGroup {
+  date: string
+  target_start: string
+  target_end: string
+  conflicts: EventConflictBrief[]
+}
 
 /** 任务日程内嵌的任务摘要（实时数据） */
 export interface EventTaskBrief {
@@ -89,10 +152,38 @@ export interface CalendarEvent {
   updated_at: string
   /** 任务日程内嵌任务对象；普通日程为 null */
   task: EventTaskBrief | null
+  /* ----- v0.2.0 循环 ----- */
+  /** 重复规则；单次日程为 null */
+  recurrence?: RecurrenceRule | null
+  /** 规则人话摘要（服务端下发，端上不自行拼装） */
+  recurrence_summary?: string | null
+  /** 下一次实例时间 */
+  next_occurrence?: string | null
+  /** 「本次及以后」派生系列的溯源 */
+  derived_from_event_id?: number | null
   conflicts?: EventConflictBrief[]
   conflict_level?: ConflictLevel
   /** 历史卡片刷新时标记：该日程已被删除，应渲染占位而非陈旧快照 */
   missing?: boolean
+  /** 占位原因（deleted 已删除 / not_occurring 该次安排已不再发生） */
+  missing_reason?: 'deleted' | 'not_occurring'
+}
+
+/** 展开实例读模型：id = 系列 id，occurrence_key 为实例身份键（原始开始时间 UTC） */
+export interface Occurrence extends CalendarEvent {
+  series_id: number
+  occurrence_key: string
+  override_state: OverrideState
+}
+
+/** 系列详情（含实例分页） */
+export interface SeriesDetail extends CalendarEvent {
+  recurrence: RecurrenceRule
+  recurrence_summary: string
+  next_occurrence: string | null
+  total_count: number
+  occurrences: { upcoming: Occurrence[]; past: Occurrence[] }
+  next_cursor: string | null
 }
 
 /** 冲突提示用的精简结构 */
@@ -104,6 +195,9 @@ export interface EventConflictBrief {
   end_at: string
   all_day: boolean
   location: string | null
+  /** 冲突对象是循环实例时附带系列与实例身份 */
+  series_id?: number | null
+  occurrence_key?: string | null
 }
 
 /** 月视图聚合项 */
@@ -111,6 +205,8 @@ export interface MonthDayCount {
   date: string
   normal: number
   task: number
+  /** v0.2.0：其中循环实例数（含已调整，不含已取消） */
+  recurring: number
 }
 
 export interface EventPayload {
@@ -123,6 +219,12 @@ export interface EventPayload {
   all_day?: boolean
   start_at: string
   end_at: string
+  /** v0.2.0：重复规则（仅普通日程） */
+  recurrence?: RecurrenceRule | null
+  /** v0.2.0：写操作作用域（默认 series） */
+  scope?: EventScope
+  /** v0.2.0：实例身份键（scope=this/following 必填） */
+  occurrence_key?: string
   /** 冲突二次提交标记 */
   confirm_conflict?: boolean
 }
@@ -136,6 +238,10 @@ export interface EventQuery {
   event_type?: EventType
   sort?: 'start_asc' | 'start_desc'
   limit?: number
+  /** v0.2.0：只看某个系列 / 只看循环 / 含已取消 */
+  series_id?: string | number
+  recurring_only?: boolean
+  include_cancelled?: boolean
 }
 
 /** 冲突二次提交所需的原始参数（用于「仍要保存」） */
@@ -186,6 +292,12 @@ export interface CardsBlock {
   tasks: Task[]
   /** 日程卡片（v0.1.0） */
   events?: CalendarEvent[]
+  /** v0.2.0：循环系列卡片（每系列一条） */
+  series?: SeriesDetail[]
+  /** v0.2.0：循环实例卡片 */
+  occurrences?: Occurrence[]
+  /** v0.2.0：子任务组卡片 */
+  subtask_groups?: SubtaskGroup[]
 }
 
 export interface ClarifyBlock {
@@ -205,6 +317,20 @@ export interface ConflictBlock {
   conflict_level: ConflictLevel
   /** 是否为全天安排导致的弱化提示 */
   message?: string
+  /* ----- v0.2.0 循环冲突按日期分组 ----- */
+  conflict_dates?: ConflictDateGroup[]
+  conflict_dates_total?: number
+  conflict_total?: number
+}
+
+/** v0.2.0：循环作用域澄清块（点选后作为结构化消息回传） */
+export interface ScopeBlock {
+  type: 'scope'
+  tool: 'update_event' | 'delete_event'
+  question: string
+  options: EventScope[]
+  ref: { series_id: number; occurrence_key?: string | null }
+  recommended: EventScope
 }
 
 /** 确认条动作类型 */
@@ -214,6 +340,10 @@ export type ConfirmAction =
   | 'batch_update_tasks'
   | 'delete_event'
   | 'batch_update_events'
+  /** v0.2.0：删除整条循环系列 */
+  | 'delete_event_series'
+  /** v0.2.0：级联完成父任务及其未完成子任务 */
+  | 'complete_task_cascade'
   | string
 
 export interface ConfirmBlock {
@@ -238,6 +368,7 @@ export type MessageBlock =
   | CardsBlock
   | ClarifyBlock
   | ConflictBlock
+  | ScopeBlock
   | ConfirmBlock
   | ErrorBlock
 

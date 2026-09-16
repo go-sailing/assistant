@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { CalendarEvent, ChatMessage, ConfirmBlock, Task } from '@/types'
+import type {
+  CalendarEvent,
+  ChatMessage,
+  ConfirmBlock,
+  EventScope,
+  Occurrence,
+  ScopeBlock,
+  Task,
+} from '@/types'
 import AppActionSheet from '../AppActionSheet.vue'
 import AppIcon from '../AppIcon.vue'
 import LoadingDots from '../LoadingDots.vue'
@@ -16,6 +24,8 @@ const emit = defineEmits<{
   (e: 'event-task', task: Task): void
   (e: 'event-toggle', event: CalendarEvent): void
   (e: 'event-pick', message: ChatMessage, blockIndex: number, event: CalendarEvent): void
+  (e: 'occurrence-restore', occurrence: Occurrence): void
+  (e: 'scope-pick', message: ChatMessage, blockIndex: number, block: ScopeBlock, scope: EventScope): void
   (e: 'conflict-change'): void
   (e: 'conflict-force'): void
   (e: 'confirm', block: ConfirmBlock): void
@@ -73,6 +83,8 @@ function onSheetSelect(v: string): void {
           @event-task="emit('event-task', $event)"
           @event-toggle="emit('event-toggle', $event)"
           @event-pick="(i, e) => emit('event-pick', message, i, e)"
+          @occurrence-restore="emit('occurrence-restore', $event)"
+          @scope-pick="(i, b, s) => emit('scope-pick', message, i, b, s)"
           @conflict-change="emit('conflict-change')"
           @conflict-force="emit('conflict-force')"
           @confirm="emit('confirm', $event)"

@@ -1,10 +1,21 @@
-import type { TaskDTO } from '../task/types';
-import type { EventConflictBrief, EventDTO } from '../event/types';
+import type { SubtaskGroup, TaskDTO } from '../task/types';
+import type { EventConflictBrief, EventDTO, OccurrenceDTO, SeriesDTO } from '../event/types';
+import type { ConflictDateGroup, EventScope } from '../event/recurrence/types';
 
 /** 助手消息的结构化内容块，历史回看与实时流式复用同一套渲染模型 */
 export type MessageBlock =
   | { type: 'text'; text: string }
-  | { type: 'cards'; tasks: TaskDTO[]; events?: EventDTO[] }
+  | {
+      type: 'cards';
+      tasks: TaskDTO[];
+      events?: EventDTO[];
+      /** v0.2.0：循环系列卡片（每系列一条） */
+      series?: SeriesDTO[];
+      /** v0.2.0：循环实例卡片 */
+      occurrences?: OccurrenceDTO[];
+      /** v0.2.0：子任务组卡片（根任务 + 扁平节点） */
+      subtask_groups?: SubtaskGroup[];
+    }
   | {
       type: 'conflict';
       /** 触发冲突的工具名，便于客户端提示 */
@@ -12,6 +23,10 @@ export type MessageBlock =
       conflicts: EventConflictBrief[];
       conflict_level: string;
       message?: string;
+      /** v0.2.0：循环冲突按日期分组（scope=series） */
+      conflict_dates?: ConflictDateGroup[];
+      conflict_dates_total?: number;
+      conflict_total?: number;
     }
   | {
       type: 'clarify';
@@ -22,6 +37,15 @@ export type MessageBlock =
       /** 候选日程（v0.1.0） */
       events?: EventDTO[];
       intent?: string;
+    }
+  | {
+      /** v0.2.0：循环作用域澄清块（点选后作为结构化消息回传） */
+      type: 'scope';
+      tool: 'update_event' | 'delete_event';
+      question: string;
+      options: EventScope[];
+      ref: { series_id: number; occurrence_key?: string | null };
+      recommended: EventScope;
     }
   | {
       type: 'confirm';

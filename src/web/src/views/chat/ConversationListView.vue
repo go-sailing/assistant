@@ -11,12 +11,14 @@ import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
 import { useChatStore } from '@/stores/chat'
+import { useDrawerStore } from '@/stores/drawer'
 import { useToastStore } from '@/stores/toast'
 import { formatListTime } from '@/utils/time'
 
 const router = useRouter()
 const toast = useToastStore()
 const chat = useChatStore()
+const drawer = useDrawerStore()
 
 const conversations = ref<Conversation[]>([])
 const loading = ref(true)
@@ -116,6 +118,9 @@ onMounted(load)
 <template>
   <div class="page convs">
     <header class="convs__head">
+      <button class="convs__menu pressable" aria-label="打开菜单" @click="drawer.openDrawer('hamburger')">
+        <AppIcon name="list" :size="22" />
+      </button>
       <h1 class="convs__title">助手</h1>
       <button
         class="convs__add pressable"
@@ -194,6 +199,15 @@ onMounted(load)
   height: calc(var(--navbar-height) + var(--safe-top));
   padding: var(--safe-top) var(--sp-4) 0;
   background: var(--bg-card);
+}
+.convs__menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -12px;
+  color: var(--text-primary);
 }
 .convs__title {
   flex: 1;

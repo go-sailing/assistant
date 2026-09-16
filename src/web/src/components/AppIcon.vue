@@ -46,6 +46,9 @@ const ICONS: Record<string, string> = {
   allday: `<g ${STROKE}><path d="M6.5 4.5h8l3 3v12a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M14 4.5v3.5h3.5"/><path d="M8.5 13h7M8.5 16.5h4"/></g>`,
   conflict: `<g ${STROKE}><path d="M12 4.5 21 19.5H3z"/><path d="M12 10.2v4"/><circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"/></g>`,
   'chevron-left': `<g ${STROKE}><path d="M15 4.5 7.5 12 15 19.5"/></g>`,
+  // v0.2.0 循环日程图标
+  repeat: `<g ${STROKE}><path d="M4 9.5A4.5 4.5 0 0 1 8.5 5h8.2"/><path d="M14.5 2.5 17.5 5l-3 2.5"/><path d="M20 14.5A4.5 4.5 0 0 1 15.5 19H7.3"/><path d="M9.5 21.5 6.5 19l3-2.5"/></g>`,
+  undo: `<g ${STROKE}><path d="M4 9.5h9.5a5.5 5.5 0 1 1 0 11H8"/><path d="M7.5 5.5 4 9.5l3.5 4"/></g>`,
 }
 
 const inner = computed(() => ICONS[props.name] || '')

@@ -14,10 +14,16 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'select', date: string): void }>()
 
-const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六']
+/** v0.2.0：一周自周一开始（与 weekly 规则的周起始一致） */
+const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const WEEK_FULL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-type Mark = 'normal' | 'task' | 'muted'
+/** 标记点形态：实心点（单次）/ 空心环（循环）/ 紫点（任务日程）；环心点表示混合 */
+interface CellMark {
+  kind: 'single' | 'ring' | 'task'
+  /** 空心环中心点：primary 蓝心 / link 紫心 */
+  core?: 'primary' | 'link'
+}
 
 const days = computed(() => buildMonthGrid(props.year, props.month))
 const todayKey = toDateKey(new Date())
@@ -36,8 +42,7 @@ interface CellInfo {
   isToday: boolean
   isSelected: boolean
   total: number
-  hasTask: boolean
-  marks: Mark[]
+  marks: CellMark[]
   label: string
 }
 
@@ -47,17 +52,31 @@ const cells = computed<CellInfo[]>(() =>
     const c = countMap.value.get(key)
     const normal = c?.normal ?? 0
     const task = c?.task ?? 0
+    const recurring = c?.recurring ?? 0
+    // normal 已含循环实例，单次数量需要扣减后再判断形态
+    const single = Math.max(0, normal - recurring)
     const total = normal + task
-    // 两类都有（或数量较多）时用聚合三点的形式，避免单点无法表达混合信息
-    const marks: Mark[] =
-      (normal > 0 && task > 0) || total >= 3
-        ? ['normal', 'task', 'muted']
-        : normal > 0
-          ? ['normal']
-          : task > 0
-            ? ['task']
-            : []
+
+    const marks: CellMark[] = []
+    if (recurring > 0) {
+      // 含循环实例：空心环；与其他类型同日时用环心点聚合
+      marks.push({
+        kind: 'ring',
+        core: task > 0 ? 'link' : single > 0 ? 'primary' : undefined,
+      })
+    } else {
+      // 无循环：按类型逐点展示，最多 3 点（避免单点无法表达混合信息）
+      const rest: CellMark[] = [
+        ...Array.from({ length: single }, () => ({ kind: 'single' as const })),
+        ...Array.from({ length: task }, () => ({ kind: 'task' as const })),
+      ]
+      marks.push(...rest.slice(0, 3))
+    }
+
     const isToday = key === todayKey
+    const types = [recurring > 0 ? '含循环日程' : '', task > 0 ? '含任务日程' : '']
+      .filter(Boolean)
+      .join('与')
     return {
       key,
       day: d.getDate(),
@@ -65,11 +84,10 @@ const cells = computed<CellInfo[]>(() =>
       isToday,
       isSelected: key === props.selected,
       total,
-      hasTask: task > 0,
       marks,
       label: `${d.getMonth() + 1}月${d.getDate()}日 ${WEEK_FULL[d.getDay()]}${
         isToday ? '，今天' : ''
-      }，${total} 个日程${task > 0 ? '，含任务日程' : ''}`,
+      }，${total} 个日程${types ? `，${types}` : ''}`,
     }
   })
 )
@@ -98,7 +116,12 @@ const cells = computed<CellInfo[]>(() =>
             >{{ cell.day }}</span
           >
           <span class="grid__marks" aria-hidden="true">
-            <span v-for="(m, i) in cell.marks" :key="i" class="grid__dot" :class="`grid__dot--${m}`" />
+            <span
+              v-for="(m, i) in cell.marks"
+              :key="i"
+              class="grid__dot"
+              :class="[`grid__dot--${m.kind}`, m.core ? `grid__dot--core-${m.core}` : '']"
+            />
           </span>
         </button>
       </li>
@@ -172,13 +195,33 @@ const cells = computed<CellInfo[]>(() =>
   height: 5px;
   border-radius: 50%;
 }
-.grid__dot--normal {
+/* 单次日程：实心蓝点 */
+.grid__dot--single {
   background: var(--color-primary);
 }
+/* 任务日程：实心紫点（沿用 v0.1.0） */
 .grid__dot--task {
   background: var(--color-link);
 }
-.grid__dot--muted {
-  background: var(--text-disabled);
+/* 循环实例：空心圆环，环心点表示同日还有单次或任务日程 */
+.grid__dot--ring {
+  position: relative;
+  background: transparent;
+  border: 1.5px solid var(--color-primary);
+}
+.grid__dot--core-primary::after,
+.grid__dot--core-link::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--color-primary);
+}
+.grid__dot--core-link::after {
+  background: var(--color-link);
 }
 </style>

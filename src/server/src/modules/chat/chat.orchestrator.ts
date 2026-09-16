@@ -2,12 +2,13 @@ import { logger } from '../../common/logger';
 import { AppError } from '../../common/errors';
 import { config } from '../../config';
 import { buildSystemPrompt } from '../../llm/prompt';
-import { TOOL_DEFINITIONS, isDangerousTool, isKnownTool } from '../../llm/tools';
+import { TOOL_DEFINITIONS, isDangerousCall, isKnownTool } from '../../llm/tools';
 import { llmProvider } from '../../llm/deepseek';
 import { LlmError, type LlmMessage } from '../../llm/types';
 import { toolExecutor, type ToolResult } from '../../tools/executor';
-import type { TaskDTO } from '../task/types';
-import type { EventDTO } from '../event/types';
+import type { SubtaskGroup, TaskDTO } from '../task/types';
+import type { EventDTO, OccurrenceDTO, SeriesDTO } from '../event/types';
+import type { ConflictDateGroup } from '../event/recurrence/types';
 import {
   conversationService,
   pendingActionService,
@@ -30,7 +31,7 @@ export interface ChatContext {
   content: string;
   clientMsgId?: string;
   timezoneOffsetMinutes: number;
-  /** 客户端 IANA 时区（用于日程按自然日查询） */
+  /** 客户端 IANA 时区（用于日程按自然日查询与循环规则解释） */
   timezone?: string;
   traceId?: string;
 }
@@ -45,23 +46,68 @@ function tasksForModel(tasks?: TaskDTO[]) {
     priority: t.priority,
     due_at: t.due_at,
     list: t.list_name,
+    // v0.2.0：子任务关系与进度（数据最小化：不含备注全文）
+    parent_id: t.parent_id,
+    depth: t.depth,
+    subtask_progress: t.subtask_total > 0 ? `${t.subtask_completed}/${t.subtask_total}` : undefined,
   }));
 }
 
 /** 喂回模型的日程摘要 */
 function eventsForModel(events?: EventDTO[]) {
   if (!events || events.length === 0) return undefined;
-  return events.map((e) => ({
-    id: e.id,
-    type: e.event_type,
-    title: e.title,
-    task_id: e.task_id,
-    start_at: e.start_at,
-    end_at: e.end_at,
-    all_day: e.all_day,
-    location: e.location,
-    note: e.note,
-    task_status: e.task?.status,
+  return events.map((e) => {
+    const base = {
+      id: e.id,
+      type: e.event_type,
+      title: e.title,
+      task_id: e.task_id,
+      start_at: e.start_at,
+      end_at: e.end_at,
+      all_day: e.all_day,
+      location: e.location,
+      note: e.note,
+      task_status: e.task?.status,
+      recurrence_summary: e.recurrence_summary ?? undefined,
+    };
+    // 实例：额外给出身份键，模型后续 scope=this/following 必须原样回传
+    if ('occurrence_key' in e) {
+      const inst = e as OccurrenceDTO;
+      return {
+        ...base,
+        series_id: inst.series_id,
+        occurrence_key: inst.occurrence_key,
+        override_state: inst.override_state,
+      };
+    }
+    return base;
+  });
+}
+
+function seriesForModel(series?: SeriesDTO[]) {
+  if (!series || series.length === 0) return undefined;
+  return series.map((s) => ({
+    id: s.id,
+    title: s.title,
+    recurrence_summary: s.recurrence_summary,
+    next_occurrence: s.next_occurrence,
+    total_count: s.total_count,
+    all_day: s.all_day,
+    location: s.location,
+  }));
+}
+
+function subtaskGroupsForModel(groups?: SubtaskGroup[]) {
+  if (!groups || groups.length === 0) return undefined;
+  return groups.map((g) => ({
+    root_task_id: g.root_task_id,
+    nodes: g.nodes.map((n) => ({
+      id: n.id,
+      title: n.title,
+      status: n.status,
+      parent_id: n.parent_id,
+      depth: n.depth,
+    })),
   }));
 }
 
@@ -71,6 +117,9 @@ function toolResultForModel(result: ToolResult) {
     summary: result.summary,
     tasks: tasksForModel(result.tasks),
     events: eventsForModel(result.events),
+    series: seriesForModel(result.series),
+    occurrences: eventsForModel(result.occurrences),
+    subtask_groups: subtaskGroupsForModel(result.subtask_groups),
     list: result.data?.list,
     lists: result.data?.lists,
     // 冲突未确认：把冲突明细交给模型，必须先告知用户再决定是否二次提交
@@ -78,12 +127,22 @@ function toolResultForModel(result: ToolResult) {
     need_conflict_confirmation: result.data?.need_conflict_confirmation,
     conflict_level: result.data?.conflict_level,
     conflicts: result.data?.conflicts,
+    conflict_dates: result.data?.conflict_dates,
+    conflict_dates_total: result.data?.conflict_dates_total,
+    conflict_total: result.data?.conflict_total,
+    // v0.2.0：级联完成需用户确认；父任务自动恢复需在回复中告知
+    need_cascade_confirmation: result.data?.need_cascade_confirmation,
+    incomplete_descendant_count: result.data?.incomplete_descendant_count,
+    revived_parent: result.data?.revived_parent,
+    restored: result.data?.restored,
     error: result.error,
     // 失败时明确禁止重试同一调用，避免模型反复重试耗尽轮数
     hint: result.ok
       ? result.data?.need_conflict_confirmation
-        ? '这是冲突提示，不是失败。请先把冲突日程告知用户并询问如何处理；用户明确同意后才带 confirm_conflict=true 重试。'
-        : undefined
+        ? '这是冲突提示，不是失败。请先把冲突日程（或冲突日期与次数）告知用户并询问如何处理；用户明确同意后才带 confirm_conflict=true 重试。'
+        : result.data?.need_cascade_confirmation
+          ? '这是确认请求，不是失败。请先询问用户是否把未完成的子任务一起标记完成；用户同意后系统会代为执行，你无需再次调用工具。'
+          : undefined
       : '该工具调用已失败，不要用相同的参数重试。请向用户说明失败原因，或请求用户澄清后再试。',
   };
 }
@@ -204,6 +263,7 @@ export const chatOrchestrator = {
         });
 
         let clarifyBlock: Extract<MessageBlock, { type: 'clarify' }> | null = null;
+        let scopeBlock: Extract<MessageBlock, { type: 'scope' }> | null = null;
 
         for (const call of result.toolCalls) {
           const toolName = call.function.name;
@@ -235,8 +295,42 @@ export const chatOrchestrator = {
 
           emit('tool_call', { tool: toolName, arguments: parsedArgs.value });
 
+          // v0.2.0：循环实例的写操作未指定作用域 → 先澄清（默认「仅本次」），禁止默认整条
+          const scopeAsk = await toolExecutor.needsScopeClarification(
+            userId,
+            toolName,
+            parsedArgs.value,
+            {
+              conversationId,
+              traceId,
+              tzOffsetMinutes: ctx.timezoneOffsetMinutes,
+              timezone: ctx.timezone,
+            }
+          );
+          if (scopeAsk) {
+            scopeBlock = {
+              type: 'scope',
+              tool: scopeAsk.tool,
+              question: `「${scopeAsk.title}」是循环日程，这次操作要应用到哪一范围？`,
+              options: scopeAsk.options as Extract<MessageBlock, { type: 'scope' }>['options'],
+              ref: { series_id: scopeAsk.series_id, occurrence_key: null },
+              recommended: 'this',
+            };
+            emit('scope', scopeBlock);
+            llmMessages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({
+                ok: false,
+                error: 'need_scope_clarification',
+                hint: '这是循环日程，作用域不明确。请先询问用户「仅本次 / 本次及以后 / 整条系列」，用户回答后再带 scope 与 occurrence_key 重新调用。',
+              }),
+            });
+            continue;
+          }
+
           // 危险操作：不执行，先挂起等待用户确认（系统设计文档 4.1 / 4.5）
-          if (isDangerousTool(toolName)) {
+          if (isDangerousCall(toolName, parsedArgs.value)) {
             const action = await toolExecutor.prepare(userId, toolName, parsedArgs.value, {
               conversationId,
               traceId,
@@ -256,7 +350,11 @@ export const chatOrchestrator = {
             const confirmBlock: Extract<MessageBlock, { type: 'confirm' }> = {
               type: 'confirm',
               pending_action_id: pending.id,
-              action: toolName,
+              // 循环系列的整条删除用专用 action，前端文案与按钮区分于单次日程
+              action:
+                toolName === 'delete_event' && action.resolvedParams.scope === 'series'
+                  ? 'delete_event_series'
+                  : toolName,
               affected: action.affected,
               affected_events: action.affectedEvents ?? [],
               count: affectedCount,
@@ -320,13 +418,58 @@ export const chatOrchestrator = {
           if (!toolResult.ok) {
             toolFailures.push(toolResult.summary);
           }
+
+          // v0.2.0：父任务级联完成 → 落 pending 并出确认条（系统设计文档 6.3 / 8.4）
+          if (toolResult.ok && toolResult.data?.need_cascade_confirmation === true) {
+            const task = toolResult.data.task as TaskDTO | undefined;
+            const incomplete = (toolResult.data.incomplete_descendants as TaskDTO[] | undefined) ?? [];
+            const n = Number(toolResult.data.incomplete_descendant_count ?? incomplete.length);
+            if (task) {
+              const affected = [task, ...incomplete];
+              const pending = await pendingActionService.create({
+                conversationId,
+                userId,
+                toolName: 'update_task_status',
+                resolvedParams: { task_id: task.id, status: 'completed', cascade: true },
+                affected,
+                affectedEvents: [],
+              });
+              const confirmBlock: Extract<MessageBlock, { type: 'confirm' }> = {
+                type: 'confirm',
+                pending_action_id: pending.id,
+                action: 'complete_task_cascade',
+                affected,
+                affected_events: [],
+                count: affected.length,
+                description: `完成任务「${task.title}」，并同时完成 ${n} 个未完成的子任务`,
+              };
+              blocks.push(confirmBlock);
+              emit('confirm', confirmBlock);
+              if (!roundText.trim()) {
+                const hint = `「${task.title}」还有 ${n} 个未完成的子任务，是否一起标记完成？`;
+                emit('text_delta', { delta: hint });
+                blocks.push({ type: 'text', text: hint });
+                finalText = hint;
+              }
+              await this.persistAssistantMessage(conversationId, finalText, blocks);
+              emit('done', { finish_reason: 'awaiting_confirmation' });
+              return;
+            }
+          }
+
           const hasTasks = !!toolResult.tasks && toolResult.tasks.length > 0;
           const hasEvents = !!toolResult.events && toolResult.events.length > 0;
-          if (toolResult.ok && (hasTasks || hasEvents)) {
+          const hasSeries = !!toolResult.series && toolResult.series.length > 0;
+          const hasOccurrences = !!toolResult.occurrences && toolResult.occurrences.length > 0;
+          const hasGroups = !!toolResult.subtask_groups && toolResult.subtask_groups.length > 0;
+          if (toolResult.ok && (hasTasks || hasEvents || hasSeries || hasOccurrences || hasGroups)) {
             const cardsBlock: Extract<MessageBlock, { type: 'cards' }> = {
               type: 'cards',
               tasks: toolResult.tasks ?? [],
               events: toolResult.events ?? [],
+              series: toolResult.series ?? [],
+              occurrences: toolResult.occurrences ?? [],
+              subtask_groups: toolResult.subtask_groups ?? [],
             };
             blocks.push(cardsBlock);
             emit('cards', cardsBlock);
@@ -334,15 +477,23 @@ export const chatOrchestrator = {
 
           // 冲突未确认：以结构化冲突块呈现，由用户决定「仍要安排 / 换个时间」（UX 5.7）
           if (toolResult.ok && toolResult.data?.need_conflict_confirmation === true) {
-            const conflicts =
-              (toolResult.data.conflicts as Extract<MessageBlock, { type: 'conflict' }>['conflicts']) ?? [];
-            const level = String(toolResult.data.conflict_level ?? 'overlap');
+            const groups = (toolResult.data.conflict_dates as ConflictDateGroup[] | undefined) ?? [];
             const conflictBlock: Extract<MessageBlock, { type: 'conflict' }> = {
               type: 'conflict',
               tool: toolName,
-              conflicts,
-              conflict_level: level,
-              message: level === 'all_day' ? '该日期已有全天安排' : '这个时段已有安排',
+              conflicts:
+                (toolResult.data.conflicts as Extract<MessageBlock, { type: 'conflict' }>['conflicts']) ??
+                groups.flatMap((g) => g.conflicts),
+              conflict_level: String(toolResult.data.conflict_level ?? 'overlap'),
+              message:
+                groups.length > 0
+                  ? `未来 90 天内有 ${toolResult.data.conflict_dates_total ?? groups.length} 个日期与已有安排冲突`
+                  : String(toolResult.data.conflict_level) === 'all_day'
+                    ? '该日期已有全天安排'
+                    : '这个时段已有安排',
+              conflict_dates: groups,
+              conflict_dates_total: Number(toolResult.data.conflict_dates_total ?? groups.length),
+              conflict_total: Number(toolResult.data.conflict_total ?? 0),
             };
             blocks.push(conflictBlock);
             emit('conflict', conflictBlock);
@@ -354,12 +505,14 @@ export const chatOrchestrator = {
           });
         }
 
-        if (clarifyBlock) {
-          blocks.push(clarifyBlock);
-          if (!roundText.trim()) {
-            emit('text_delta', { delta: clarifyBlock.question });
-            blocks.push({ type: 'text', text: clarifyBlock.question });
-            finalText = clarifyBlock.question;
+        if (clarifyBlock || scopeBlock) {
+          if (clarifyBlock) blocks.push(clarifyBlock);
+          if (scopeBlock) blocks.push(scopeBlock);
+          const question = clarifyBlock?.question ?? scopeBlock?.question ?? '';
+          if (!roundText.trim() && question) {
+            emit('text_delta', { delta: question });
+            blocks.push({ type: 'text', text: question });
+            finalText = question;
           }
           await this.persistAssistantMessage(conversationId, finalText, blocks);
           emit('done', { finish_reason: 'clarify' });
@@ -435,8 +588,18 @@ export const chatOrchestrator = {
       const tasks = result.tasks && result.tasks.length > 0 ? result.tasks : result.events ? [] : affectedTasks;
       const events =
         result.events && result.events.length > 0 ? result.events : result.tasks ? [] : affectedEvents;
-      if (tasks.length > 0 || events.length > 0) {
-        blocks.push({ type: 'cards', tasks, events });
+      const hasSeries = !!result.series && result.series.length > 0;
+      const hasOccurrences = !!result.occurrences && result.occurrences.length > 0;
+      const hasGroups = !!result.subtask_groups && result.subtask_groups.length > 0;
+      if (tasks.length > 0 || events.length > 0 || hasSeries || hasOccurrences || hasGroups) {
+        blocks.push({
+          type: 'cards',
+          tasks,
+          events,
+          series: result.series ?? [],
+          occurrences: result.occurrences ?? [],
+          subtask_groups: result.subtask_groups ?? [],
+        });
       }
       blocks.unshift({ type: 'text', text: `${result.summary}。` });
     } else {
@@ -459,6 +622,13 @@ export const chatOrchestrator = {
     const action = await pendingActionService.getOwned(userId, conversationId, ctx.pendingActionId);
     if (action.status === 'pending') {
       await pendingActionService.markStatus(action.id, 'canceled');
+    }
+    // 埋点：级联完成确认的取消率（系统设计文档 9.2）
+    if (action.tool_name === 'update_task_status') {
+      logger.info('task_cascade_complete_canceled', {
+        user_id: userId,
+        conversation_id: conversationId,
+      });
     }
 
     const blocks: MessageBlock[] = [{ type: 'text', text: '好的，已取消该操作，任务数据未做任何修改。' }];
@@ -492,7 +662,13 @@ export const chatOrchestrator = {
           emit('text_delta', { delta: block.text });
           break;
         case 'cards':
-          emit('cards', { tasks: block.tasks, events: block.events ?? [] });
+          emit('cards', {
+            tasks: block.tasks,
+            events: block.events ?? [],
+            series: block.series ?? [],
+            occurrences: block.occurrences ?? [],
+            subtask_groups: block.subtask_groups ?? [],
+          });
           break;
         case 'clarify':
           emit('clarify', {
@@ -500,6 +676,9 @@ export const chatOrchestrator = {
             candidates: block.kind === 'event' ? [] : block.candidates,
             events: block.events ?? [],
           });
+          break;
+        case 'scope':
+          emit('scope', block);
           break;
         case 'confirm': {
           // 仅当待确认动作仍然有效时才重放确认条，否则会造成误解

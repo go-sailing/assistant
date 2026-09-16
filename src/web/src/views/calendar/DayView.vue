@@ -4,11 +4,13 @@ import { useRoute, useRouter } from 'vue-router'
 import * as eventApi from '@/api/events'
 import * as taskApi from '@/api/tasks'
 import { errorText } from '@/api/client'
-import type { CalendarEvent } from '@/types'
+import type { CalendarEvent, EventScope, Occurrence } from '@/types'
 import { formatClock, formatDayTitle, fromDateKey, toDateKey } from '@/utils/time'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AppModal from '@/components/AppModal.vue'
 import EventAgendaItem from '@/components/calendar/EventAgendaItem.vue'
+import ScopeSheet from '@/components/calendar/ScopeSheet.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
@@ -28,6 +30,11 @@ const error = ref('')
 const refreshing = ref(false)
 const actionEvent = ref<CalendarEvent | null>(null)
 const deleteSheetVisible = ref(false)
+/** v0.2.0：循环实例的左滑操作先经作用域 Sheet */
+const actionOccurrence = ref<Occurrence | null>(null)
+const scopeVisible = ref(false)
+const scopeMode = ref<'edit' | 'delete'>('edit')
+const seriesConfirmVisible = ref(false)
 
 const dateKey = computed(() =>
   typeof route.query.date === 'string' && route.query.date ? route.query.date : toDateKey(new Date())
@@ -122,11 +129,92 @@ function goBack(): void {
 }
 
 function goDetail(ev: CalendarEvent): void {
+  const occ = occurrenceOf(ev)
+  if (occ) {
+    router.push({
+      path: `/calendar/${occ.series_id ?? ev.id}`,
+      query: { occurrence_key: occ.occurrence_key },
+    })
+    return
+  }
   router.push(`/calendar/${ev.id}`)
 }
 
 function goEdit(ev: CalendarEvent): void {
+  const occ = occurrenceOf(ev)
+  if (occ) {
+    // 循环实例的编辑必须先选作用域（默认仅本次）
+    actionOccurrence.value = occ
+    scopeMode.value = 'edit'
+    scopeVisible.value = true
+    return
+  }
   router.push(`/calendar/${ev.id}/edit`)
+}
+
+/** 同系列实例 id 相同，列表 key 需叠加 occurrence_key */
+function rowKey(ev: CalendarEvent): string {
+  return `${ev.id}-${occurrenceOf(ev)?.occurrence_key ?? ''}`
+}
+
+function occurrenceOf(ev: CalendarEvent): Occurrence | null {
+  const occ = ev as Occurrence
+  return occ.occurrence_key ? occ : null
+}
+
+/** 作用域选定后的分流：编辑进表单；仅取消本次直接执行；整条走二次确认 */
+function onScopeSelect(scope: EventScope): void {
+  const occ = actionOccurrence.value
+  scopeVisible.value = false
+  if (!occ) return
+  if (scopeMode.value === 'edit') {
+    const query: Record<string, string> = { scope }
+    if (scope !== 'series') query.occurrence_key = occ.occurrence_key
+    router.push({ path: `/calendar/${occ.series_id ?? occ.id}/edit`, query })
+    actionOccurrence.value = null
+    return
+  }
+  if (scope === 'this') {
+    void cancelOccurrence()
+    return
+  }
+  seriesConfirmVisible.value = true
+}
+
+/** 仅取消本次：行从当日视图消失，可在系列详情恢复 */
+async function cancelOccurrence(): Promise<void> {
+  const occ = actionOccurrence.value
+  if (!occ) return
+  try {
+    await eventApi.deleteEvent(occ.series_id ?? occ.id, {
+      scope: 'this',
+      occurrenceKey: occ.occurrence_key,
+    })
+    events.value = events.value.filter((e) => occurrenceOf(e)?.occurrence_key !== occ.occurrence_key)
+    eventSync.markDirty()
+    toast.show('已取消本次安排，可在系列详情中恢复')
+  } catch (e) {
+    toast.show(errorText(e))
+  } finally {
+    actionOccurrence.value = null
+  }
+}
+
+async function deleteSeries(): Promise<void> {
+  const occ = actionOccurrence.value
+  seriesConfirmVisible.value = false
+  if (!occ) return
+  const sid = occ.series_id ?? occ.id
+  try {
+    await eventApi.deleteEvent(sid, { scope: 'series' })
+    events.value = events.value.filter((e) => String((e as Occurrence).series_id ?? e.id) !== String(sid))
+    eventSync.markDirty()
+    toast.show('已删除整条系列')
+  } catch (e) {
+    toast.show(errorText(e))
+  } finally {
+    actionOccurrence.value = null
+  }
 }
 
 function goNew(): void {
@@ -172,6 +260,14 @@ async function onToggle(ev: CalendarEvent): Promise<void> {
 }
 
 function askDelete(ev: CalendarEvent): void {
+  const occ = occurrenceOf(ev)
+  if (occ) {
+    // 循环实例的删除必须先选作用域（仅取消本次 / 删除整条）
+    actionOccurrence.value = occ
+    scopeMode.value = 'delete'
+    scopeVisible.value = true
+    return
+  }
   actionEvent.value = ev
   deleteSheetVisible.value = true
 }
@@ -275,7 +371,7 @@ onMounted(async () => {
           <ul>
             <EventAgendaItem
               v-for="e in allDayEvents"
-              :key="String(e.id)"
+              :key="rowKey(e)"
               :event="e"
               :conflict="hasConflict(e)"
               show-checkbox
@@ -298,7 +394,7 @@ onMounted(async () => {
             <span class="day__now-line" aria-hidden="true" />
             <span class="day__now-text">{{ nowLabel }}</span>
           </li>
-          <template v-for="(e, i) in timedEvents" :key="String(e.id)">
+          <template v-for="(e, i) in timedEvents" :key="rowKey(e)">
             <EventAgendaItem
               :event="e"
               :conflict="hasConflict(e)"
@@ -329,6 +425,24 @@ onMounted(async () => {
       :items="[{ label: '删除', value: 'delete', danger: true }]"
       @select="confirmDelete"
       @cancel="deleteSheetVisible = false"
+    />
+
+    <!-- 循环实例：编辑/删除都先选作用域，默认永远是「仅本次」 -->
+    <ScopeSheet
+      :visible="scopeVisible"
+      :mode="scopeMode"
+      @select="onScopeSelect"
+      @cancel="scopeVisible = false"
+    />
+
+    <AppModal
+      :visible="seriesConfirmVisible"
+      title="删除整条系列？"
+      text="删除后该循环的全部安排将一并删除，且不可恢复。"
+      confirm-text="删除"
+      danger
+      @confirm="deleteSeries"
+      @cancel="seriesConfirmVisible = false"
     />
   </div>
 </template>

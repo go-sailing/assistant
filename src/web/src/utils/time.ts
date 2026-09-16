@@ -226,9 +226,9 @@ export function nowRatio(): number {
 /** 月份网格：返回 6×7 = 42 个日期（含上月补位） */
 export function buildMonthGrid(year: number, month: number): Date[] {
   const first = new Date(year, month - 1, 1)
-  // 以周一为一周起点（与 UX 设计稿一致：日 一 二 三 四 五 六 从周日开始）
+  // v0.2.0：以周一为一周起点（与 UX 设计稿「一 二 … 日」及 weekly 规则的周起始一致）
   const start = new Date(first)
-  start.setDate(first.getDate() - first.getDay())
+  start.setDate(first.getDate() - ((first.getDay() + 6) % 7))
   const days: Date[] = []
   for (let i = 0; i < 42; i += 1) {
     const d = new Date(start)

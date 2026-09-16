@@ -30,6 +30,12 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             description: '所属清单名称。用户提到清单名但你不确定是否存在时传名称，系统会自动匹配或落到默认清单。',
           },
           list_id: { type: 'number', description: '所属清单ID，仅在明确知道清单ID时使用' },
+          parent_id: {
+            type: 'number',
+            description:
+              '父任务ID（v0.2.0 子任务）：把新任务挂到某个已有任务下时传，必须先用 search_tasks/get_task 查证真实 ID，禁止猜测。' +
+              '子任务须与父任务在同一清单、最多 5 级。',
+          },
         },
         required: ['title'],
       },
@@ -39,7 +45,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'update_task',
-      description: '修改一个已存在任务的字段（标题/备注/优先级/截止时间/所属清单）。',
+      description: '修改一个已存在任务的字段（标题/备注/优先级/截止时间/所属清单/所属父任务）。',
       parameters: {
         type: 'object',
         properties: {
@@ -50,6 +56,12 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           due_at: { type: 'string', description: 'ISO8601 带时区偏移；传空字符串表示清除截止时间' },
           list_name: { type: 'string', description: '目标清单名称' },
           list_id: { type: 'number', description: '目标清单ID' },
+          parent_id: {
+            type: 'number',
+            description:
+              '移动到某个父任务下（v0.2.0）：传 0 或 null 表示移到顶层成为根任务；传真实任务ID 表示挂到该任务下。' +
+              '不能移动到自身或自己的子任务下，且必须与目标父任务同清单。',
+          },
         },
         required: ['task_id'],
       },
@@ -59,7 +71,10 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'update_task_status',
-      description: '把任务标记为已完成或恢复为未完成。',
+      description:
+        '把任务标记为已完成或恢复为未完成。' +
+        '（v0.2.0）完成一个还有未完成子任务的父任务时，系统会返回 need_cascade_confirmation 并要求用户确认后级联完成；' +
+        '取消完成只作用于该任务本身，不会影响子任务。',
       parameters: {
         type: 'object',
         properties: {
@@ -74,10 +89,26 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'get_task',
-      description: '查询单个任务的详细信息。',
+      description: '查询单个任务的详细信息（含父任务、层级与直接子任务进度）。',
       parameters: {
         type: 'object',
         properties: { task_id: { type: 'number' } },
+        required: ['task_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_task_subtree',
+      description:
+        '查询某个任务及其全部子任务（扁平列表，含层级与进度）。用户问「这个任务下面有哪些子任务」时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'number', description: '根任务ID' },
+          depth: { type: 'number', description: '向下展开的层数，默认全部（受 200 节点上限保护）' },
+        },
         required: ['task_id'],
       },
     },
@@ -102,6 +133,8 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             description: '排序，默认 due_at_asc',
           },
           limit: { type: 'number', description: '返回条数上限，默认 50' },
+          root_only: { type: 'boolean', description: '只看根任务（v0.2.0 子任务），默认 false' },
+          parent_id: { type: 'number', description: '只看某个任务的直接子任务（v0.2.0）' },
         },
       },
     },
@@ -283,6 +316,39 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           all_day: { type: 'boolean', description: '是否全天日程，默认 false；全天时 start/end 用当天与次日的 00:00' },
           location: { type: 'string', description: '地点，可选' },
           note: { type: 'string', description: '日程备注，可选（与任务备注相互独立）' },
+          recurrence: {
+            type: 'object',
+            description:
+              '（v0.2.0）重复规则：只有**普通日程**可循环，任务日程禁止带该字段。' +
+              '频率、时间、结束条件任一缺失或有歧义时必须先追问，不要猜测；不要向用户输出这段 JSON。',
+            properties: {
+              freq: {
+                type: 'string',
+                enum: ['daily', 'weekly', 'monthly', 'yearly'],
+                description: '每天/每周/每月/每年',
+              },
+              interval: { type: 'number', description: '间隔，1~99，默认 1（如「每两周」=2）' },
+              by_week_days: {
+                type: 'array',
+                items: { type: 'number' },
+                description: '仅 weekly：0=周日、1=周一 … 6=周六；缺省取首次时间所在星期',
+              },
+              month_rule: {
+                type: 'object',
+                description: '仅 monthly：指定「每月第几日」或「每月第几个周几」',
+                properties: {
+                  type: { type: 'string', enum: ['day_of_month', 'day_of_week'] },
+                  day: { type: 'number', description: 'day_of_month：1~31（小月落到月末）' },
+                  ord: { type: 'number', description: 'day_of_week：1~4 或 -1（最后一个）' },
+                  weekday: { type: 'number', description: 'day_of_week：0=周日 … 6=周六' },
+                },
+              },
+              end_type: { type: 'string', enum: ['never', 'count', 'until'], description: '结束条件' },
+              count: { type: 'number', description: 'end_type=count：重复次数 1~730' },
+              until: { type: 'string', description: 'end_type=until：截止日期 YYYY-MM-DD（含当天）' },
+            },
+            required: ['freq', 'end_type'],
+          },
           confirm_conflict: {
             type: 'boolean',
             description:
@@ -298,18 +364,35 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'update_event',
       description:
-        '修改一个已存在的日程（改期、改全天、改地点、改备注、改普通日程标题）。' +
-        '不允许修改日程类型与关联任务（想改只能删除后重建）；任务日程的标题由任务决定，不要传。改时间时系统会重新做冲突校验。',
+        '修改一个已存在的日程（改期、改全天、改地点、改备注、改普通日程标题、改重复规则）。' +
+        '不允许修改日程类型与关联任务（想改只能删除后重建）；任务日程的标题由任务决定，不要传。改时间时系统会重新做冲突校验。' +
+        '（v0.2.0）循环日程必须区分作用域：用户说「这次/本次」→ scope=this 必带 occurrence_key；' +
+        '「以后每次都」→ scope=series；「从这次开始」→ scope=following 必带 occurrence_key。作用域不明确时先澄清，禁止默认按整条执行。',
       parameters: {
         type: 'object',
         properties: {
-          event_id: { type: 'number', description: '日程ID，必须来自查询结果的真实ID' },
+          event_id: { type: 'number', description: '日程ID（循环实例传系列ID），必须来自查询结果的真实ID' },
+          scope: {
+            type: 'string',
+            enum: ['series', 'this', 'following'],
+            description: '作用域，默认 series（整条）',
+          },
+          occurrence_key: {
+            type: 'string',
+            description:
+              '实例身份键（原始开始时间的 ISO 串），scope=this/following 必填；' +
+              '必须来自 list_events / get_event 的返回，禁止编造',
+          },
           start_at: { type: 'string', description: '新的开始时间，ISO8601 带时区' },
           end_at: { type: 'string', description: '新的结束时间，ISO8601 带时区' },
           all_day: { type: 'boolean' },
           title: { type: 'string', description: '新的标题（仅普通日程有效）' },
           location: { type: 'string' },
           note: { type: 'string' },
+          recurrence: {
+            type: 'object',
+            description: '整条改规则时传（scope=series）：结构与 create_event.recurrence 相同',
+          },
           confirm_conflict: {
             type: 'boolean',
             description: '仅当冲突已告知且用户明确同意后才带 true 重新调用',
@@ -323,10 +406,18 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'get_event',
-      description: '查询单个日程的详细信息（含关联任务信息、该时段是否与其他日程重叠）。',
+      description:
+        '查询单个日程的详细信息（含关联任务信息、该时段是否与其他日程重叠）。' +
+        '（v0.2.0）查询循环日程的某一次实例时传 occurrence_key；只传 series_id 返回系列规则与摘要。',
       parameters: {
         type: 'object',
-        properties: { event_id: { type: 'number' } },
+        properties: {
+          event_id: { type: 'number', description: '日程ID或循环系列ID' },
+          occurrence_key: {
+            type: 'string',
+            description: '（v0.2.0）实例身份键，必须来自查询结果',
+          },
+        },
         required: ['event_id'],
       },
     },
@@ -347,6 +438,9 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           tz: { type: 'string', description: '用户时区，IANA 名称，如 Asia/Shanghai' },
           event_type: { type: 'string', enum: ['normal', 'task'], description: '只看某一类日程' },
           task_id: { type: 'number', description: '只看某个任务的任务日程' },
+          series_id: { type: 'number', description: '（v0.2.0）只看某个循环系列的实例；只给该字段时返回今天起未来一年的实例' },
+          recurring_only: { type: 'boolean', description: '（v0.2.0）只看循环日程实例' },
+          include_cancelled: { type: 'boolean', description: '（v0.2.0）是否包含「仅本次已取消」的实例' },
           sort: { type: 'string', enum: ['start_asc', 'start_desc'], description: '排序，默认 start_asc' },
           limit: { type: 'number', description: '返回条数上限，默认 100' },
         },
@@ -370,15 +464,42 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'delete_event',
       description:
-        '删除单个日程。这是危险操作，调用后系统会先让用户确认，你不需要自行询问，但要向用户说明将要删除的日程。' +
-        '删除任务日程只是取消这个安排，不会删除关联任务。',
+        '删除日程。这是危险操作，调用后系统会先让用户确认，你不需要自行询问，但要向用户说明将要删除的日程。' +
+        '删除任务日程只是取消这个安排，不会删除关联任务。' +
+        '（v0.2.0）循环日程：scope=series（默认）删除整条系列且不可恢复（需用户确认）；' +
+        '用户说「这次/本次不去」时用 scope=this + occurrence_key，只是取消单次（可恢复），会立即执行。',
       parameters: {
         type: 'object',
         properties: {
-          event_id: { type: 'number' },
+          event_id: { type: 'number', description: '日程ID（循环实例传系列ID）' },
+          scope: {
+            type: 'string',
+            enum: ['series', 'this'],
+            description: '作用域，默认 series（整条系列）；this = 仅取消本次',
+          },
+          occurrence_key: {
+            type: 'string',
+            description: 'scope=this 必填：实例身份键，必须来自 list_events / get_event 的返回',
+          },
           reason: { type: 'string', description: '删除原因的简短说明，用于向用户展示' },
         },
         required: ['event_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'restore_occurrence',
+      description:
+        '（v0.2.0）恢复一次「仅本次已取消」的循环实例。用户说「那次安排恢复一下」时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          event_id: { type: 'number', description: '循环系列ID（必须来自查询结果）' },
+          occurrence_key: { type: 'string', description: '实例身份键，必须来自查询结果' },
+        },
+        required: ['event_id', 'occurrence_key'],
       },
     },
   },
@@ -461,4 +582,18 @@ export function isKnownTool(name: string): boolean {
 
 export function isDangerousTool(name: string): boolean {
   return DANGEROUS_TOOLS.has(name);
+}
+
+/**
+ * 按调用参数判定是否危险：
+ * delete_event 在 scope=this（仅取消本次、可恢复）时无需确认，直接执行；
+ * 其余情况沿用 v0.1.0 的确认门控。
+ */
+export function isDangerousCall(name: string, args: unknown): boolean {
+  if (!DANGEROUS_TOOLS.has(name)) return false;
+  if (name === 'delete_event') {
+    const scope = (args as Record<string, unknown> | null | undefined)?.scope;
+    return scope !== 'this';
+  }
+  return true;
 }

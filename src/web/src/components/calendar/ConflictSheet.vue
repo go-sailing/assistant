@@ -1,17 +1,28 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ConflictLevel, EventConflictBrief } from '@/types'
+import type { ConflictDateGroup, ConflictLevel, EventConflictBrief } from '@/types'
 import { formatEventRange } from '@/utils/time'
 import AppButton from '@/components/AppButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import EventTypeTag from '@/components/calendar/EventTypeTag.vue'
+import RecurringConflictSheet from '@/components/calendar/RecurringConflictSheet.vue'
 
-const props = defineProps<{
-  visible: boolean
-  conflicts: EventConflictBrief[]
-  level: ConflictLevel
-  saving?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    visible: boolean
+    conflicts: EventConflictBrief[]
+    level: ConflictLevel
+    saving?: boolean
+    /** v0.2.0：series = 循环规则冲突（按日期分组），occurrence = 单次冲突列表 */
+    scope?: 'series' | 'occurrence'
+    /** scope=series 时的按日期分组数据 */
+    dateGroups?: ConflictDateGroup[]
+    datesTotal?: number
+    /** 窗口内冲突总次数 */
+    total?: number
+  }>(),
+  { saving: false, scope: 'occurrence', dateGroups: () => [], datesTotal: 0, total: 0 }
+)
 
 const emit = defineEmits<{ (e: 'cancel'): void; (e: 'confirm'): void }>()
 
@@ -27,7 +38,19 @@ const restText = computed(() => `等 ${props.conflicts.length} 项`)
 </script>
 
 <template>
-  <Transition name="sheet">
+  <!-- 循环规则冲突：整体交给按日期分组的弹层，避免两套实现 -->
+  <RecurringConflictSheet
+    v-if="scope === 'series'"
+    :visible="visible"
+    :dates="dateGroups"
+    :dates-total="datesTotal || dateGroups.length"
+    :total="total"
+    :saving="saving"
+    @cancel="emit('cancel')"
+    @confirm="emit('confirm')"
+  />
+
+  <Transition v-else name="sheet">
     <div v-if="visible" class="conflict" role="dialog" aria-modal="true">
       <div class="conflict__mask" @click="emit('cancel')" />
 

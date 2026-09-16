@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { CalendarEvent } from '@/types'
+import type { CalendarEvent, Occurrence } from '@/types'
 import { formatEventRange, isOngoing } from '@/utils/time'
 import AppCheckbox from '@/components/AppCheckbox.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import PriorityFlag from '@/components/PriorityFlag.vue'
+import RecurrenceBadge from '@/components/calendar/RecurrenceBadge.vue'
 
 const props = defineProps<{
   event: CalendarEvent
@@ -35,6 +36,11 @@ const isTask = computed(() => props.event.event_type === 'task')
 const showCheck = computed(() => !!props.showCheckbox && !!props.event.task)
 const checkLabel = computed(() => `完成关联任务：${props.event.task?.title ?? ''}`)
 
+/** v0.2.0：展开后的循环实例带 series_id / override_state（任务日程不循环） */
+const isRecurring = computed(() => !!(props.event as Partial<Occurrence>).series_id)
+const overrideState = computed(() => (props.event as Partial<Occurrence>).override_state)
+const isModified = computed(() => isRecurring.value && overrideState.value === 'modified')
+
 /** 左侧类型竖条：全天用中性色（全天不占具体时段，弱化类型区分） */
 const barColor = computed(() => {
   if (props.event.all_day) return 'var(--text-disabled)'
@@ -43,7 +49,12 @@ const barColor = computed(() => {
 
 /** 读屏用户无法看到颜色与竖条，用文案补齐类型与状态 */
 const ariaLabel = computed(() => {
-  const parts = [isTask.value ? '任务日程' : '普通日程', props.event.title, rangeText.value]
+  const parts = [
+    isTask.value ? '任务日程' : isRecurring.value ? '循环日程中的一次' : '普通日程',
+    props.event.title,
+    rangeText.value,
+  ]
+  if (isModified.value) parts.push('已调整')
   if (ongoing.value) parts.push('进行中')
   if (props.conflict) parts.push('时间冲突')
   return parts.join('，')
@@ -167,7 +178,14 @@ defineExpose({ close })
 
         <p class="agenda__title" :class="{ 'agenda__title--done': completed }">
           <AppIcon v-if="isTask" name="link" :size="14" color="var(--color-link)" />
+          <AppIcon
+            v-else-if="isRecurring"
+            name="repeat"
+            :size="14"
+            color="var(--color-primary)"
+          />
           <span class="agenda__title-text">{{ event.title }}</span>
+          <RecurrenceBadge v-if="isModified" kind="modified" />
         </p>
 
         <p v-if="event.location || event.task" class="agenda__meta">

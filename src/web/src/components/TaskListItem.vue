@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { Task } from '@/types'
 import { dueTone, formatDue } from '@/utils/time'
 import AppCheckbox from './AppCheckbox.vue'
+import ProgressBar from './tasks/ProgressBar.vue'
 import PriorityFlag from './PriorityFlag.vue'
 
 const props = withDefaults(
@@ -12,8 +13,12 @@ const props = withDefaults(
     highlight?: boolean
     /** 搜索关键词高亮 */
     keyword?: string
+    /** v0.2.0 子任务进度展示：count 折叠态右侧计数 / bar 展开态进度条 */
+    subtaskDisplay?: 'bar' | 'count'
+    /** 搜索结果的父子路径（如「季度报告 / 写初稿」） */
+    path?: string
   }>(),
-  { highlight: false, keyword: '' }
+  { highlight: false, keyword: '', subtaskDisplay: 'count', path: '' }
 )
 
 const emit = defineEmits<{
@@ -33,6 +38,14 @@ let locked = false
 const completed = computed(() => props.task.status === 'completed')
 const tone = computed(() => dueTone(props.task))
 const timeText = computed(() => formatDue(props.task.due_at))
+const hasSubtasks = computed(() => props.task.subtask_total > 0)
+const allSubtasksDone = computed(
+  () => hasSubtasks.value && props.task.subtask_completed >= props.task.subtask_total
+)
+/** 半选：父任务未完成但部分子任务已完成 */
+const indeterminate = computed(
+  () => !completed.value && hasSubtasks.value && props.task.subtask_completed > 0 && !allSubtasksDone.value
+)
 
 /** 关键词高亮分段（避免 v-html，安全） */
 const titleParts = computed(() => {
@@ -132,7 +145,14 @@ defineExpose({ close })
       @touchend="onTouchEnd"
       @touchcancel="onTouchEnd"
     >
-      <AppCheckbox :checked="completed" :label="`标记「${task.title}」完成`" @toggle="onToggle" />
+      <!-- 树形态：展开箭头等前置操作 -->
+      <slot name="leading" />
+      <AppCheckbox
+        :checked="completed"
+        :indeterminate="indeterminate"
+        :label="`标记「${task.title}」完成`"
+        @toggle="onToggle"
+      />
       <div class="task-item__main">
         <p class="task-item__title" :class="{ 'task-item__title--done': completed }">
           <span v-for="(part, i) in titleParts" :key="i" :class="{ 'task-item__hit': part.hit }">{{
@@ -140,6 +160,8 @@ defineExpose({ close })
           }}</span>
         </p>
         <p class="task-item__sub">
+          <span v-if="path" class="task-item__path ellipsis">{{ path }}</span>
+          <span v-if="path" class="task-item__dot">·</span>
           <span class="task-item__list ellipsis">{{ task.list_name || '默认清单' }}</span>
           <span v-if="task.due_at" class="task-item__dot">·</span>
           <span
@@ -153,7 +175,21 @@ defineExpose({ close })
           >
           <PriorityFlag :priority="task.priority" />
         </p>
+        <span v-if="hasSubtasks && subtaskDisplay === 'bar'" class="task-item__progress">
+          <span class="task-item__progress-text">
+            <template v-if="allSubtasksDone">子任务已全部完成</template>
+            <template v-else>子任务 {{ task.subtask_completed }}/{{ task.subtask_total }}</template>
+          </span>
+          <ProgressBar :total="task.subtask_total" :completed="task.subtask_completed" />
+        </span>
       </div>
+      <span v-if="hasSubtasks && subtaskDisplay === 'count'" class="task-item__count">
+        {{ task.subtask_completed }}/{{ task.subtask_total }}
+      </span>
+    </div>
+    <!-- 树形态：展开后的子任务树 -->
+    <div v-if="$slots.subtree" class="task-item__subtree">
+      <slot name="subtree" />
     </div>
   </li>
 </template>
@@ -241,6 +277,9 @@ defineExpose({ close })
   line-height: var(--font-caption-lh);
   color: var(--text-secondary);
 }
+.task-item__path {
+  max-width: 50%;
+}
 .task-item__list {
   max-width: 40%;
 }
@@ -249,5 +288,34 @@ defineExpose({ close })
 }
 .task-item__time--warning {
   color: var(--color-warning);
+}
+.task-item__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 2px;
+}
+.task-item__progress-text {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.task-item__progress :deep(.progress) {
+  flex: 1;
+  min-width: 40px;
+}
+.task-item__count {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.task-item__subtree {
+  position: relative;
+  background: var(--bg-card);
 }
 </style>

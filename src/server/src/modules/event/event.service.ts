@@ -1,12 +1,16 @@
-import { query, withTransaction } from '../../db/pool';
+import { query } from '../../db/pool';
 import { AppError } from '../../common/errors';
 import { config } from '../../config';
 import { logger } from '../../common/logger';
 import { EVENT_LIMITS } from './types';
+import { EVENT_SELECT, findSingleConflicts } from './sql';
+import { fromZonedNaive, naiveOfDate, localDateString } from './recurrence/engine';
+import { occurrenceService, buildRule } from './occurrence.service';
 import {
+  eventDurationMs,
   normalizeEventSort,
-  toConflictBrief,
   toEventDTO,
+  toSeriesDTO,
   type ConflictLevel,
   type CreateEventInput,
   type EventConflictBrief,
@@ -15,27 +19,14 @@ import {
   type EventRow,
   type EventType,
   type MonthDayCount,
+  type OccurrenceDTO,
+  type SeriesDTO,
   type UpdateEventInput,
   type WriteEventResult,
 } from './types';
+import type { EventScope, RecurrenceRule } from './recurrence/types';
 
-/**
- * 日程查询公共 SELECT：
- * 任务日程的标题/优先级/完成态/清单均实时取自 tasks 与 task_lists，events 不存冗余副本。
- */
-const EVENT_SELECT = `
-  SELECT e.*,
-         t.title        AS task_title,
-         t.status       AS task_status,
-         t.priority     AS task_priority,
-         t.due_at       AS task_due_at,
-         t.completed_at AS task_completed_at,
-         t.list_id      AS task_list_id,
-         l.name         AS task_list_name
-  FROM events e
-  LEFT JOIN tasks t       ON t.id = e.task_id
-  LEFT JOIN task_lists l  ON l.id = t.list_id
-`;
+const MS_PER_DAY = 86_400_000;
 
 /** 任务排期前置校验所需的最小任务信息 */
 interface ScheduleTaskRow {
@@ -118,22 +109,36 @@ async function resolveTz(input?: string | null): Promise<string> {
 }
 
 /** 时间段左闭右开相交判定 */
-function intersect(a: { start_at: Date; end_at: Date }, b: { start_at: Date; end_at: Date }): boolean {
-  return a.start_at.getTime() < b.end_at.getTime() && a.end_at.getTime() > b.start_at.getTime();
+function intersect(a: { start_at: string; end_at: string }, b: { start_at: string; end_at: string }): boolean {
+  return new Date(a.start_at).getTime() < new Date(b.end_at).getTime() &&
+    new Date(a.end_at).getTime() > new Date(b.start_at).getTime();
 }
 
 /**
  * 列表场景的冲突标注：直接在已取回的结果集内两两比对，避免 N+1 查询。
- * 单日查询时结果集恰好覆盖该日全部日程，判定完整；
- * 跨范围查询可能漏掉范围外与本范围日程重叠的对象，此时以详情页/写操作为准。
+ * 合并集（单次日程 + 循环实例）在内存中统一比对，跨类型冲突也能命中。
  */
-function attachConflicts(dtos: EventDTO[], rows: EventRow[]): void {
+function attachConflicts(dtos: EventDTO[]): void {
   for (let i = 0; i < dtos.length; i += 1) {
-    const self = rows[i];
+    const self = dtos[i];
     const hits: EventConflictBrief[] = [];
-    for (let j = 0; j < rows.length; j += 1) {
+    for (let j = 0; j < dtos.length; j += 1) {
       if (i === j) continue;
-      if (intersect(self, rows[j])) hits.push(toConflictBrief(rows[j]));
+      const other = dtos[j];
+      if (!intersect(self, other)) continue;
+      hits.push({
+        id: Number(other.id),
+        event_type: other.event_type,
+        title: other.title,
+        start_at: other.start_at,
+        end_at: other.end_at,
+        all_day: other.all_day,
+        location: other.location,
+        series_id:
+          'series_id' in other ? ((other as OccurrenceDTO).series_id as number) : (other.id as number),
+        occurrence_key:
+          'occurrence_key' in other ? ((other as OccurrenceDTO).occurrence_key as string) : null,
+      });
     }
     dtos[i].conflicts = hits;
     dtos[i].conflict_level =
@@ -141,13 +146,73 @@ function attachConflicts(dtos: EventDTO[], rows: EventRow[]): void {
   }
 }
 
+/** 排期形状是否变化（决定整条改规则时是否需要重扫冲突） */
+function scheduleShapeChanged(before: RecurrenceRule, after: RecurrenceRule): boolean {
+  return (
+    before.freq !== after.freq ||
+    before.interval !== after.interval ||
+    JSON.stringify(before.by_week_days ?? null) !== JSON.stringify(after.by_week_days ?? null) ||
+    JSON.stringify(before.month_rule ?? null) !== JSON.stringify(after.month_rule ?? null)
+  );
+}
+
+/** 把筛选条件换算成用户时区下的绝对时间窗口（左闭右开） */
+function resolveWindow(
+  filter: EventFilter,
+  tz: string
+): { start: Date; end: Date } | null {
+  const date = normalizeDateOnly(filter.date, 'date');
+  const from = normalizeDateOnly(filter.date_from, 'date_from');
+  const to = normalizeDateOnly(filter.date_to, 'date_to');
+  if (date) {
+    const startNaive = naiveOfDate(date);
+    return {
+      start: fromZonedNaive(startNaive, tz),
+      end: fromZonedNaive(startNaive + MS_PER_DAY, tz),
+    };
+  }
+  if (from || to) {
+    const startNaive = from ? naiveOfDate(from) : naiveOfDate('1970-01-01');
+    const endNaive = to ? naiveOfDate(to) : naiveOfDate('9999-12-31');
+    return { start: fromZonedNaive(startNaive, tz), end: fromZonedNaive(endNaive, tz) };
+  }
+  // 只给系列/循环/任务标识（对话工具常见问法：「这个系列/这个任务接下来有哪些」）时默认取今天起未来一年
+  if (filter.series_id || filter.recurring_only || filter.task_id) {
+    const now = Date.now();
+    return { start: new Date(now - MS_PER_DAY), end: new Date(now + 365 * MS_PER_DAY) };
+  }
+  return null;
+}
+
+/** 实例的关键词匹配（在内存中进行，避免为实例再建索引） */
+function instanceMatchesKeyword(inst: OccurrenceDTO, keyword?: string): boolean {
+  if (!keyword || !keyword.trim()) return true;
+  const kw = keyword.trim().toLowerCase();
+  return [inst.title, inst.note, inst.location]
+    .filter((v): v is string => !!v)
+    .some((v) => v.toLowerCase().includes(kw));
+}
+
+function applyInstanceFilters(list: OccurrenceDTO[], filter: EventFilter): OccurrenceDTO[] {
+  let out = list;
+  if (filter.series_id) out = out.filter((o) => o.series_id === filter.series_id);
+  if (filter.event_type === 'task') return [];
+  if (filter.task_id) return [];
+  if (filter.keyword) out = out.filter((o) => instanceMatchesKeyword(o, filter.keyword));
+  return out;
+}
+
 /**
  * 日程领域服务：REST 控制器与 LLM 工具执行器共用此服务，
- * 保证「能力对等」与业务规则只实现一次（系统设计文档 2.1 / 4.1）。
+ * 保证「能力对等」与业务规则只实现一次（系统设计文档 2.1 / 4.3）。
  */
 export const eventService = {
   defaultTz(): string {
     return config.event.defaultTz;
+  },
+
+  async resolveTz(input?: string | null): Promise<string> {
+    return resolveTz(input);
   },
 
   async getOwnedRow(userId: number, eventId: number): Promise<EventRow> {
@@ -159,15 +224,52 @@ export const eventService = {
     return res.rows[0];
   },
 
-  async get(userId: number, eventId: number): Promise<EventDTO> {
+  /**
+   * 取日程：
+   * - 系列主记录（recurrence 非空）→ 系列 DTO（带规则与摘要）；
+   * - 带 occurrenceKey → 实例视角 DTO；
+   * - 否则 → 单次日程 DTO（含冲突标注）。
+   */
+  async get(
+    userId: number,
+    eventId: number,
+    opts: { occurrenceKey?: string | null; tz?: string | null } = {}
+  ): Promise<EventDTO> {
+    const tz = await resolveTz(opts.tz);
     const row = await this.getOwnedRow(userId, eventId);
-    const dto = toEventDTO(row);
+
+    if (opts.occurrenceKey && row.recurrence) {
+      // 实例查询窗口需覆盖该次改期后的时间，否则改期过的实例按 key 取不到（TC-SERIES-033）
+      const inst = await occurrenceService.getInstance(userId, row, opts.occurrenceKey, tz);
+      if (!inst) throw AppError.occurrenceNotFound('该次安排已不存在');
+      const { conflicts, conflict_level } = await this.findConflicts(
+        userId,
+        new Date(inst.start_at),
+        new Date(inst.end_at),
+        inst.all_day,
+        row.id,
+        tz
+      );
+      inst.conflicts = conflicts;
+      inst.conflict_level = conflict_level;
+      return inst;
+    }
+
+    if (row.recurrence) {
+      const dto = toSeriesDTO(row, tz);
+      dto.conflicts = [];
+      dto.conflict_level = 'none';
+      return dto;
+    }
+
+    const dto = toEventDTO(row, tz);
     const { conflicts, conflict_level } = await this.findConflicts(
       userId,
       row.start_at,
       row.end_at,
       row.all_day,
-      row.id
+      row.id,
+      tz
     );
     dto.conflicts = conflicts;
     dto.conflict_level = conflict_level;
@@ -182,34 +284,40 @@ export const eventService = {
       `${EVENT_SELECT} WHERE e.user_id = $1 AND e.id = ANY($2::int[])`,
       [userId, unique]
     );
-    return new Map(res.rows.map((row) => [row.id, toEventDTO(row)]));
+    return new Map(
+      res.rows.map((row) => [
+        row.id,
+        row.recurrence ? toSeriesDTO(row, config.event.defaultTz) : toEventDTO(row),
+      ])
+    );
+  },
+
+  /** 批量取系列（历史卡片刷新，附带 overrides 供实例重算） */
+  async getManySeriesByIds(userId: number, ids: number[]) {
+    return occurrenceService.getManySeriesByIds(userId, ids);
   },
 
   /**
-   * 冲突检测：同一用户的两条日程时间段左闭右开相交即为冲突
-   * （端点相接 A.end = B.start 严格不等号天然不判冲突）。
+   * 冲突检测：同一用户的时间段左闭右开相交即为冲突。
+   * 候选包含单次日程与「其他系列」展开出的实例（排除自身系列）。
    */
   async findConflicts(
     userId: number,
     startAt: Date,
     endAt: Date,
     targetAllDay: boolean,
-    excludeId?: number
+    excludeId?: number,
+    tz?: string
   ): Promise<{ conflicts: EventConflictBrief[]; conflict_level: ConflictLevel }> {
-    const res = await query<EventRow>(
-      `${EVENT_SELECT}
-       WHERE e.user_id = $1
-         AND e.start_at < $2::timestamptz
-         AND e.end_at   > $3::timestamptz
-         AND ($4::int IS NULL OR e.id <> $4::int)
-       ORDER BY e.start_at ASC
-       LIMIT $5`,
-      [userId, endAt, startAt, excludeId ?? null, config.event.conflictScanLimit]
+    const resolved = tz ?? config.event.defaultTz;
+    return occurrenceService.scanOccurrenceConflicts(
+      userId,
+      startAt,
+      endAt,
+      targetAllDay,
+      excludeId ?? 0,
+      resolved
     );
-    if (res.rowCount === 0) return { conflicts: [], conflict_level: 'none' };
-    const conflicts = res.rows.map(toConflictBrief);
-    const hasAllDay = targetAllDay || res.rows.some((r) => r.all_day);
-    return { conflicts, conflict_level: hasAllDay ? 'all_day' : 'overlap' };
   },
 
   /** 任务排期前置校验：任务必须存在、属于当前用户且未完成 */
@@ -227,15 +335,16 @@ export const eventService = {
   },
 
   /**
-   * 创建日程。
+   * 创建日程（v0.2.0 支持 recurrence）。
    * 命中冲突且未带确认标记时**不落库**，返回 need_conflict_confirmation 交给调用方询问用户。
    */
   async create(
     userId: number,
     input: CreateEventInput,
     source: 'manual' | 'chat' = 'manual',
-    opts: { confirmConflict?: boolean } = {}
+    opts: { confirmConflict?: boolean; tz?: string | null } = {}
   ): Promise<WriteEventResult> {
+    const tz = await resolveTz(opts.tz);
     const eventType: EventType = input.event_type === 'task' ? 'task' : 'normal';
     const allDay = input.all_day === true;
     const startAt = parseTime(input.start_at, '开始时间');
@@ -247,6 +356,8 @@ export const eventService = {
     let title: string | null = null;
     let taskId: number | null = null;
     if (eventType === 'task') {
+      // 任务日程不支持循环（DB CHECK + Service + zod 三处拦截）
+      if (input.recurrence) throw AppError.recurrenceNotSupported();
       if (!input.task_id) throw AppError.paramInvalid('任务日程必须指定关联任务');
       const task = await this.requireSchedulableTask(userId, Number(input.task_id));
       taskId = task.id;
@@ -258,8 +369,71 @@ export const eventService = {
 
     const note = normalizeNote(input.note);
     const location = normalizeLocation(input.location);
+    const durationMs = eventDurationMs({ start_at: startAt, end_at: endAt });
 
-    const { conflicts, conflict_level } = await this.findConflicts(userId, startAt, endAt, allDay);
+    // 循环：90 天展开扫描并按日期分组；单次：单实例相交检测
+    if (input.recurrence) {
+      const rule = buildRule(input.recurrence, startAt, tz);
+      const scan = await occurrenceService.scanSeriesConflicts(
+        userId,
+        rule,
+        startAt,
+        durationMs,
+        allDay,
+        tz
+      );
+      if (scan.conflict_total > 0 && !opts.confirmConflict) {
+        logger.info('series_created_blocked_by_conflict', {
+          user_id: userId,
+          freq: rule.freq,
+          dates: scan.conflict_dates_total,
+        });
+        return {
+          saved: false,
+          event: null,
+          conflicts: scan.conflict_dates.flatMap((g) => g.conflicts),
+          conflict_level: scan.conflict_level,
+          need_conflict_confirmation: true,
+          conflict_dates: scan.conflict_dates,
+          conflict_dates_total: scan.conflict_dates_total,
+          conflict_total: scan.conflict_total,
+          conflict_scope: 'series',
+        };
+      }
+      if (scan.conflict_total > 0) {
+        logger.info('series_conflict_forced', { user_id: userId, dates: scan.conflict_dates_total });
+      }
+
+      const res = await query<{ id: number }>(
+        `INSERT INTO events(user_id, event_type, task_id, title, note, location, all_day, start_at, end_at, source, recurrence)
+         VALUES ($1, 'normal', NULL, $2, $3, $4, $5, $6, $7, $8, $9::jsonb) RETURNING id`,
+        [userId, title, note, location, allDay, startAt, endAt, source, JSON.stringify(rule)]
+      );
+      logger.info('series_created', {
+        user_id: userId,
+        freq: rule.freq,
+        end_type: rule.end_type,
+        source,
+      });
+      const row = await this.getOwnedRow(userId, res.rows[0].id);
+      return {
+        saved: true,
+        event: toSeriesDTO(row, tz),
+        conflicts: [],
+        conflict_level: 'none',
+        need_conflict_confirmation: false,
+        conflict_scope: 'series',
+      };
+    }
+
+    const { conflicts, conflict_level } = await this.findConflicts(
+      userId,
+      startAt,
+      endAt,
+      allDay,
+      undefined,
+      tz
+    );
     if (conflicts.length > 0 && !opts.confirmConflict) {
       // 埋点：冲突提示发生率（对应系统设计文档 10.2 / PRD 6.5）
       logger.info('event_conflict_shown', {
@@ -292,21 +466,33 @@ export const eventService = {
       logger.info('task_scheduled', { user_id: userId, task_id: taskId, event_id: res.rows[0].id });
     }
 
-    const dto = await this.get(userId, res.rows[0].id);
+    const dto = await this.get(userId, res.rows[0].id, { tz });
     return { saved: true, event: dto, conflicts, conflict_level, need_conflict_confirmation: false };
   },
 
   /**
-   * 编辑日程：禁止修改类型与关联任务；任务日程的 title 入参被忽略（标题随任务）。
-   * 命中冲突且未确认时不落库。
+   * 编辑日程：按 scope 分流（series 整条 / this 仅本次 / following 本次及以后）。
+   * 禁止修改类型与关联任务；任务日程的 title 入参被忽略（标题随任务）。
    */
   async update(
     userId: number,
     eventId: number,
     patch: UpdateEventInput,
-    opts: { confirmConflict?: boolean } = {}
+    opts: { confirmConflict?: boolean; scope?: EventScope; occurrenceKey?: string; tz?: string | null } = {}
   ): Promise<WriteEventResult> {
+    const tz = await resolveTz(opts.tz);
+    const scope: EventScope = opts.scope ?? 'series';
     const existing = await this.getOwnedRow(userId, eventId);
+
+    if (scope === 'this' || scope === 'following') {
+      if (!opts.occurrenceKey) {
+        throw AppError.paramInvalid('按次操作必须提供 occurrence_key（请从实例列表获取）');
+      }
+      if (scope === 'this') {
+        return occurrenceService.updateThis(userId, existing, opts.occurrenceKey, patch, tz, opts);
+      }
+      return occurrenceService.updateFromFollowing(userId, existing, opts.occurrenceKey, patch, tz, opts);
+    }
 
     // 类型与关联创建后不可变更；但「原样回传当前值」（前端表单整表提交的常见形态）不算变更，
     // 只有真正试图改成别的类型/换绑任务才拒绝，否则会让正常的编辑保存被误伤。
@@ -318,6 +504,8 @@ export const eventService = {
     }
 
     const isTask = existing.event_type === 'task';
+    if (isTask && patch.recurrence) throw AppError.recurrenceNotSupported();
+
     const allDay = patch.all_day === undefined ? existing.all_day : patch.all_day === true;
     const startAt = patch.start_at === undefined ? existing.start_at : parseTime(patch.start_at, '开始时间');
     const endAt = patch.end_at === undefined ? existing.end_at : parseTime(patch.end_at, '结束时间');
@@ -359,14 +547,75 @@ export const eventService = {
       patch.start_at !== undefined ||
       patch.end_at !== undefined ||
       patch.all_day !== undefined;
+    const ruleChanged = patch.recurrence !== undefined;
 
-    if (timeChanged) {
+    // 整条系列：规则变更需重新校验并重新扫描 90 天
+    if (existing.recurrence && ruleChanged) {
+      if (!patch.recurrence) {
+        throw AppError.paramInvalid('请使用删除操作移除重复规则');
+      }
+      const rule = buildRule(patch.recurrence, startAt, tz);
+      sets.push(`recurrence = $${index++}::jsonb`);
+      params.push(JSON.stringify(rule));
+      // 只有「时间或排期形状」变化才重扫 90 天冲突；仅改结束条件不重扫（TC-SERIES-047）
+      const shapeChanged = scheduleShapeChanged(existing.recurrence as RecurrenceRule, rule);
+      if (!opts.confirmConflict && (shapeChanged || timeChanged)) {
+        const scan = await occurrenceService.scanSeriesConflicts(
+          userId,
+          rule,
+          startAt,
+          eventDurationMs({ start_at: startAt, end_at: endAt }),
+          allDay,
+          tz,
+          eventId
+        );
+        if (scan.conflict_total > 0) {
+          return {
+            saved: false,
+            event: null,
+            conflicts: scan.conflict_dates.flatMap((g) => g.conflicts),
+            conflict_level: scan.conflict_level,
+            need_conflict_confirmation: true,
+            conflict_dates: scan.conflict_dates,
+            conflict_dates_total: scan.conflict_dates_total,
+            conflict_total: scan.conflict_total,
+            conflict_scope: 'series',
+          };
+        }
+      }
+    } else if (existing.recurrence && timeChanged && !opts.confirmConflict) {
+      // 整条改时间：全部实例平移，重新做 90 天扫描
+      const rule = existing.recurrence as RecurrenceRule;
+      const scan = await occurrenceService.scanSeriesConflicts(
+        userId,
+        rule,
+        startAt,
+        eventDurationMs({ start_at: startAt, end_at: endAt }),
+        allDay,
+        tz,
+        eventId
+      );
+      if (scan.conflict_total > 0) {
+        return {
+          saved: false,
+          event: null,
+          conflicts: scan.conflict_dates.flatMap((g) => g.conflicts),
+          conflict_level: scan.conflict_level,
+          need_conflict_confirmation: true,
+          conflict_dates: scan.conflict_dates,
+          conflict_dates_total: scan.conflict_dates_total,
+          conflict_total: scan.conflict_total,
+          conflict_scope: 'series',
+        };
+      }
+    } else if (!existing.recurrence && timeChanged) {
       const { conflicts, conflict_level } = await this.findConflicts(
         userId,
         startAt,
         endAt,
         allDay,
-        eventId
+        eventId,
+        tz
       );
       if (conflicts.length > 0 && !opts.confirmConflict) {
         return {
@@ -388,38 +637,88 @@ export const eventService = {
       );
     }
 
-    const dto = await this.get(userId, eventId);
+    // 整条改时间：override 的身份键是「原始开始时间」，必须随系列整体平移，
+    // 否则全部单次例外都会因 key 漂移而失联（TC-SERIES-045）
+    if (existing.recurrence && patch.start_at !== undefined) {
+      const deltaMs = startAt.getTime() - existing.start_at.getTime();
+      if (deltaMs !== 0) {
+        await query(
+          `UPDATE event_overrides
+             SET occurrence_start = occurrence_start + ($3::bigint * interval '1 millisecond'),
+                 updated_at = now()
+           WHERE user_id = $1 AND event_id = $2`,
+          [userId, eventId, deltaMs]
+        );
+        logger.info('series_overrides_shifted', {
+          user_id: userId,
+          series_id: eventId,
+          delta_ms: deltaMs,
+        });
+      }
+    }
+
+    const dto = await this.get(userId, eventId, { tz });
     return {
       saved: true,
       event: dto,
       conflicts: [],
       conflict_level: 'none',
       need_conflict_confirmation: false,
+      conflict_scope: 'series',
     };
   },
 
-  /** 删除单条日程：任务日程只删除安排，不影响关联任务 */
-  async remove(userId: number, eventId: number): Promise<EventDTO> {
+  /** 删除日程：scope=series 删整条（含 override 级联）；scope=this 仅取消本次 */
+  async remove(
+    userId: number,
+    eventId: number,
+    opts: { scope?: EventScope; occurrenceKey?: string; tz?: string | null } = {}
+  ): Promise<{ event: EventDTO; occurrence: OccurrenceDTO | null }> {
+    const tz = await resolveTz(opts.tz);
     const row = await this.getOwnedRow(userId, eventId);
+    if (opts.scope === 'this') {
+      if (!opts.occurrenceKey) {
+        throw AppError.paramInvalid('按次操作必须提供 occurrence_key');
+      }
+      const occurrence = await occurrenceService.cancelThis(userId, row, opts.occurrenceKey, tz);
+      return { event: toEventDTO(row, tz), occurrence };
+    }
     await query(`DELETE FROM events WHERE id = $1 AND user_id = $2`, [eventId, userId]);
-    return toEventDTO(row);
+    return { event: toEventDTO(row, tz), occurrence: null };
   },
 
-  /** 按 ID 集合批量删除（对话确认后按已确认的 ID 精确执行） */
+  /** 恢复某次已取消的实例 */
+  async restoreOccurrence(
+    userId: number,
+    eventId: number,
+    occurrenceKey: string,
+    tzInput?: string | null
+  ): Promise<OccurrenceDTO | null> {
+    const tz = await resolveTz(tzInput);
+    const row = await this.getOwnedRow(userId, eventId);
+    return occurrenceService.restoreOccurrence(userId, row, occurrenceKey, tz);
+  },
+
+  /**
+   * 批量删除（对话确认后按已确认的 ID 精确执行）。
+   * 循环系列主记录不在批量范围内（批量仅承载单次日程，避免误删整条系列）。
+   */
   async removeByIds(userId: number, ids: number[]): Promise<EventDTO[]> {
     if (ids.length === 0) return [];
     const before = await this.getManyByIds(userId, ids);
-    const res = await query(`DELETE FROM events WHERE user_id = $1 AND id = ANY($2::int[])`, [
-      userId,
-      ids,
-    ]);
+    const res = await query(
+      `DELETE FROM events WHERE user_id = $1 AND id = ANY($2::int[]) AND recurrence IS NULL`,
+      [userId, ids]
+    );
     if (res.rowCount === 0) return [];
-    return [...before.values()];
+    // 系列主记录不参与批量删除，不作为已删除对象回执
+    return [...before.values()].filter((e) => !e.recurrence);
   },
 
   /**
    * 按 ID 集合批量更新（对话确认后按已确认的 ID 精确执行，不再重新扫描筛选条件）。
-   * 批量操作只允许时间、全天、地点、备注四类字段，类型与关联不可变更。
+   * 批量操作只允许时间、全天、地点、备注四类字段，类型与关联不可变更；
+   * 循环系列主记录不参与（避免把整条系列静默平移）。
    */
   async batchUpdateByIds(
     userId: number,
@@ -459,7 +758,7 @@ export const eventService = {
     params.push(userId, ids);
     const res = await query<{ id: number }>(
       `UPDATE events SET ${sets.join(', ')}
-       WHERE user_id = $${index++} AND id = ANY($${index}::int[])
+       WHERE user_id = $${index++} AND id = ANY($${index}::int[]) AND recurrence IS NULL
        RETURNING id`,
       params
     );
@@ -475,7 +774,8 @@ export const eventService = {
     filter: EventFilter
   ): Promise<{ clause: string; params: unknown[] }> {
     const tz = await resolveTz(filter.tz);
-    const clauses: string[] = ['e.user_id = $1'];
+    // 循环实例是虚拟展开的：SQL 层只负责单次日程，系列走 OccurrenceService 展开
+    const clauses: string[] = ['e.user_id = $1', 'e.recurrence IS NULL'];
     const params: unknown[] = [userId];
     let index = 2;
 
@@ -501,7 +801,7 @@ export const eventService = {
       if (to) {
         const ti2 = index++;
         const ttz = index++;
-        params.push(to, tz);
+        params.push(to, ttz);
         clauses.push(`e.start_at < ($${ti2}::date::timestamp AT TIME ZONE $${ttz})`);
       }
     }
@@ -527,37 +827,81 @@ export const eventService = {
     return { clause: clauses.join(' AND '), params };
   },
 
-  /** 按日/日期范围/任务/类型查询（左闭右开） */
+  /**
+   * 按日/日期范围/任务/类型查询（左闭右开）。
+   * 合并两个来源：窗口内单次行 + 循环系列展开物化结果。
+   */
   async list(userId: number, filter: EventFilter): Promise<EventDTO[]> {
-    if (!filter.date && !filter.date_from && !filter.date_to) {
+    if (
+      !filter.date &&
+      !filter.date_from &&
+      !filter.date_to &&
+      !filter.series_id &&
+      !filter.recurring_only &&
+      !filter.task_id
+    ) {
       throw AppError.paramInvalid('请指定日期或日期范围');
     }
-    const { clause, params } = await this.buildCondition(userId, filter);
+    const tz = await resolveTz(filter.tz);
+    const window = resolveWindow(filter, tz);
     const limit = Math.min(filter.limit ?? 100, config.event.listMaxLimit);
-    const order = normalizeEventSort(filter.sort) === 'start_desc' ? 'DESC' : 'ASC';
+    const order = normalizeEventSort(filter.sort) === 'start_desc' ? -1 : 1;
+
+    const { clause, params } = await this.buildCondition(userId, { ...filter, tz });
     const res = await query<EventRow>(
-      `${EVENT_SELECT} WHERE ${clause} ORDER BY e.start_at ${order}, e.id ASC LIMIT $${
-        params.length + 1
-      }`,
+      `${EVENT_SELECT} WHERE ${clause} ORDER BY e.start_at ${
+        order === -1 ? 'DESC' : 'ASC'
+      }, e.id ASC LIMIT $${params.length + 1}`,
       [...params, limit]
     );
-    const dtos = res.rows.map(toEventDTO);
-    attachConflicts(dtos, res.rows);
-    return dtos;
+    const singles = filter.series_id ? [] : res.rows.map((row) => toEventDTO(row, tz));
+
+    let merged: EventDTO[] = singles;
+    if (window && !filter.recurring_only) {
+      const instances = applyInstanceFilters(
+        await occurrenceService.listSeriesInstances(userId, window.start, window.end, tz, {
+          includeCancelled: filter.include_cancelled,
+        }),
+        filter
+      );
+      merged = [...singles, ...instances];
+    } else if (window) {
+      merged = applyInstanceFilters(
+        await occurrenceService.listSeriesInstances(userId, window.start, window.end, tz, {
+          includeCancelled: filter.include_cancelled,
+        }),
+        filter
+      );
+    }
+
+    merged.sort((a, b) => {
+      const diff = new Date(a.start_at).getTime() - new Date(b.start_at).getTime();
+      if (diff !== 0) return diff * order;
+      return a.id === b.id ? 0 : 1;
+    });
+
+    const limited = merged.slice(0, limit);
+    attachConflicts(limited);
+    return limited;
   },
 
-  /** 全量取（批量操作预览用） */
+  /** 全量取（批量操作预览用，只含单次日程与任务日程，与批量执行口径一致） */
   async listAll(userId: number, filter: EventFilter, limit = config.event.listMaxLimit): Promise<EventDTO[]> {
-    const { clause, params } = await this.buildCondition(userId, filter);
+    const tz = await resolveTz(filter.tz);
+    const { clause, params } = await this.buildCondition(userId, { ...filter, tz });
     const res = await query<EventRow>(
       `${EVENT_SELECT} WHERE ${clause} ORDER BY e.start_at ASC, e.id ASC LIMIT $${params.length + 1}`,
       [...params, Math.min(limit, config.event.listMaxLimit)]
     );
-    return res.rows.map(toEventDTO);
+    return res.rows.map((row) => toEventDTO(row, tz));
   },
 
+  /**
+   * 关键词搜索：循环系列命中返回**系列主记录 DTO**（每个系列一条，不按实例重复）。
+   */
   async search(userId: number, keyword: string, limit = 50): Promise<EventDTO[]> {
     if (!keyword || !keyword.trim()) throw AppError.paramInvalid('请输入搜索关键词');
+    const tz = config.event.defaultTz;
     const escaped = keyword.trim().replace(/[%_\\]/g, (m) => `\\${m}`);
     const res = await query<EventRow>(
       `${EVENT_SELECT}
@@ -567,7 +911,30 @@ export const eventService = {
        LIMIT $3`,
       [userId, `%${escaped}%`, Math.min(limit, config.event.listMaxLimit)]
     );
-    return res.rows.map(toEventDTO);
+    return res.rows.map((row) =>
+      row.recurrence ? toSeriesDTO(row, tz) : toEventDTO(row, tz)
+    );
+  },
+
+  /** 系列详情：规则、摘要、下一次、总次数 + 未来/历史实例分页 */
+  async getSeriesDetail(
+    userId: number,
+    seriesId: number,
+    opts: { section?: 'upcoming' | 'past'; cursor?: string; tz?: string | null } = {}
+  ): Promise<SeriesDTO & { occurrences: { upcoming: OccurrenceDTO[]; past: OccurrenceDTO[] }; next_cursor: string | null }> {
+    const tz = await resolveTz(opts.tz);
+    const detail = await occurrenceService.getSeriesDetail(userId, seriesId, tz);
+    const row = await occurrenceService.getSeriesRow(userId, seriesId);
+    const section = opts.section ?? 'upcoming';
+    const page = await occurrenceService.listOccurrences(userId, row, section, opts.cursor, tz);
+    return {
+      ...detail,
+      occurrences: {
+        upcoming: section === 'upcoming' ? page.list : [],
+        past: section === 'past' ? page.list : [],
+      },
+      next_cursor: page.next_cursor,
+    };
   },
 
   /** 某任务的全部任务日程（任务详情排期分区） */
@@ -576,7 +943,7 @@ export const eventService = {
       `${EVENT_SELECT} WHERE e.user_id = $1 AND e.task_id = $2 ORDER BY e.start_at ASC, e.id ASC`,
       [userId, taskId]
     );
-    return res.rows.map(toEventDTO);
+    return res.rows.map((row) => toEventDTO(row));
   },
 
   /** 某任务关联的日程条数（删除任务前的级联告知） */
@@ -588,27 +955,39 @@ export const eventService = {
     return Number(res.rows[0]?.total ?? 0);
   },
 
+  /** 某任务集合关联的日程条数（子任务子树删除前的级联告知） */
+  async countByTaskIds(userId: number, taskIds: number[]): Promise<number> {
+    if (taskIds.length === 0) return 0;
+    const res = await query<{ total: string }>(
+      `SELECT COUNT(*)::int AS total FROM events WHERE user_id = $1 AND task_id = ANY($2::int[])`,
+      [userId, taskIds]
+    );
+    return Number(res.rows[0]?.total ?? 0);
+  },
+
   /**
    * 删除任务及其全部任务日程（单事务，返回级联删除条数）。
    * DB 层 ON DELETE CASCADE 仅作兜底，正常路径以本事务为准（计数可返回、可审计）。
    */
   async removeTaskWithEvents(userId: number, taskId: number): Promise<{ deleted_event_count: number }> {
-    return withTransaction(async (client) => {
-      const owned = await client.query(`SELECT id FROM tasks WHERE id = $1 AND user_id = $2`, [
-        taskId,
-        userId,
-      ]);
-      if (owned.rowCount === 0) throw AppError.notFound('任务不存在');
-      const deleted = await client.query(
-        `DELETE FROM events WHERE user_id = $1 AND task_id = $2`,
-        [userId, taskId]
-      );
-      await client.query(`DELETE FROM tasks WHERE id = $1 AND user_id = $2`, [taskId, userId]);
-      return { deleted_event_count: deleted.rowCount ?? 0 };
-    });
+    const result = await this.removeTaskIdsWithEvents(userId, [taskId]);
+    return { deleted_event_count: result.deleted_event_count };
   },
 
-  /** 月视图聚合：只返回「日期 → 计数」，不拉明细 */
+  /** 按任务 id 集合批量清理任务日程（子任务子树删除用，需在调用方事务内复用） */
+  async removeTaskIdsWithEvents(
+    userId: number,
+    taskIds: number[]
+  ): Promise<{ deleted_event_count: number }> {
+    if (taskIds.length === 0) return { deleted_event_count: 0 };
+    const res = await query(
+      `DELETE FROM events WHERE user_id = $1 AND task_id = ANY($2::int[])`,
+      [userId, taskIds]
+    );
+    return { deleted_event_count: res.rowCount ?? 0 };
+  },
+
+  /** 月视图聚合：只返回「日期 → 计数」，不拉明细（含循环实例归属日期） */
   async monthly(userId: number, year: number, month: number, tzInput?: string): Promise<MonthDayCount[]> {
     if (!Number.isInteger(year) || year < 1970 || year > 9999) {
       throw AppError.paramInvalid('年份不合法');
@@ -627,6 +1006,7 @@ export const eventService = {
               COUNT(*)::int AS cnt
        FROM events e
        WHERE e.user_id = $2
+         AND e.recurrence IS NULL
          AND e.start_at >= ($3::date::timestamp AT TIME ZONE $1)
          AND e.start_at <  ($4::date::timestamp AT TIME ZONE $1)
        GROUP BY 1, 2
@@ -635,14 +1015,31 @@ export const eventService = {
     );
 
     const map = new Map<string, MonthDayCount>();
+    const pick = (day: string): MonthDayCount => {
+      const item = map.get(day) ?? { date: day, normal: 0, task: 0, recurring: 0 };
+      map.set(day, item);
+      return item;
+    };
     for (const row of res.rows) {
-      const item = map.get(row.day) ?? { date: row.day, normal: 0, task: 0 };
+      const item = pick(row.day);
       if (row.event_type === 'task') item.task += Number(row.cnt);
       else item.normal += Number(row.cnt);
-      map.set(row.day, item);
     }
-    return [...map.values()];
+
+    // 循环实例：按 patch 后的日期计入；已取消的不计
+    const windowStart = fromZonedNaive(naiveOfDate(monthStart), tz);
+    const windowEnd = fromZonedNaive(naiveOfDate(monthEnd), tz);
+    const instances = await occurrenceService.listSeriesInstances(userId, windowStart, windowEnd, tz);
+    for (const inst of instances) {
+      const day = localDateString(new Date(inst.start_at), tz);
+      const item = pick(day);
+      item.normal += 1;
+      item.recurring += 1;
+    }
+
+    return [...map.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
   },
 };
 
+export { findSingleConflicts };
 export type { EventDTO, EventRow };

@@ -18,6 +18,14 @@ export const ErrorCode = {
   EVENT_TASK_NOT_SCHEDULABLE: 4002,
   EVENT_TYPE_IMMUTABLE: 4003,
   EVENT_CONFLICT: 4009,
+  // v0.2.0 循环日程 / 子任务领域
+  TASK_CASCADE_REQUIRED: 4010,
+  RECURRENCE_INVALID: 4011,
+  OCCURRENCE_NOT_FOUND: 4012,
+  SUBTASK_DEPTH_EXCEEDED: 4013,
+  SUBTASK_LIST_MISMATCH: 4014,
+  SUBTASK_CYCLE: 4015,
+  RECURRENCE_NOT_SUPPORTED: 4016,
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -37,6 +45,13 @@ const HTTP_STATUS: Record<number, number> = {
   [ErrorCode.EVENT_TASK_NOT_SCHEDULABLE]: 409,
   [ErrorCode.EVENT_TYPE_IMMUTABLE]: 409,
   [ErrorCode.EVENT_CONFLICT]: 409,
+  [ErrorCode.TASK_CASCADE_REQUIRED]: 409,
+  [ErrorCode.RECURRENCE_INVALID]: 400,
+  [ErrorCode.OCCURRENCE_NOT_FOUND]: 404,
+  [ErrorCode.SUBTASK_DEPTH_EXCEEDED]: 409,
+  [ErrorCode.SUBTASK_LIST_MISMATCH]: 409,
+  [ErrorCode.SUBTASK_CYCLE]: 409,
+  [ErrorCode.RECURRENCE_NOT_SUPPORTED]: 409,
 };
 
 export class AppError extends Error {
@@ -92,10 +107,63 @@ export class AppError extends Error {
     return new AppError(ErrorCode.EVENT_TYPE_IMMUTABLE, message);
   }
   /** 时间冲突待确认：details 携带冲突日程列表 */
-  static eventConflict(conflicts: unknown, conflictLevel: string) {
+  static eventConflict(conflicts: unknown, conflictLevel: string, extra?: Record<string, unknown>) {
     return new AppError(ErrorCode.EVENT_CONFLICT, '该时段与已有日程冲突', {
       conflicts,
       conflict_level: conflictLevel,
+      ...extra,
     });
+  }
+  /** 循环冲突待确认：details 携带按日期分组的冲突 */
+  static seriesConflict(details: {
+    conflict_level: string;
+    conflict_dates: unknown;
+    conflict_dates_total: number;
+    conflict_total: number;
+  }) {
+    return new AppError(ErrorCode.EVENT_CONFLICT, '该循环在多个日期与已有日程冲突', {
+      scope: 'series',
+      ...details,
+    });
+  }
+  /** 父任务完成需级联确认：details 携带未完成后代数量 */
+  static taskCascadeRequired(incompleteDescendantCount: number) {
+    return new AppError(ErrorCode.TASK_CASCADE_REQUIRED, '还有未完成的子任务', {
+      incomplete_descendant_count: incompleteDescendantCount,
+      cascade_required: true,
+    });
+  }
+  /** 循环规则非法 */
+  static recurrenceInvalid(reason: string) {
+    return new AppError(ErrorCode.RECURRENCE_INVALID, `重复规则不合法：${reason}`, {
+      reason,
+    });
+  }
+  /** 循环实例不存在（occurrence_key 在规则下无对应实例） */
+  static occurrenceNotFound(message = '未找到该次安排') {
+    return new AppError(ErrorCode.OCCURRENCE_NOT_FOUND, message);
+  }
+  /** 子任务层级超过上限 */
+  static subtaskDepthExceeded(maxDepth: number) {
+    return new AppError(
+      ErrorCode.SUBTASK_DEPTH_EXCEEDED,
+      `子任务最多支持 ${maxDepth} 级`,
+      { max_depth: maxDepth }
+    );
+  }
+  /** 子任务必须与根任务在同一清单 */
+  static subtaskListMismatch() {
+    return new AppError(ErrorCode.SUBTASK_LIST_MISMATCH, '子任务必须与父任务在同一清单');
+  }
+  /** 不能移动到自身或自己的子任务下 */
+  static subtaskCycle() {
+    return new AppError(ErrorCode.SUBTASK_CYCLE, '不能把任务移动到它自己或它的子任务下');
+  }
+  /** 任务日程不支持循环 */
+  static recurrenceNotSupported() {
+    return new AppError(
+      ErrorCode.RECURRENCE_NOT_SUPPORTED,
+      '任务日程不支持重复，只能创建单次安排'
+    );
   }
 }
