@@ -1,15 +1,35 @@
 import type { TaskDTO } from '../task/types';
+import type { EventConflictBrief, EventDTO } from '../event/types';
 
 /** 助手消息的结构化内容块，历史回看与实时流式复用同一套渲染模型 */
 export type MessageBlock =
   | { type: 'text'; text: string }
-  | { type: 'cards'; tasks: TaskDTO[] }
-  | { type: 'clarify'; question: string; candidates: TaskDTO[]; intent?: string }
+  | { type: 'cards'; tasks: TaskDTO[]; events?: EventDTO[] }
+  | {
+      type: 'conflict';
+      /** 触发冲突的工具名，便于客户端提示 */
+      tool: string;
+      conflicts: EventConflictBrief[];
+      conflict_level: string;
+      message?: string;
+    }
+  | {
+      type: 'clarify';
+      question: string;
+      /** task：候选任务；event：候选日程（v0.1.0） */
+      kind?: 'task' | 'event';
+      candidates: TaskDTO[];
+      /** 候选日程（v0.1.0） */
+      events?: EventDTO[];
+      intent?: string;
+    }
   | {
       type: 'confirm';
       pending_action_id: string;
       action: string;
       affected: TaskDTO[];
+      /** 日程类危险操作的影响对象（v0.1.0） */
+      affected_events?: EventDTO[];
       count: number;
       description: string;
     }
@@ -58,7 +78,8 @@ export interface PendingActionRow {
   user_id: number;
   tool_name: string;
   params: Record<string, unknown>;
-  affected: TaskDTO[];
+  /** 预取的影响对象快照：任务与日程分列（affected 列为通用 JSONB） */
+  affected: { tasks?: TaskDTO[]; events?: EventDTO[] } | null;
   status: string;
   expires_at: Date;
   created_at: Date;

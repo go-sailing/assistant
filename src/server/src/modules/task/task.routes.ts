@@ -4,6 +4,7 @@ import { asyncHandler, ok } from '../../common/response';
 import { getUser } from '../../middleware/auth';
 import { idParam, optionalId, parse, priorityEnum, statusEnum } from '../../common/validate';
 import { taskService } from './task.service';
+import { eventService } from '../event/event.service';
 
 const dueAtSchema = z
   .union([z.string(), z.null()])
@@ -102,7 +103,22 @@ taskRoutes.get(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
-    ok(res, await taskService.get(user.id, id));
+    const task = await taskService.get(user.id, id);
+    // 附带排期数量，任务详情一次请求即可决定删除确认文案是否提示级联
+    const event_count = await eventService.countByTask(user.id, id);
+    ok(res, { ...task, event_count });
+  })
+);
+
+/** 该任务的全部任务日程（任务详情「日程安排」分区） */
+taskRoutes.get(
+  '/tasks/:id/events',
+  asyncHandler(async (req, res) => {
+    const user = getUser(req);
+    const id = parse(idParam, req.params.id, '任务 ID');
+    // 先校验任务归属，避免通过该接口探测他人任务是否存在
+    await taskService.getOwned(user.id, id);
+    ok(res, await eventService.listByTask(user.id, id));
   })
 );
 
@@ -139,7 +155,7 @@ taskRoutes.delete(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
-    await taskService.remove(user.id, id);
-    ok(res, { id });
+    const result = await taskService.remove(user.id, id);
+    ok(res, { id, ...result });
   })
 );

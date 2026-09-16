@@ -3,6 +3,8 @@ export interface ApiResponse<T> {
   code: number
   message: string
   data: T
+  /** 业务错误的补充数据（如日程冲突列表） */
+  details?: unknown
 }
 
 export interface Paged<T> {
@@ -48,6 +50,98 @@ export interface Task {
   created_at: string
   updated_at: string
   completed_at: string | null
+  /** 该任务关联的任务日程数量（详情接口返回，v0.1.0） */
+  event_count?: number
+}
+
+/* ---------------- 日程（v0.1.0） ---------------- */
+
+/** 日程类型：normal 普通日程 / task 任务日程（链接一个任务作为执行时段载体） */
+export type EventType = 'normal' | 'task'
+export type EventSource = 'manual' | 'chat'
+export type ConflictLevel = 'none' | 'overlap' | 'all_day'
+
+/** 任务日程内嵌的任务摘要（实时数据） */
+export interface EventTaskBrief {
+  id: number | string
+  title: string
+  status: TaskStatus
+  priority: TaskPriority
+  due_at: string | null
+  completed_at: string | null
+  list_id: number | string
+  list_name: string
+}
+
+export interface CalendarEvent {
+  id: number | string
+  event_type: EventType
+  task_id: number | string | null
+  title: string
+  note: string | null
+  location: string | null
+  all_day: boolean
+  start_at: string
+  end_at: string
+  status: 'scheduled' | 'cancelled'
+  source: EventSource
+  created_at: string
+  updated_at: string
+  /** 任务日程内嵌任务对象；普通日程为 null */
+  task: EventTaskBrief | null
+  conflicts?: EventConflictBrief[]
+  conflict_level?: ConflictLevel
+  /** 历史卡片刷新时标记：该日程已被删除，应渲染占位而非陈旧快照 */
+  missing?: boolean
+}
+
+/** 冲突提示用的精简结构 */
+export interface EventConflictBrief {
+  id: number | string
+  event_type: EventType
+  title: string
+  start_at: string
+  end_at: string
+  all_day: boolean
+  location: string | null
+}
+
+/** 月视图聚合项 */
+export interface MonthDayCount {
+  date: string
+  normal: number
+  task: number
+}
+
+export interface EventPayload {
+  /** 仅创建时必填；编辑时不下发（类型创建后不可变更） */
+  event_type?: EventType
+  task_id?: number | string | null
+  title?: string | null
+  note?: string | null
+  location?: string | null
+  all_day?: boolean
+  start_at: string
+  end_at: string
+  /** 冲突二次提交标记 */
+  confirm_conflict?: boolean
+}
+
+export interface EventQuery {
+  date?: string
+  date_from?: string
+  date_to?: string
+  tz?: string
+  task_id?: string | number
+  event_type?: EventType
+  sort?: 'start_asc' | 'start_desc'
+  limit?: number
+}
+
+/** 冲突二次提交所需的原始参数（用于「仍要保存」） */
+export interface ConflictDetail {
+  conflicts: EventConflictBrief[]
+  conflict_level: ConflictLevel
 }
 
 export interface TaskQuery {
@@ -90,12 +184,27 @@ export interface TextBlock {
 export interface CardsBlock {
   type: 'cards'
   tasks: Task[]
+  /** 日程卡片（v0.1.0） */
+  events?: CalendarEvent[]
 }
 
 export interface ClarifyBlock {
   type: 'clarify'
   question: string
+  /** task 候选任务；event 候选日程 */
+  kind?: 'task' | 'event'
   candidates: Task[]
+  events?: CalendarEvent[]
+}
+
+/** 时间冲突提示块（v0.1.0）：未保存，等待用户决定 */
+export interface ConflictBlock {
+  type: 'conflict'
+  tool: string
+  conflicts: EventConflictBrief[]
+  conflict_level: ConflictLevel
+  /** 是否为全天安排导致的弱化提示 */
+  message?: string
 }
 
 /** 确认条动作类型 */
@@ -103,6 +212,8 @@ export type ConfirmAction =
   | 'delete_task'
   | 'delete_list'
   | 'batch_update_tasks'
+  | 'delete_event'
+  | 'batch_update_events'
   | string
 
 export interface ConfirmBlock {
@@ -110,7 +221,10 @@ export interface ConfirmBlock {
   pending_action_id: string
   action: ConfirmAction
   affected: Task[]
+  /** 日程类危险操作的影响对象 */
+  affected_events?: CalendarEvent[]
   count: number
+  description?: string
 }
 
 export interface ErrorBlock {
@@ -123,6 +237,7 @@ export type MessageBlock =
   | TextBlock
   | CardsBlock
   | ClarifyBlock
+  | ConflictBlock
   | ConfirmBlock
   | ErrorBlock
 
@@ -156,6 +271,6 @@ export interface ChatMessage {
   clientMsgId?: string
   /** 确认条本地状态：pending_action_id -> 状态 */
   pendingState?: Record<string, 'pending' | 'loading' | 'confirmed' | 'canceled' | 'stale'>
-  /** 候选选择结果：候选块下标 -> 已选任务标题 */
+  /** 候选选择结果：候选块下标 -> 已选对象标题 */
   clarifyPicked?: Record<number, string>
 }

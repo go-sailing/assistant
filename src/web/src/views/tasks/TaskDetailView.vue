@@ -2,28 +2,34 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as taskApi from '@/api/tasks'
+import * as eventApi from '@/api/events'
 import { errorText } from '@/api/client'
-import type { Task } from '@/types'
+import type { CalendarEvent, Task } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppButton from '@/components/AppButton.vue'
 import AppCheckbox from '@/components/AppCheckbox.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AppModal from '@/components/AppModal.vue'
 import PriorityFlag from '@/components/PriorityFlag.vue'
 import StateError from '@/components/StateError.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
+import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
-import { dueTone, formatFull, formatShort, overdueDays } from '@/utils/time'
+import { dueTone, formatEventRange, formatFull, formatShort, overdueDays } from '@/utils/time'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
 const taskSync = useTaskSyncStore()
+const eventSync = useEventSyncStore()
 
 const task = ref<Task | null>(null)
+const events = ref<CalendarEvent[]>([])
 const loading = ref(true)
 const error = ref('')
 const actionLoading = ref(false)
 const sheetVisible = ref(false)
+const cascadeVisible = ref(false)
 
 const taskId = computed(() => String(route.params.id))
 const fromChat = computed(() => route.query.from === 'chat')
@@ -38,9 +44,16 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    task.value = await taskApi.fetchTask(taskId.value)
+    const [t, evs] = await Promise.all([
+      taskApi.fetchTask(taskId.value),
+      // 排期列表失败不阻塞任务详情展示
+      eventApi.fetchTaskEvents(taskId.value).catch(() => [] as CalendarEvent[]),
+    ])
+    task.value = t
+    events.value = evs
   } catch (e) {
     task.value = null
+    events.value = []
     error.value = errorText(e)
   } finally {
     loading.value = false
@@ -62,18 +75,42 @@ async function toggleStatus(): Promise<void> {
   }
 }
 
+/**
+ * 删除任务：有排期时先弹出级联告知（与对话侧文案一致），
+ * 确认文案必须明示将同时删除 N 条日程安排。
+ */
+function askDelete(): void {
+  if (events.value.length > 0) {
+    cascadeVisible.value = true
+    return
+  }
+  sheetVisible.value = true
+}
+
 async function remove(): Promise<void> {
   const t = task.value
   if (!t) return
   sheetVisible.value = false
+  cascadeVisible.value = false
   try {
-    await taskApi.deleteTask(t.id)
+    const res = await taskApi.deleteTask(t.id)
     taskSync.markDirty()
-    toast.show('已删除')
+    eventSync.markDirty()
+    const cascaded = res.deleted_event_count ?? 0
+    toast.show(cascaded > 0 ? `已删除任务及其 ${cascaded} 条日程安排` : '已删除')
     router.replace('/tasks')
   } catch (e) {
     toast.show(errorText(e))
   }
+}
+
+/** 为任务安排执行时段：带入任务并锁定类型 */
+function planEvent(): void {
+  router.push(`/calendar/new?event_type=task&task_id=${taskId.value}&from=task`)
+}
+
+function openEvent(ev: CalendarEvent): void {
+  router.push(`/calendar/${ev.id}`)
 }
 
 onMounted(load)
@@ -134,6 +171,39 @@ onMounted(load)
           <p class="detail__note-text">{{ task.note || '暂无备注' }}</p>
         </section>
 
+        <!-- 日程安排分区：任务日程作为该任务的执行时段载体，同一任务可有多条 -->
+        <section class="detail__schedule">
+          <div class="detail__schedule-head">
+            <h2 class="detail__schedule-title">
+              日程安排<span v-if="events.length" class="detail__schedule-count">（{{ events.length }}）</span>
+            </h2>
+            <button class="detail__schedule-add pressable" @click="planEvent">
+              <AppIcon name="plus" :size="14" color="#3D5AFE" />
+              安排日程
+            </button>
+          </div>
+          <ul v-if="events.length" class="detail__schedule-list">
+            <li
+              v-for="ev in events"
+              :key="String(ev.id)"
+              class="detail__schedule-item pressable"
+              role="button"
+              tabindex="0"
+              :aria-label="`查看日程安排 ${ev.title}`"
+              @click="openEvent(ev)"
+              @keydown.enter="openEvent(ev)"
+            >
+              <AppIcon name="link" :size="16" color="#7C4DFF" />
+              <span class="detail__schedule-time">{{ formatEventRange(ev) }}</span>
+              <span class="detail__schedule-place ellipsis">
+                {{ ev.location || formatShort(ev.start_at) }}
+              </span>
+              <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
+            </li>
+          </ul>
+          <p v-else class="detail__schedule-empty">还没有安排执行时段</p>
+        </section>
+
         <section class="detail__times">
           <p>创建于 {{ formatShort(task.created_at) }}</p>
           <p v-if="task.completed_at">完成于 {{ formatShort(task.completed_at) }}</p>
@@ -143,7 +213,7 @@ onMounted(load)
           <AppButton type="primary" :loading="actionLoading" @click="toggleStatus">
             {{ completed ? '取消完成' : '标记已完成' }}
           </AppButton>
-          <button class="detail__delete pressable" @click="sheetVisible = true">删除</button>
+          <button class="detail__delete pressable" @click="askDelete">删除</button>
         </div>
       </template>
     </div>
@@ -154,6 +224,17 @@ onMounted(load)
       :items="[{ label: '删除任务', value: 'delete', danger: true }]"
       @select="remove"
       @cancel="sheetVisible = false"
+    />
+
+    <!-- 有排期时的级联删除告知：条数由排期列表真实条数计算 -->
+    <AppModal
+      :visible="cascadeVisible"
+      title="删除任务？"
+      :text="`将同时删除该任务的 ${events.length} 条日程安排，且不可恢复。`"
+      confirm-text="删除"
+      danger
+      @confirm="remove"
+      @cancel="cascadeVisible = false"
     />
   </div>
 </template>
@@ -258,6 +339,66 @@ onMounted(load)
   line-height: var(--font-body-m-lh);
   white-space: pre-wrap;
   word-break: break-word;
+}
+.detail__schedule {
+  margin-top: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--bg-card);
+}
+.detail__schedule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.detail__schedule-title {
+  font-size: var(--font-caption);
+  color: var(--text-secondary);
+}
+.detail__schedule-count {
+  color: var(--text-secondary);
+}
+.detail__schedule-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  margin: -10px -8px -10px 0;
+  padding: 0 var(--sp-2);
+  font-size: var(--font-body-m);
+  color: var(--color-primary);
+}
+.detail__schedule-list {
+  margin-top: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+}
+.detail__schedule-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 48px;
+  border-bottom: 1px solid var(--border-color);
+}
+.detail__schedule-item:last-child {
+  border-bottom: none;
+}
+.detail__schedule-time {
+  font-size: var(--font-body-m);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.detail__schedule-place {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-caption);
+  color: var(--text-secondary);
+}
+.detail__schedule-empty {
+  margin-top: var(--sp-2);
+  font-size: var(--font-caption);
+  color: var(--text-disabled);
 }
 .detail__times {
   margin-top: var(--sp-2);

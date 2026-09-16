@@ -37,6 +37,17 @@ export const config = {
     historyLimit: num('CHAT_HISTORY_LIMIT', 20),
   },
   pendingActionTtlSeconds: num('PENDING_ACTION_TTL_SECONDS', 300),
+  /** v0.1.0 日程领域配置 */
+  event: {
+    /** 未指定时区时的兜底时区（IANA） */
+    defaultTz: process.env.EVENT_DEFAULT_TZ || 'Asia/Shanghai',
+    /** 仅给开始时间时的默认时长（分钟），用于文档一致性 */
+    defaultDurationMin: num('EVENT_DEFAULT_DURATION_MIN', 60),
+    /** 冲突返回条数上限 */
+    conflictScanLimit: num('EVENT_CONFLICT_SCAN_LIMIT', 50),
+    /** 日程列表/批量预取上限 */
+    listMaxLimit: num('EVENT_LIST_MAX_LIMIT', 200),
+  },
   rateLimit: {
     authPerMin: num('RATE_LIMIT_AUTH_PER_MIN', 20),
     chatPerMin: num('RATE_LIMIT_CHAT_PER_MIN', 20),

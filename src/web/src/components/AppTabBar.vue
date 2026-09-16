@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue'
 
-defineProps<{ active: 'tasks' | 'chat' }>()
+defineProps<{ active: 'calendar' | 'tasks' | 'chat' }>()
 
 const tabs = [
+  { key: 'calendar', label: '日程', to: '/calendar', icon: 'calendar', activeIcon: 'calendar-fill' },
   { key: 'tasks', label: '任务', to: '/tasks', icon: 'list', activeIcon: 'list-fill' },
   { key: 'chat', label: '助手', to: '/chat', icon: 'chat', activeIcon: 'chat-fill' },
 ] as const

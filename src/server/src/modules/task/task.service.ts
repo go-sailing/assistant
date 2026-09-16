@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool';
 import { AppError } from '../../common/errors';
+import { logger } from '../../common/logger';
 import { listService } from '../list/list.service';
 import {
   normalizeSort,
@@ -272,9 +273,31 @@ export const taskService = {
     return this.get(userId, taskId);
   },
 
-  async remove(userId: number, taskId: number): Promise<void> {
-    const res = await query(`DELETE FROM tasks WHERE id = $1 AND user_id = $2`, [taskId, userId]);
-    if (res.rowCount === 0) throw AppError.notFound('任务不存在');
+  /**
+   * 删除任务：单事务内级联删除该任务的全部任务日程（v0.1.0）。
+   * DB 层 ON DELETE CASCADE 仅作兜底，正常路径以本事务为准，便于返回级联条数与审计。
+   */
+  async remove(userId: number, taskId: number): Promise<{ deleted_event_count: number }> {
+    return withTransaction(async (client) => {
+      const owned = await client.query(`SELECT id FROM tasks WHERE id = $1 AND user_id = $2`, [
+        taskId,
+        userId,
+      ]);
+      if (owned.rowCount === 0) throw AppError.notFound('任务不存在');
+
+      const deletedEvents = await client.query(
+        `DELETE FROM events WHERE user_id = $1 AND task_id = $2`,
+        [userId, taskId]
+      );
+      await client.query(`DELETE FROM tasks WHERE id = $1 AND user_id = $2`, [taskId, userId]);
+
+      const count = deletedEvents.rowCount ?? 0;
+      // 埋点：删除任务时的日程级联清理（对应系统设计文档 10.2）
+      if (count > 0) {
+        logger.info('task_delete_cascade', { user_id: userId, task_id: taskId, count });
+      }
+      return { deleted_event_count: count };
+    });
   },
 
   /** 按 ID 集合批量更新（对话确认后按已确认的 ID 精确执行） */

@@ -6,7 +6,7 @@ import AppToast from '@/components/AppToast.vue'
 
 const route = useRoute()
 // 底部 Tab 仅在一级页面常驻
-const tab = computed(() => (route.meta.tab as 'tasks' | 'chat' | undefined) || null)
+const tab = computed(() => (route.meta.tab as 'calendar' | 'tasks' | 'chat' | undefined) || null)
 </script>
 
 <template>

@@ -3,15 +3,18 @@ import { clearToken, getToken } from '@/utils/token'
 
 export const BASE_URL = '/api/v1'
 
-/** 业务错误：携带 code / HTTP 状态码 */
+/** 业务错误：携带 code / HTTP 状态码 / 结构化 details */
 export class ApiError extends Error {
   code: number
   status: number
-  constructor(message: string, code: number, status: number) {
+  /** 后端 details 字段：日程冲突（4009）等场景携带结构化数据 */
+  details: unknown
+  constructor(message: string, code: number, status: number, details: unknown = null) {
     super(message)
     this.name = 'ApiError'
     this.code = code
     this.status = status
+    this.details = details
   }
 }
 
@@ -101,7 +104,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw new ApiError(json.message || '登录已失效，请重新登录', 1002, 401)
   }
   if (json.code !== 0) {
-    throw new ApiError(json.message || '请求失败', json.code, res.status)
+    throw new ApiError(json.message || '请求失败', json.code, res.status, json.details ?? null)
   }
   return json.data
 }

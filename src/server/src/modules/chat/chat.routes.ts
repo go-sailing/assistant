@@ -20,6 +20,8 @@ const chatBodySchema = z.object({
   client_msg_id: z.string().max(64).optional(),
   /** 客户端时区偏移（分钟，东八区为 480），用于正确解析「明天」「下周五」 */
   timezone_offset: z.number().int().min(-840).max(840).optional(),
+  /** 客户端 IANA 时区（如 Asia/Shanghai），用于日程按自然日筛选 */
+  timezone: z.string().max(64).optional(),
 });
 
 const createConversationSchema = z.object({ title: z.string().max(100).optional() });
@@ -132,6 +134,7 @@ chatRoutes.post(
           clientMsgId: body.client_msg_id,
           timezoneOffsetMinutes:
             body.timezone_offset ?? -new Date().getTimezoneOffset(),
+          timezone: body.timezone,
           traceId: authed.traceId,
         },
         emit,

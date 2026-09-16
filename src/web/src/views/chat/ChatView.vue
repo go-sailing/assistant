@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import * as convApi from '@/api/conversations'
 import * as taskApi from '@/api/tasks'
 import { errorText } from '@/api/client'
-import type { ConfirmBlock, Conversation, Task } from '@/types'
+import type { CalendarEvent, ConfirmBlock, Conversation, Task } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppModal from '@/components/AppModal.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -13,6 +13,7 @@ import ChatInput from '@/components/chat/ChatInput.vue'
 import MessageItem from '@/components/chat/MessageItem.vue'
 import { useChatStore } from '@/stores/chat'
 import { useTaskSyncStore } from '@/stores/taskSync'
+import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
 import { formatDaySeparator } from '@/utils/time'
 
@@ -21,6 +22,7 @@ const router = useRouter()
 const toast = useToastStore()
 const chat = useChatStore()
 const taskSync = useTaskSyncStore()
+const eventSync = useEventSyncStore()
 
 const convId = computed(() => String(route.params.id))
 const messages = computed(() => chat.messagesOf(convId.value))
@@ -153,6 +155,72 @@ function onPick(msg: (typeof messages.value)[number], blockIndex: number, task: 
   chat.pickCandidate(convId.value, msg, blockIndex, task)
 }
 
+function onEventDetail(event: CalendarEvent): void {
+  router.push(`/calendar/${event.id}?from=chat`)
+}
+
+function onEventTask(task: Task): void {
+  router.push(`/tasks/${task.id}?from=chat`)
+}
+
+/** 日程卡片勾选 = 完成关联任务（写任务状态，日程本身无完成态） */
+async function onEventToggle(event: CalendarEvent): Promise<void> {
+  const task = event.task
+  if (!task) return
+  try {
+    const updated =
+      task.status === 'completed'
+        ? await taskApi.uncompleteTask(task.id)
+        : await taskApi.completeTask(task.id)
+    updateEventTaskEverywhere(task.id, updated)
+    taskSync.markDirty()
+    eventSync.markDirty()
+  } catch (e) {
+    toast.show(errorText(e))
+  }
+}
+
+/** 任务完成态变化后刷新所有日程卡片内嵌的任务摘要 */
+function updateEventTaskEverywhere(id: Task['id'], updated: Task): void {
+  const patch = (ev: CalendarEvent): void => {
+    if (ev.task && String(ev.task.id) === String(id)) {
+      ev.task = {
+        ...ev.task,
+        title: updated.title,
+        status: updated.status,
+        priority: updated.priority,
+        due_at: updated.due_at,
+        completed_at: updated.completed_at,
+      }
+    }
+  }
+  messages.value.forEach((m) => {
+    m.blocks.forEach((b) => {
+      if (b.type === 'cards') (b.events ?? []).forEach(patch)
+      else if (b.type === 'clarify') (b.events ?? []).forEach(patch)
+      else if (b.type === 'confirm') (b.affected_events ?? []).forEach(patch)
+    })
+  })
+}
+
+function onEventPick(
+  msg: (typeof messages.value)[number],
+  blockIndex: number,
+  event: CalendarEvent
+): void {
+  chat.pickEventCandidate(convId.value, msg, blockIndex, event)
+}
+
+/** 「仍要安排」把决定交回助手，由模型带 confirm_conflict=true 重新调用工具 */
+function onConflictForce(): void {
+  chat.conflictForce(convId.value)
+}
+
+function onConflictChange(): void {
+  chat.conflictChange(convId.value)
+  toast.show('告诉我新的时间就可以')
+}
+
 function onConfirm(msg: (typeof messages.value)[number], block: ConfirmBlock): void {
   void chat.confirmAction(convId.value, msg, block)
 }
@@ -216,6 +284,7 @@ async function confirmDelete(): Promise<void> {
       <div v-else-if="!messages.length" class="chat__guide">
         <p class="chat__guide-title">和助手说一句话试试</p>
         <p class="chat__guide-tip">例如：「明天下午 3 点提醒我交季度报告」</p>
+        <p class="chat__guide-tip">也可以说：「把季度报告安排在明天 15:00–16:00 写」</p>
       </div>
 
       <template v-else>
@@ -226,6 +295,12 @@ async function confirmDelete(): Promise<void> {
             @detail="onDetail"
             @toggle="onToggle"
             @pick="onPick"
+            @event-detail="onEventDetail"
+            @event-task="onEventTask"
+            @event-toggle="onEventToggle"
+            @event-pick="onEventPick"
+            @conflict-change="onConflictChange"
+            @conflict-force="onConflictForce"
             @confirm="onConfirm(item.msg, $event)"
             @cancel="onCancel(item.msg, $event)"
             @retry="onRetry"

@@ -4,6 +4,7 @@ import { authMiddleware, errorHandler, traceMiddleware } from './middleware/auth
 import { authRoutes } from './modules/auth/auth.routes';
 import { listRoutes } from './modules/list/list.routes';
 import { taskRoutes } from './modules/task/task.routes';
+import { eventRoutes } from './modules/event/event.routes';
 import { chatRoutes } from './modules/chat/chat.routes';
 import { asyncHandler, ok } from './common/response';
 import { query } from './db/pool';
@@ -33,9 +34,11 @@ export function createApp() {
   // 这样未被任何路由匹配的 /api/v1 路径会走到下面的 404 处理（而不是先被判未登录）
   app.use('/api/v1/lists', authMiddleware);
   app.use('/api/v1/tasks', authMiddleware);
+  app.use('/api/v1/events', authMiddleware);
   app.use('/api/v1/conversations', authMiddleware);
   app.use('/api/v1', listRoutes);
   app.use('/api/v1', taskRoutes);
+  app.use('/api/v1', eventRoutes);
   app.use('/api/v1', chatRoutes);
 
   app.use((_req, res) => {

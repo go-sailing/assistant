@@ -3,7 +3,7 @@ import type { RouteRecordRaw } from 'vue-router'
 import { getToken } from '@/utils/token'
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', redirect: '/tasks' },
+  { path: '/', redirect: '/calendar' },
   {
     path: '/onboarding',
     name: 'onboarding',
@@ -21,6 +21,42 @@ const routes: RouteRecordRaw[] = [
     name: 'register',
     component: () => import('@/views/auth/RegisterView.vue'),
     meta: { public: true },
+  },
+  {
+    path: '/calendar',
+    name: 'calendar-month',
+    component: () => import('@/views/calendar/MonthView.vue'),
+    meta: { requiresAuth: true, tab: 'calendar' },
+  },
+  {
+    path: '/calendar/day',
+    name: 'calendar-day',
+    component: () => import('@/views/calendar/DayView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/calendar/new',
+    name: 'event-create',
+    component: () => import('@/views/calendar/EventFormView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/calendar/tasks',
+    name: 'event-task-picker',
+    component: () => import('@/views/calendar/TaskPickerView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/calendar/:id',
+    name: 'event-detail',
+    component: () => import('@/views/calendar/EventDetailView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/calendar/:id/edit',
+    name: 'event-edit',
+    component: () => import('@/views/calendar/EventFormView.vue'),
+    meta: { requiresAuth: true },
   },
   {
     path: '/tasks',
@@ -70,7 +106,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/chat/ChatView.vue'),
     meta: { requiresAuth: true },
   },
-  { path: '/:pathMatch(.*)*', redirect: '/tasks' },
+  { path: '/:pathMatch(.*)*', redirect: '/calendar' },
 ]
 
 const router = createRouter({
@@ -83,10 +119,13 @@ const router = createRouter({
 router.beforeEach((to) => {
   const logged = !!getToken()
   if (to.meta.requiresAuth && !logged) {
-    return { path: '/login', query: to.fullPath !== '/tasks' ? { redirect: to.fullPath } : undefined }
+    return {
+      path: '/login',
+      query: to.fullPath !== '/calendar' ? { redirect: to.fullPath } : undefined,
+    }
   }
   if (to.meta.public && logged) {
-    return { path: '/tasks' }
+    return { path: '/calendar' }
   }
   return true
 })

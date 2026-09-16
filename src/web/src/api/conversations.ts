@@ -1,4 +1,5 @@
 import { BASE_URL, authHeaders, request } from './client'
+import { localTimezone } from './events'
 import type { Conversation, Paged, RawMessage } from '@/types'
 
 export function fetchConversations(): Promise<Conversation[]> {
@@ -77,10 +78,12 @@ export async function streamChat(
     },
     // timezone_offset 让服务端按用户本地时区解析「明天」「下周五」等相对时间
     // 约定：东八区为 480（即 getTimezoneOffset 取反）
+    // timezone（IANA）供日程工具按自然日筛选
     body: JSON.stringify({
       content,
       client_msg_id: clientMsgId,
       timezone_offset: -new Date().getTimezoneOffset(),
+      timezone: localTimezone(),
     }),
     signal,
   })

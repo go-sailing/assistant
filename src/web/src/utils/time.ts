@@ -1,4 +1,4 @@
-import type { Task } from '@/types'
+import type { CalendarEvent, Task } from '@/types'
 
 /** ISO8601 UTC 字符串 → 本地 Date */
 export function parseDate(iso: string | null | undefined): Date | null {
@@ -144,4 +144,103 @@ export function fromLocalInputValue(v: string): string | null {
   if (!v) return null
   const d = new Date(v)
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
+/* ---------------- 日程（v0.1.0） ---------------- */
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/** Date → YYYY-MM-DD（本地时区） */
+export function toDateKey(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** YYYY-MM-DD → 本地零点的 Date */
+export function fromDateKey(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number)
+  return new Date(y, (m ?? 1) - 1, d ?? 1)
+}
+
+/** 日期标题：M月D日 周X（今天/明天/昨天时附加提示） */
+export function formatDayTitle(key: string): string {
+  const d = fromDateKey(key)
+  const base = `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKDAYS[d.getDay()]}`
+  const diff = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000)
+  if (diff === 0) return `${base} 今天`
+  if (diff === 1) return `${base} 明天`
+  if (diff === -1) return `${base} 昨天`
+  return base
+}
+
+/** 月视图标题：YYYY年M月 */
+export function formatMonthTitle(year: number, month: number): string {
+  return `${year}年${month}月`
+}
+
+/** 时段：HH:mm–HH:mm；全天返回「全天」；跨日追加「(次日)」或「–M月D日」 */
+export function formatEventRange(event: Pick<CalendarEvent, 'start_at' | 'end_at' | 'all_day'>): string {
+  const s = parseDate(event.start_at)
+  const e = parseDate(event.end_at)
+  if (!s || !e) return ''
+  if (event.all_day) return '全天'
+  const start = `${pad(s.getHours())}:${pad(s.getMinutes())}`
+  const end = `${pad(e.getHours())}:${pad(e.getMinutes())}`
+  if (toDateKey(s) !== toDateKey(e)) {
+    const dayGap = Math.round((startOfDay(e) - startOfDay(s)) / 86400000)
+    const suffix = dayGap <= 1 ? '(次日)' : ` – ${e.getMonth() + 1}月${e.getDate()}日`
+    return `${start}–${end}${suffix}`
+  }
+  return `${start}–${end}`
+}
+
+/** 日程卡片完整时段：M月D日 周X 15:00–16:00 */
+export function formatEventCardTime(event: Pick<CalendarEvent, 'start_at' | 'end_at' | 'all_day'>): string {
+  const s = parseDate(event.start_at)
+  if (!s) return ''
+  const day = `${s.getMonth() + 1}月${s.getDate()}日 ${WEEKDAYS[s.getDay()]}`
+  if (event.all_day) return `${day} 全天`
+  return `${day} ${formatEventRange(event)}`
+}
+
+/** 时间轴左栏刻度：HH:mm */
+export function formatClock(d: Date): string {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 日程是否正在进行中（当前时间落在 [start, end) 内） */
+export function isOngoing(event: Pick<CalendarEvent, 'start_at' | 'end_at' | 'all_day'>): boolean {
+  if (event.all_day) return false
+  const s = parseDate(event.start_at)
+  const e = parseDate(event.end_at)
+  if (!s || !e) return false
+  const now = Date.now()
+  return now >= s.getTime() && now < e.getTime()
+}
+
+/** 当前时间参考线在当日时间轴中的位置比例（0~1，用于定位） */
+export function nowRatio(): number {
+  const d = new Date()
+  return (d.getHours() * 60 + d.getMinutes()) / 1440
+}
+
+/** 月份网格：返回 6×7 = 42 个日期（含上月补位） */
+export function buildMonthGrid(year: number, month: number): Date[] {
+  const first = new Date(year, month - 1, 1)
+  // 以周一为一周起点（与 UX 设计稿一致：日 一 二 三 四 五 六 从周日开始）
+  const start = new Date(first)
+  start.setDate(first.getDate() - first.getDay())
+  const days: Date[] = []
+  for (let i = 0; i < 42; i += 1) {
+    const d = new Date(start)
+    d.setDate(start.getDate() + i)
+    days.push(d)
+  }
+  return days
+}
+
+/** 下一整天（全天日程结束边界） */
+export function nextDay(d: Date): Date {
+  const next = new Date(d)
+  next.setDate(d.getDate() + 1)
+  return next
 }

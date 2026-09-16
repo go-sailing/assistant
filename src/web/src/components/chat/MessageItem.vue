@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { ChatMessage, ConfirmBlock, Task } from '@/types'
+import type { CalendarEvent, ChatMessage, ConfirmBlock, Task } from '@/types'
 import AppActionSheet from '../AppActionSheet.vue'
 import AppIcon from '../AppIcon.vue'
 import LoadingDots from '../LoadingDots.vue'
@@ -12,6 +12,12 @@ const emit = defineEmits<{
   (e: 'detail', task: Task): void
   (e: 'toggle', task: Task): void
   (e: 'pick', message: ChatMessage, blockIndex: number, task: Task): void
+  (e: 'event-detail', event: CalendarEvent): void
+  (e: 'event-task', task: Task): void
+  (e: 'event-toggle', event: CalendarEvent): void
+  (e: 'event-pick', message: ChatMessage, blockIndex: number, event: CalendarEvent): void
+  (e: 'conflict-change'): void
+  (e: 'conflict-force'): void
   (e: 'confirm', block: ConfirmBlock): void
   (e: 'cancel', block: ConfirmBlock): void
   (e: 'retry', message: ChatMessage): void
@@ -63,6 +69,12 @@ function onSheetSelect(v: string): void {
           @detail="emit('detail', $event)"
           @toggle="emit('toggle', $event)"
           @pick="(i, t) => emit('pick', message, i, t)"
+          @event-detail="emit('event-detail', $event)"
+          @event-task="emit('event-task', $event)"
+          @event-toggle="emit('event-toggle', $event)"
+          @event-pick="(i, e) => emit('event-pick', message, i, e)"
+          @conflict-change="emit('conflict-change')"
+          @conflict-force="emit('conflict-force')"
           @confirm="emit('confirm', $event)"
           @cancel="emit('cancel', $event)"
           @retry="emit('retry', message)"

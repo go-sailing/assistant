@@ -3,15 +3,19 @@ import { defineStore } from 'pinia'
 import { streamChat, confirmPendingAction, cancelPendingAction, fetchMessages } from '@/api/conversations'
 import { errorText } from '@/api/client'
 import type {
+  CalendarEvent,
   ChatMessage,
+  ConflictBlock,
   ConfirmBlock,
   ErrorBlock,
+  EventConflictBrief,
   MessageBlock,
   RawMessage,
   Task,
 } from '@/types'
 import { useToastStore } from './toast'
 import { useTaskSyncStore } from './taskSync'
+import { useEventSyncStore } from './eventSync'
 
 /** 生成幂等键（重发沿用同一个，服务端据此去重） */
 export function genClientMsgId(): string {
@@ -47,6 +51,7 @@ function toChatMessage(raw: RawMessage): ChatMessage {
 export const useChatStore = defineStore('chat', () => {
   const toast = useToastStore()
   const taskSync = useTaskSyncStore()
+  const eventSync = useEventSyncStore()
 
   const messagesByConv = ref<Record<string, ChatMessage[]>>({})
   const loadingByConv = ref<Record<string, boolean>>({})
@@ -185,18 +190,43 @@ export const useChatStore = defineStore('chat', () => {
           case 'cards': {
             msg.thinking = false
             const tasks = Array.isArray(data.tasks) ? (data.tasks as Task[]) : []
-            if (tasks.length) msg.blocks.push({ type: 'cards', tasks })
+            const events = Array.isArray(data.events) ? (data.events as CalendarEvent[]) : []
+            if (tasks.length || events.length) msg.blocks.push({ type: 'cards', tasks, events })
             taskSync.markDirty()
+            // 日程卡片出现即说明日程可能发生变化，日历 Tab 需重拉
+            if (events.length || tasks.length) eventSync.markDirty()
             break
           }
           case 'clarify': {
             msg.thinking = false
             const candidates = Array.isArray(data.candidates) ? (data.candidates as Task[]) : []
+            const events = Array.isArray(data.events) ? (data.events as CalendarEvent[]) : []
             msg.blocks.push({
               type: 'clarify',
               question: typeof data.question === 'string' ? data.question : '',
+              kind: data.kind === 'event' ? 'event' : 'task',
               candidates,
+              events,
             })
+            break
+          }
+          case 'conflict': {
+            msg.thinking = false
+            const block: ConflictBlock = {
+              type: 'conflict',
+              tool: typeof data.tool === 'string' ? data.tool : '',
+              conflicts: Array.isArray(data.conflicts)
+                ? (data.conflicts as EventConflictBrief[])
+                : [],
+              conflict_level:
+                data.conflict_level === 'all_day'
+                  ? 'all_day'
+                  : data.conflict_level === 'none'
+                    ? 'none'
+                    : 'overlap',
+              message: typeof data.message === 'string' ? data.message : undefined,
+            }
+            msg.blocks.push(block)
             break
           }
           case 'confirm': {
@@ -206,7 +236,11 @@ export const useChatStore = defineStore('chat', () => {
               pending_action_id: String(data.pending_action_id ?? ''),
               action: String(data.action ?? ''),
               affected: Array.isArray(data.affected) ? (data.affected as Task[]) : [],
+              affected_events: Array.isArray(data.affected_events)
+                ? (data.affected_events as CalendarEvent[])
+                : [],
               count: typeof data.count === 'number' ? data.count : 0,
+              description: typeof data.description === 'string' ? data.description : undefined,
             }
             msg.blocks.push(block)
             msg.pendingState = { ...(msg.pendingState || {}), [block.pending_action_id]: 'pending' }
@@ -286,6 +320,8 @@ export const useChatStore = defineStore('chat', () => {
       msg.pendingState = { ...msg.pendingState, [block.pending_action_id]: 'confirmed' }
       if (res && res.message) appendMessage(convId, toChatMessage(res.message))
       taskSync.markDirty()
+      // 日程类确认（删除日程/批量）同样需要日历重拉
+      eventSync.markDirty()
     } catch (e) {
       msg.pendingState = { ...msg.pendingState, [block.pending_action_id]: 'pending' }
       toast.show(errorText(e))
@@ -323,7 +359,32 @@ export const useChatStore = defineStore('chat', () => {
   ): void {
     if (streamingByConv.value[keyOf(convId)]) return
     msg.clarifyPicked = { ...(msg.clarifyPicked || {}), [blockIndex]: task.title }
-    void send(convId, `我选择：${task.title}`)
+    // 带上 ID，便于服务端在长会话中稳定地解析指代（避免只靠标题重名）
+    void send(convId, `我选择：${task.title}（任务ID ${task.id}）`)
+  }
+
+  /** 日程候选选择（任务日程场景：选中的是候选日程还是候选任务由 block.kind 决定） */
+  function pickEventCandidate(
+    convId: string | number,
+    msg: ChatMessage,
+    blockIndex: number,
+    event: CalendarEvent
+  ): void {
+    if (streamingByConv.value[keyOf(convId)]) return
+    msg.clarifyPicked = { ...(msg.clarifyPicked || {}), [blockIndex]: event.title }
+    void send(convId, `我选择：${event.title}（日程ID ${event.id}）`)
+  }
+
+  /**
+   * 冲突处理：两个动作都只是把决定交回助手。
+   * 「仍要安排」由模型带 confirm_conflict=true 重新调用工具完成写入，避免前端绕过门控直接写库。
+   */
+  function conflictForce(convId: string | number): void {
+    void send(convId, '仍要安排，请按原时间创建')
+  }
+
+  function conflictChange(_convId: string | number): void {
+    // 仅折叠提示块，等待用户输入新时间（不自动发消息，避免替用户编时间）
   }
 
   function clearConversation(convId: string | number): void {
@@ -348,6 +409,9 @@ export const useChatStore = defineStore('chat', () => {
     confirmAction,
     cancelAction,
     pickCandidate,
+    pickEventCandidate,
+    conflictForce,
+    conflictChange,
     clearConversation,
     saveScrollTop,
     scrollTopOf,

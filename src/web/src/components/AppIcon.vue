@@ -38,6 +38,14 @@ const ICONS: Record<string, string> = {
   send: `<g ${STROKE}><path d="M12 19.5V5"/><path d="M6 11l6-6 6 6"/></g>`,
   gear: `<g ${STROKE}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1 2 2 0 1 1-4 0 1.6 1.6 0 0 0-2.7-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 15a2 2 0 1 1 0-4 1.6 1.6 0 0 0 1.4-2.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 4.6a2 2 0 1 1 4 0 1.6 1.6 0 0 0 2.7 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 11a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.4 1z"/></g>`,
   inbox: `<g ${STROKE}><path d="M3.5 12.5 6 6.2A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.2l2.5 6.3v4.3a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4.3z"/><path d="M3.5 12.5H9a3 3 0 0 0 6 0h5.5"/></g>`,
+  // v0.1.0 日程相关图标
+  calendar: `<g ${STROKE}><rect x="3.5" y="5.5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></g>`,
+  'calendar-fill': `<g fill="currentColor"><path d="M6 5.5h12A2.5 2.5 0 0 1 20.5 8v1H3.5V8A2.5 2.5 0 0 1 6 5.5z"/><path d="M3.5 10.5h17v7.5A2.5 2.5 0 0 1 18 20.5H6a2.5 2.5 0 0 1-2.5-2.5v-7.5z"/></g>`,
+  link: `<g ${STROKE}><path d="M10 13.8a3.6 3.6 0 0 0 5.1 0l2.6-2.6a3.6 3.6 0 0 0-5.1-5.1L11.4 7.3"/><path d="M14 10.2a3.6 3.6 0 0 0-5.1 0l-2.6 2.6a3.6 3.6 0 0 0 5.1 5.1l1.2-1.2"/></g>`,
+  pin: `<g ${STROKE}><path d="M12 21s6.2-5.4 6.2-10a6.2 6.2 0 1 0-12.4 0C5.8 15.6 12 21 12 21z"/><circle cx="12" cy="11" r="2.3"/></g>`,
+  allday: `<g ${STROKE}><path d="M6.5 4.5h8l3 3v12a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M14 4.5v3.5h3.5"/><path d="M8.5 13h7M8.5 16.5h4"/></g>`,
+  conflict: `<g ${STROKE}><path d="M12 4.5 21 19.5H3z"/><path d="M12 10.2v4"/><circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"/></g>`,
+  'chevron-left': `<g ${STROKE}><path d="M15 4.5 7.5 12 15 19.5"/></g>`,
 }
 
 const inner = computed(() => ICONS[props.name] || '')

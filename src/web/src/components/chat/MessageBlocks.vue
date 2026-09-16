@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { ChatMessage, ConfirmBlock, Task } from '@/types'
+import type { CalendarEvent, ChatMessage, ConflictBlock as ConflictBlockType, ConfirmBlock, Task } from '@/types'
 import TaskCard from '../TaskCard.vue'
 import ConfirmBar from './ConfirmBar.vue'
+import ConflictBlock from './ConflictBlock.vue'
+import EventCard from './EventCard.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
 
@@ -10,6 +12,12 @@ const emit = defineEmits<{
   (e: 'detail', task: Task): void
   (e: 'toggle', task: Task): void
   (e: 'pick', blockIndex: number, task: Task): void
+  (e: 'event-detail', event: CalendarEvent): void
+  (e: 'event-task', task: Task): void
+  (e: 'event-toggle', event: CalendarEvent): void
+  (e: 'event-pick', blockIndex: number, event: CalendarEvent): void
+  (e: 'conflict-change'): void
+  (e: 'conflict-force'): void
   (e: 'confirm', block: ConfirmBlock): void
   (e: 'cancel', block: ConfirmBlock): void
   (e: 'retry'): void
@@ -21,6 +29,15 @@ const expanded = ref<Record<number, boolean>>({})
 
 function cardsOf(blockIndex: number, tasks: Task[]): Task[] {
   return expanded.value[blockIndex] ? tasks : tasks.slice(0, CARD_FOLD)
+}
+
+/** 日程卡片与任务卡片共用折叠开关 */
+function eventsOf(blockIndex: number, events: CalendarEvent[]): CalendarEvent[] {
+  return expanded.value[blockIndex] ? events : events.slice(0, CARD_FOLD)
+}
+
+function totalCards(block: { tasks?: Task[]; events?: CalendarEvent[] }): number {
+  return (block.tasks?.length ?? 0) + (block.events?.length ?? 0)
 }
 
 function expand(blockIndex: number): void {
@@ -83,7 +100,7 @@ function lines(text: string): Line[] {
         </p>
       </div>
 
-      <!-- 任务卡片组 -->
+      <!-- 任务卡片组 + 日程卡片组（可同时出现：混合意图查询） -->
       <div v-else-if="block.type === 'cards'" class="blocks__cards">
         <TaskCard
           v-for="t in cardsOf(bi, block.tasks)"
@@ -92,12 +109,20 @@ function lines(text: string): Line[] {
           @detail="emit('detail', $event)"
           @toggle="emit('toggle', $event)"
         />
+        <EventCard
+          v-for="ev in eventsOf(bi, block.events || [])"
+          :key="`e-${String(ev.id)}`"
+          :event="ev"
+          @detail="emit('event-detail', $event)"
+          @task="emit('event-task', $event)"
+          @toggle="emit('event-toggle', $event)"
+        />
         <button
-          v-if="!expanded[bi] && block.tasks.length > CARD_FOLD"
+          v-if="!expanded[bi] && totalCards(block) > CARD_FOLD"
           class="blocks__more pressable"
           @click="expand(bi)"
         >
-          查看全部 {{ block.tasks.length }} 项
+          查看全部 {{ totalCards(block) }} 项
         </button>
       </div>
 
@@ -106,6 +131,17 @@ function lines(text: string): Line[] {
         <p v-if="block.question" class="blocks__question">{{ block.question }}</p>
         <template v-if="message.clarifyPicked && message.clarifyPicked[bi]">
           <p class="blocks__picked">已选择：{{ message.clarifyPicked[bi] }}</p>
+        </template>
+        <template v-else-if="block.kind === 'event'">
+          <EventCard
+            v-for="ev in block.events || []"
+            :key="String(ev.id)"
+            :event="ev"
+            :show-arrow="false"
+            @detail="emit('event-detail', $event)"
+            @task="emit('event-task', $event)"
+            @toggle="emit('event-toggle', $event)"
+          />
         </template>
         <template v-else>
           <TaskCard
@@ -122,6 +158,14 @@ function lines(text: string): Line[] {
           </TaskCard>
         </template>
       </div>
+
+      <!-- 时间冲突提示块：未保存，由用户决定 -->
+      <ConflictBlock
+        v-else-if="block.type === 'conflict'"
+        :block="(block as ConflictBlockType)"
+        @change="emit('conflict-change')"
+        @force="emit('conflict-force')"
+      />
 
       <!-- 确认条 -->
       <ConfirmBar

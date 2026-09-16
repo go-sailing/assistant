@@ -7,6 +7,7 @@ import { llmProvider } from '../../llm/deepseek';
 import { LlmError, type LlmMessage } from '../../llm/types';
 import { toolExecutor, type ToolResult } from '../../tools/executor';
 import type { TaskDTO } from '../task/types';
+import type { EventDTO } from '../event/types';
 import {
   conversationService,
   pendingActionService,
@@ -29,6 +30,8 @@ export interface ChatContext {
   content: string;
   clientMsgId?: string;
   timezoneOffsetMinutes: number;
+  /** 客户端 IANA 时区（用于日程按自然日查询） */
+  timezone?: string;
   traceId?: string;
 }
 
@@ -45,17 +48,42 @@ function tasksForModel(tasks?: TaskDTO[]) {
   }));
 }
 
+/** 喂回模型的日程摘要 */
+function eventsForModel(events?: EventDTO[]) {
+  if (!events || events.length === 0) return undefined;
+  return events.map((e) => ({
+    id: e.id,
+    type: e.event_type,
+    title: e.title,
+    task_id: e.task_id,
+    start_at: e.start_at,
+    end_at: e.end_at,
+    all_day: e.all_day,
+    location: e.location,
+    note: e.note,
+    task_status: e.task?.status,
+  }));
+}
+
 function toolResultForModel(result: ToolResult) {
   return {
     ok: result.ok,
     summary: result.summary,
     tasks: tasksForModel(result.tasks),
+    events: eventsForModel(result.events),
     list: result.data?.list,
     lists: result.data?.lists,
+    // 冲突未确认：把冲突明细交给模型，必须先告知用户再决定是否二次提交
+    saved: result.data?.saved,
+    need_conflict_confirmation: result.data?.need_conflict_confirmation,
+    conflict_level: result.data?.conflict_level,
+    conflicts: result.data?.conflicts,
     error: result.error,
     // 失败时明确禁止重试同一调用，避免模型反复重试耗尽轮数
     hint: result.ok
-      ? undefined
+      ? result.data?.need_conflict_confirmation
+        ? '这是冲突提示，不是失败。请先把冲突日程告知用户并询问如何处理；用户明确同意后才带 confirm_conflict=true 重试。'
+        : undefined
       : '该工具调用已失败，不要用相同的参数重试。请向用户说明失败原因，或请求用户澄清后再试。',
   };
 }
@@ -140,7 +168,7 @@ export const chatOrchestrator = {
       const llmMessages: LlmMessage[] = [
         {
           role: 'system',
-          content: buildSystemPrompt(new Date(), ctx.timezoneOffsetMinutes),
+          content: buildSystemPrompt(new Date(), ctx.timezoneOffsetMinutes, ctx.timezone),
         },
         ...history,
       ];
@@ -207,11 +235,13 @@ export const chatOrchestrator = {
 
           emit('tool_call', { tool: toolName, arguments: parsedArgs.value });
 
-          // 危险操作：不执行，先挂起等待用户确认（系统设计文档 4.1）
+          // 危险操作：不执行，先挂起等待用户确认（系统设计文档 4.1 / 4.5）
           if (isDangerousTool(toolName)) {
             const action = await toolExecutor.prepare(userId, toolName, parsedArgs.value, {
               conversationId,
               traceId,
+              tzOffsetMinutes: ctx.timezoneOffsetMinutes,
+              timezone: ctx.timezone,
             });
             const pending = await pendingActionService.create({
               conversationId,
@@ -219,14 +249,17 @@ export const chatOrchestrator = {
               toolName,
               resolvedParams: action.resolvedParams,
               affected: action.affected,
+              affectedEvents: action.affectedEvents,
             });
 
+            const affectedCount = action.affected.length + (action.affectedEvents?.length ?? 0);
             const confirmBlock: Extract<MessageBlock, { type: 'confirm' }> = {
               type: 'confirm',
               pending_action_id: pending.id,
               action: toolName,
               affected: action.affected,
-              count: action.affected.length,
+              affected_events: action.affectedEvents ?? [],
+              count: affectedCount,
               description: action.description,
             };
             blocks.push(confirmBlock);
@@ -245,18 +278,29 @@ export const chatOrchestrator = {
           }
 
           // 澄清：渲染候选卡片，并结束本轮，不再让模型自行猜测
-          if (toolName === 'clarify_task_selection') {
+          if (toolName === 'clarify_task_selection' || toolName === 'clarify_event_selection') {
             const result2 = await toolExecutor.execute(userId, toolName, parsedArgs.value, {
               conversationId,
               traceId,
+              tzOffsetMinutes: ctx.timezoneOffsetMinutes,
+              timezone: ctx.timezone,
             });
             if (result2.clarify) {
+              const isEvent = result2.clarify.kind === 'event';
               clarifyBlock = {
                 type: 'clarify',
                 question: result2.clarify.question,
+                kind: result2.clarify.kind,
                 candidates: result2.clarify.candidates,
+                events: result2.clarify.candidatesEvents ?? [],
               };
-              emit('clarify', clarifyBlock);
+              emit('clarify', {
+                ...clarifyBlock,
+                // 前端按 kind 取对应候选数组
+                candidates: isEvent ? [] : clarifyBlock.candidates,
+                events: clarifyBlock.events,
+                kind: result2.clarify.kind,
+              });
             }
             llmMessages.push({
               role: 'tool',
@@ -270,17 +314,38 @@ export const chatOrchestrator = {
           const toolResult = await toolExecutor.execute(userId, toolName, parsedArgs.value, {
             conversationId,
             traceId,
+            tzOffsetMinutes: ctx.timezoneOffsetMinutes,
+            timezone: ctx.timezone,
           });
           if (!toolResult.ok) {
             toolFailures.push(toolResult.summary);
           }
-          if (toolResult.ok && toolResult.tasks && toolResult.tasks.length > 0) {
+          const hasTasks = !!toolResult.tasks && toolResult.tasks.length > 0;
+          const hasEvents = !!toolResult.events && toolResult.events.length > 0;
+          if (toolResult.ok && (hasTasks || hasEvents)) {
             const cardsBlock: Extract<MessageBlock, { type: 'cards' }> = {
               type: 'cards',
-              tasks: toolResult.tasks,
+              tasks: toolResult.tasks ?? [],
+              events: toolResult.events ?? [],
             };
             blocks.push(cardsBlock);
             emit('cards', cardsBlock);
+          }
+
+          // 冲突未确认：以结构化冲突块呈现，由用户决定「仍要安排 / 换个时间」（UX 5.7）
+          if (toolResult.ok && toolResult.data?.need_conflict_confirmation === true) {
+            const conflicts =
+              (toolResult.data.conflicts as Extract<MessageBlock, { type: 'conflict' }>['conflicts']) ?? [];
+            const level = String(toolResult.data.conflict_level ?? 'overlap');
+            const conflictBlock: Extract<MessageBlock, { type: 'conflict' }> = {
+              type: 'conflict',
+              tool: toolName,
+              conflicts,
+              conflict_level: level,
+              message: level === 'all_day' ? '该日期已有全天安排' : '这个时段已有安排',
+            };
+            blocks.push(conflictBlock);
+            emit('conflict', conflictBlock);
           }
           llmMessages.push({
             role: 'tool',
@@ -357,19 +422,21 @@ export const chatOrchestrator = {
       userId,
       action.tool_name,
       action.params,
-      { conversationId, traceId }
+      { conversationId, traceId, tzOffsetMinutes: ctx.timezoneOffsetMinutes, timezone: ctx.timezone }
     );
 
     await pendingActionService.markStatus(action.id, 'confirmed');
 
-    const affected = (action.affected ?? []) as TaskDTO[];
+    // 预取快照：任务与日程分列（v0.1.0 起 affected 为 { tasks, events } 结构）
+    const affectedTasks = (action.affected?.tasks ?? []) as TaskDTO[];
+    const affectedEvents = (action.affected?.events ?? []) as EventDTO[];
 
     if (result.ok) {
-      if (result.tasks && result.tasks.length > 0) {
-        blocks.push({ type: 'cards', tasks: result.tasks });
-      } else if (affected.length > 0) {
-        // 删除类操作：卡片已不存在，展示被删除对象的快照
-        blocks.push({ type: 'cards', tasks: affected.map((t) => ({ ...t, status: t.status })) });
+      const tasks = result.tasks && result.tasks.length > 0 ? result.tasks : result.events ? [] : affectedTasks;
+      const events =
+        result.events && result.events.length > 0 ? result.events : result.tasks ? [] : affectedEvents;
+      if (tasks.length > 0 || events.length > 0) {
+        blocks.push({ type: 'cards', tasks, events });
       }
       blocks.unshift({ type: 'text', text: `${result.summary}。` });
     } else {
@@ -425,10 +492,14 @@ export const chatOrchestrator = {
           emit('text_delta', { delta: block.text });
           break;
         case 'cards':
-          emit('cards', { tasks: block.tasks });
+          emit('cards', { tasks: block.tasks, events: block.events ?? [] });
           break;
         case 'clarify':
-          emit('clarify', block);
+          emit('clarify', {
+            ...block,
+            candidates: block.kind === 'event' ? [] : block.candidates,
+            events: block.events ?? [],
+          });
           break;
         case 'confirm': {
           // 仅当待确认动作仍然有效时才重放确认条，否则会造成误解
@@ -441,6 +512,9 @@ export const chatOrchestrator = {
           }
           break;
         }
+        case 'conflict':
+          emit('conflict', block);
+          break;
         case 'error':
           emit('error', { code: 3002, message: block.message, retryable: block.retryable });
           break;

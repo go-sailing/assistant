@@ -4,7 +4,17 @@ import { AppError } from '../common/errors';
 import { logger } from '../common/logger';
 import { taskService } from '../modules/task/task.service';
 import { listService } from '../modules/list/list.service';
+import { eventService } from '../modules/event/event.service';
 import type { TaskDTO, TaskFilter } from '../modules/task/types';
+import type { EventDTO } from '../modules/event/types';
+import {
+  batchEventsSchema,
+  clarifyEventSchema,
+  createEventSchema,
+  listEventsSchema,
+  searchEventsSchema,
+  updateEventSchema,
+} from '../modules/event/schema';
 import { isDangerousTool, isKnownTool } from '../llm/tools';
 
 const priorityEnum = z.enum(['none', 'low', 'medium', 'high']);
@@ -104,11 +114,22 @@ const clarifyArgs = z.object({
   pending_intent: z.string().optional(),
 });
 
+/** 日程工具入参：REST 侧 schema 复用同一份定义，仅补充/复用工具特有字段 */
+const getEventArgs = z.object({ event_id: z.number().int().positive() });
+const updateEventArgs = updateEventSchema.extend({ event_id: z.number().int().positive() });
+const deleteEventArgs = z.object({
+  event_id: z.number().int().positive(),
+  reason: z.string().optional(),
+});
+const batchEventsArgs = batchEventsSchema;
+
 export interface ToolResult {
   ok: boolean;
   tool: string;
   /** 直接展示给客户端的任务数据 */
   tasks?: TaskDTO[];
+  /** 直接展示给客户端的日程数据（v0.1.0） */
+  events?: EventDTO[];
   summary: string;
   error?: string;
   /** 危险工具：已挂起等待确认 */
@@ -116,12 +137,18 @@ export interface ToolResult {
     pendingActionId: string;
     action: string;
     affected: TaskDTO[];
+    /** 日程类危险操作的影响对象 */
+    affectedEvents?: EventDTO[];
     count: number;
+    description: string;
   };
   /** 需要用户澄清 */
   clarify?: {
     question: string;
+    /** task：候选任务；event：候选日程 */
+    kind: 'task' | 'event';
     candidates: TaskDTO[];
+    candidatesEvents?: EventDTO[];
   };
   data?: Record<string, unknown>;
 }
@@ -130,7 +157,40 @@ export interface ResolvedDangerousAction {
   tool: string;
   resolvedParams: Record<string, unknown>;
   affected: TaskDTO[];
+  /** 日程类危险操作的影响对象（与 affected 互斥使用） */
+  affectedEvents?: EventDTO[];
   description: string;
+}
+
+/** 工具执行上下文：时区用于日程按自然日筛选与可读时间格式化 */
+export interface ToolContext {
+  conversationId?: number;
+  traceId?: string;
+  /** 东八区为 480，缺省按 UTC 处理 */
+  tzOffsetMinutes?: number;
+  /** 客户端 IANA 时区（如 Asia/Shanghai），作为日程查询按日的兜底时区 */
+  timezone?: string;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** 把日程时段格式化为用户时区下的可读文本，例如「9月18日 15:00–16:00」 */
+function formatEventRange(
+  event: { start_at: string; end_at: string; all_day: boolean },
+  offsetMinutes = 0
+): string {
+  const shift = (iso: string) => new Date(new Date(iso).getTime() + offsetMinutes * 60_000);
+  const s = shift(event.start_at);
+  const e = shift(event.end_at);
+  const day = `${s.getUTCMonth() + 1}月${s.getUTCDate()}日`;
+  if (event.all_day) return `${day} 全天`;
+  const time = (d: Date) => `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+  const crossDay = s.getUTCDate() !== e.getUTCDate();
+  return crossDay
+    ? `${day} ${time(s)} – ${e.getUTCMonth() + 1}月${e.getUTCDate()}日 ${time(e)}`
+    : `${day} ${time(s)}–${time(e)}`;
 }
 
 function safeParseArgs<T extends z.ZodTypeAny>(schema: T, args: unknown, tool: string): z.infer<T> {
@@ -237,7 +297,10 @@ async function runTool(
       conversationId: auditCtx.conversationId,
       toolName,
       args: auditCtx.args,
-      result: result.tasks ? { count: result.tasks.length } : undefined,
+      result:
+        result.tasks || result.events
+          ? { count: (result.tasks?.length ?? 0) + (result.events?.length ?? 0) }
+          : undefined,
       success: true,
       latencyMs: Date.now() - start,
       traceId: auditCtx.traceId,
@@ -268,7 +331,7 @@ export const toolExecutor = {
     userId: number,
     toolName: string,
     args: unknown,
-    ctx: { conversationId?: number; traceId?: string } = {}
+    ctx: ToolContext = {}
   ): Promise<ToolResult> {
     if (!isKnownTool(toolName)) {
       return {
@@ -287,14 +350,19 @@ export const toolExecutor = {
       };
     }
 
-    return runTool(userId, toolName, () => this.dispatch(userId, toolName, args), {
+    return runTool(userId, toolName, () => this.dispatch(userId, toolName, args, ctx), {
       args,
       conversationId: ctx.conversationId,
       traceId: ctx.traceId,
     });
   },
 
-  async dispatch(userId: number, toolName: string, args: unknown): Promise<ToolResult> {
+  async dispatch(
+    userId: number,
+    toolName: string,
+    args: unknown,
+    ctx: ToolContext = {}
+  ): Promise<ToolResult> {
     switch (toolName) {
       case 'create_task': {
         const parsed = safeParseArgs(createTaskArgs, args, toolName);
@@ -435,7 +503,161 @@ export const toolExecutor = {
           ok: true,
           tool: toolName,
           tasks: candidates,
-          clarify: { question: parsed.question, candidates },
+          clarify: { question: parsed.question, kind: 'task', candidates, candidatesEvents: [] },
+          summary: `需要用户澄清：${parsed.question}`,
+        };
+      }
+
+      /* ------------------- v0.1.0 日程工具 ------------------- */
+
+      case 'create_event': {
+        const parsed = safeParseArgs(createEventSchema, args, toolName);
+        const offset = ctx.tzOffsetMinutes ?? 0;
+        const result = await eventService.create(
+          userId,
+          {
+            event_type: parsed.event_type,
+            task_id: parsed.task_id ?? null,
+            title: parsed.title ?? null,
+            note: parsed.note ?? null,
+            location: parsed.location ?? null,
+            all_day: parsed.all_day,
+            start_at: parsed.start_at,
+            end_at: parsed.end_at,
+          },
+          'chat',
+          { confirmConflict: parsed.confirm_conflict === true }
+        );
+
+        // 冲突未确认：不落库，把冲突交给模型先告知用户
+        if (!result.saved) {
+          return {
+            ok: true,
+            tool: toolName,
+            summary: `该时段与已有安排冲突：${result.conflicts
+              .map((c) => `${formatEventRange(c, offset)} ${c.title}`)
+              .join('；')}。尚未保存，请先告知用户冲突并询问「仍要安排还是换个时间」。`,
+            data: {
+              saved: false,
+              need_conflict_confirmation: true,
+              conflict_level: result.conflict_level,
+              conflicts: result.conflicts,
+            },
+          };
+        }
+
+        const event = result.event as EventDTO;
+        const kindLabel = event.event_type === 'task' ? '任务日程' : '日程';
+        return {
+          ok: true,
+          tool: toolName,
+          events: [event],
+          summary: `已创建${kindLabel}「${event.title}」（${formatEventRange(event, offset)}）`,
+        };
+      }
+
+      case 'update_event': {
+        const parsed = safeParseArgs(updateEventArgs, args, toolName);
+        const offset = ctx.tzOffsetMinutes ?? 0;
+        const result = await eventService.update(
+          userId,
+          parsed.event_id,
+          {
+            title: parsed.title,
+            note: parsed.note,
+            location: parsed.location,
+            all_day: parsed.all_day,
+            start_at: parsed.start_at,
+            end_at: parsed.end_at,
+            event_type: parsed.event_type,
+            task_id: parsed.task_id ?? undefined,
+          },
+          { confirmConflict: parsed.confirm_conflict === true }
+        );
+
+        if (!result.saved) {
+          return {
+            ok: true,
+            tool: toolName,
+            summary: `改期后与已有安排冲突：${result.conflicts
+              .map((c) => `${formatEventRange(c, offset)} ${c.title}`)
+              .join('；')}。尚未保存，请先告知用户冲突并询问处理方式。`,
+            data: {
+              saved: false,
+              need_conflict_confirmation: true,
+              conflict_level: result.conflict_level,
+              conflicts: result.conflicts,
+            },
+          };
+        }
+
+        const event = result.event as EventDTO;
+        return {
+          ok: true,
+          tool: toolName,
+          events: [event],
+          summary: `已更新日程「${event.title}」（${formatEventRange(event, offset)}）`,
+        };
+      }
+
+      case 'get_event': {
+        const parsed = safeParseArgs(getEventArgs, args, toolName);
+        const event = await eventService.get(userId, parsed.event_id);
+        const overlap =
+          event.conflicts && event.conflicts.length > 0
+            ? `，与 ${event.conflicts.length} 个日程时间重叠`
+            : '';
+        return {
+          ok: true,
+          tool: toolName,
+          events: [event],
+          summary: `日程「${event.title}」（${formatEventRange(event, ctx.tzOffsetMinutes ?? 0)}）${overlap}`,
+        };
+      }
+
+      case 'list_events': {
+        const parsed = safeParseArgs(listEventsSchema, args, toolName);
+        // 模型未给 tz 时按客户端时区兜底，保证「今天/今天下午」的自然日边界正确
+        const events = await eventService.list(userId, {
+          ...parsed,
+          tz: parsed.tz ?? ctx.timezone ?? eventService.defaultTz(),
+        });
+        return {
+          ok: true,
+          tool: toolName,
+          events,
+          summary: events.length ? `查询到 ${events.length} 项日程安排` : '这段时间没有日程安排',
+        };
+      }
+
+      case 'search_events': {
+        const parsed = safeParseArgs(searchEventsSchema, args, toolName);
+        const events = await eventService.search(userId, parsed.keyword);
+        return {
+          ok: true,
+          tool: toolName,
+          events,
+          summary: events.length
+            ? `搜索到 ${events.length} 项与「${parsed.keyword}」相关的日程`
+            : `没有找到与「${parsed.keyword}」相关的日程`,
+        };
+      }
+
+      case 'clarify_event_selection': {
+        const parsed = safeParseArgs(clarifyEventSchema, args, toolName);
+        const candidates: EventDTO[] = [];
+        for (const id of parsed.candidate_event_ids ?? []) {
+          try {
+            candidates.push(await eventService.get(userId, id));
+          } catch {
+            // 幻觉 ID 跳过，不阻塞澄清
+          }
+        }
+        return {
+          ok: true,
+          tool: toolName,
+          events: candidates,
+          clarify: { question: parsed.question, kind: 'event', candidates: [], candidatesEvents: candidates },
           summary: `需要用户澄清：${parsed.question}`,
         };
       }
@@ -450,11 +672,11 @@ export const toolExecutor = {
     userId: number,
     toolName: string,
     args: unknown,
-    ctx: { conversationId?: number; traceId?: string } = {}
+    ctx: ToolContext = {}
   ): Promise<ResolvedDangerousAction> {
     const start = Date.now();
     try {
-      const action = await this.resolveDangerous(userId, toolName, args);
+      const action = await this.resolveDangerous(userId, toolName, args, ctx);
       await audit({
         userId,
         conversationId: ctx.conversationId,
@@ -482,16 +704,24 @@ export const toolExecutor = {
     }
   },
 
-  async resolveDangerous(userId: number, toolName: string, args: unknown): Promise<ResolvedDangerousAction> {
+  async resolveDangerous(
+    userId: number,
+    toolName: string,
+    args: unknown,
+    ctx: ToolContext = {}
+  ): Promise<ResolvedDangerousAction> {
     switch (toolName) {
       case 'delete_task': {
         const parsed = safeParseArgs(deleteTaskArgs, args, toolName);
         const task = await taskService.get(userId, parsed.task_id);
+        // 删除任务会级联删除其全部任务日程，确认文案必须明示条数
+        const eventCount = await eventService.countByTask(userId, task.id);
+        const cascadeHint = eventCount > 0 ? `，并同时删除该任务的 ${eventCount} 条日程安排` : '';
         return {
           tool: toolName,
           resolvedParams: { task_id: task.id },
           affected: [task],
-          description: `删除任务「${task.title}」（所属清单：${task.list_name}），删除后不可恢复`,
+          description: `删除任务「${task.title}」（所属清单：${task.list_name}）${cascadeHint}，删除后不可恢复`,
         };
       }
 
@@ -547,6 +777,75 @@ export const toolExecutor = {
         };
       }
 
+      case 'delete_event': {
+        const parsed = safeParseArgs(deleteEventArgs, args, toolName);
+        const event = await eventService.get(userId, parsed.event_id);
+        const isTask = event.event_type === 'task';
+        const hint = isTask
+          ? `（这是任务日程，只取消该安排，关联任务「${event.title}」会被保留）`
+          : '';
+        return {
+          tool: toolName,
+          resolvedParams: { event_id: event.id },
+          affected: [],
+          affectedEvents: [event],
+          description: `删除日程「${event.title}」（${formatEventRange(event, ctx.tzOffsetMinutes ?? 0)}）${hint}，删除后不可恢复`,
+        };
+      }
+
+      case 'batch_update_events': {
+        const parsed = safeParseArgs(batchEventsArgs, args, toolName);
+        // 模型只表达「取消/删除」而不传 update 时视为批量删除（与工具描述一致），
+        // 否则会误报参数错误而无法进入确认流程。
+        const isDelete = parsed.delete === true || parsed.update === undefined;
+        const { filter: rawFilter, update: rawUpdate } = parsed;
+        const filter = {
+          ...rawFilter,
+          tz: rawFilter.tz ?? ctx.timezone ?? eventService.defaultTz(),
+          task_id: rawFilter.task_id ?? undefined,
+          keyword: rawFilter.keyword ?? undefined,
+        };
+        if (!filter.date && !filter.date_from && !filter.date_to && !filter.keyword) {
+          throw AppError.paramInvalid('批量操作必须指定时间范围或关键词，请向用户确认范围');
+        }
+
+        const targets = await eventService.listAll(userId, filter);
+        const changes: string[] = [];
+        const update: Record<string, unknown> = {};
+        if (!isDelete && rawUpdate) {
+          if (rawUpdate.start_at !== undefined) {
+            update.start_at = rawUpdate.start_at;
+            changes.push('开始时间');
+          }
+          if (rawUpdate.end_at !== undefined) {
+            update.end_at = rawUpdate.end_at;
+            changes.push('结束时间');
+          }
+          if (rawUpdate.all_day !== undefined) {
+            update.all_day = rawUpdate.all_day;
+            changes.push('全天设置');
+          }
+          if (rawUpdate.location !== undefined) {
+            update.location = rawUpdate.location;
+            changes.push('地点');
+          }
+          if (rawUpdate.note !== undefined) update.note = rawUpdate.note;
+        }
+        if (!isDelete && Object.keys(update).length === 0) {
+          throw AppError.paramInvalid('批量操作必须指定要修改的字段，或明确表示删除');
+        }
+
+        return {
+          tool: toolName,
+          resolvedParams: { event_ids: targets.map((e) => e.id), update: isDelete ? null : update },
+          affected: [],
+          affectedEvents: targets,
+          description: isDelete
+            ? `批量删除 ${targets.length} 个日程`
+            : `批量修改 ${targets.length} 个日程（${changes.join('、')}）`,
+        };
+      }
+
       default:
         throw AppError.paramInvalid(`工具 ${toolName} 不是危险操作`);
     }
@@ -557,7 +856,7 @@ export const toolExecutor = {
     userId: number,
     toolName: string,
     resolvedParams: Record<string, unknown>,
-    ctx: { conversationId?: number; traceId?: string } = {}
+    ctx: ToolContext = {}
   ): Promise<ToolResult> {
     return runTool(
       userId,
@@ -595,6 +894,39 @@ export const toolExecutor = {
               tool: toolName,
               tasks,
               summary: `已更新 ${tasks.length} 个任务`,
+            };
+          }
+
+          case 'delete_event': {
+            const eventId = Number(resolvedParams.event_id);
+            const event = await eventService.remove(userId, eventId);
+            const hint = event.event_type === 'task' ? `，关联任务「${event.title}」已保留` : '';
+            return {
+              ok: true,
+              tool: toolName,
+              events: [event],
+              summary: `已删除日程「${event.title}」${hint}`,
+            };
+          }
+
+          case 'batch_update_events': {
+            const ids = (resolvedParams.event_ids as number[]) ?? [];
+            const update = resolvedParams.update as Record<string, unknown> | null;
+            if (update === null || update === undefined) {
+              const removed = await eventService.removeByIds(userId, ids);
+              return {
+                ok: true,
+                tool: toolName,
+                events: removed,
+                summary: `已删除 ${removed.length} 个日程`,
+              };
+            }
+            const updated = await eventService.batchUpdateByIds(userId, ids, update);
+            return {
+              ok: true,
+              tool: toolName,
+              events: updated,
+              summary: `已更新 ${updated.length} 个日程`,
             };
           }
 

@@ -13,6 +13,11 @@ export const ErrorCode = {
   LLM_UNAVAILABLE: 3001,
   TOOL_EXEC_FAILED: 3002,
   PENDING_ACTION_INVALID: 3003,
+  // v0.1.0 日程领域
+  EVENT_TIME_INVALID: 4001,
+  EVENT_TASK_NOT_SCHEDULABLE: 4002,
+  EVENT_TYPE_IMMUTABLE: 4003,
+  EVENT_CONFLICT: 4009,
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -28,6 +33,10 @@ const HTTP_STATUS: Record<number, number> = {
   [ErrorCode.LLM_UNAVAILABLE]: 502,
   [ErrorCode.TOOL_EXEC_FAILED]: 500,
   [ErrorCode.PENDING_ACTION_INVALID]: 409,
+  [ErrorCode.EVENT_TIME_INVALID]: 400,
+  [ErrorCode.EVENT_TASK_NOT_SCHEDULABLE]: 409,
+  [ErrorCode.EVENT_TYPE_IMMUTABLE]: 409,
+  [ErrorCode.EVENT_CONFLICT]: 409,
 };
 
 export class AppError extends Error {
@@ -69,5 +78,24 @@ export class AppError extends Error {
   }
   static pendingActionInvalid(message = '该操作已失效，请重新发起') {
     return new AppError(ErrorCode.PENDING_ACTION_INVALID, message);
+  }
+  /** 日程时间非法（结束早于开始、全天日期倒置） */
+  static eventTimeInvalid(message = '日程时间不合法') {
+    return new AppError(ErrorCode.EVENT_TIME_INVALID, message);
+  }
+  /** 关联任务不可排期（已完成任务） */
+  static eventTaskNotSchedulable(message = '该任务已完成，请先恢复为未完成再安排日程') {
+    return new AppError(ErrorCode.EVENT_TASK_NOT_SCHEDULABLE, message);
+  }
+  /** 日程类型与关联任务创建后不可变更 */
+  static eventTypeImmutable(message = '日程类型与关联任务创建后不可更改，请删除后重建') {
+    return new AppError(ErrorCode.EVENT_TYPE_IMMUTABLE, message);
+  }
+  /** 时间冲突待确认：details 携带冲突日程列表 */
+  static eventConflict(conflicts: unknown, conflictLevel: string) {
+    return new AppError(ErrorCode.EVENT_CONFLICT, '该时段与已有日程冲突', {
+      conflicts,
+      conflict_level: conflictLevel,
+    });
   }
 }

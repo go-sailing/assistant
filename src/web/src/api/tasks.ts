@@ -21,8 +21,11 @@ export function updateTask(id: string | number, payload: Partial<TaskPayload>): 
   return request<Task>(`/tasks/${id}`, { method: 'PATCH', body: payload })
 }
 
-export function deleteTask(id: string | number): Promise<unknown> {
-  return request<unknown>(`/tasks/${id}`, { method: 'DELETE' })
+/** 删除任务：服务端会级联删除其全部任务日程，返回级联条数 */
+export function deleteTask(
+  id: string | number
+): Promise<{ id: number; deleted_event_count?: number }> {
+  return request<{ id: number; deleted_event_count?: number }>(`/tasks/${id}`, { method: 'DELETE' })
 }
 
 export function completeTask(id: string | number): Promise<Task> {
