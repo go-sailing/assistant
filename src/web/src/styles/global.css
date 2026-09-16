@@ -1,0 +1,110 @@
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Roboto', 'Noto Sans SC',
+    'Helvetica Neue', Arial, sans-serif;
+  color: var(--text-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+input,
+textarea,
+button,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+ul,
+li,
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+/* 全局焦点态（外接键盘/读屏） */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 通用工具类：页面根节点。
+   页面与底部 Tab 栏同处 .app-shell 这个纵向 flex 容器中，
+   因此这里用 flex:1 + min-height:0 占满剩余高度，而不是 height:100%
+   （否则会把底部 Tab 栏挤出可视区）。 */
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-page);
+}
+
+.page-body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 单行省略 */
+.ellipsis {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 通用按压反馈 */
+.pressable {
+  transition: opacity var(--dur-fast) ease, transform var(--dur-fast) ease;
+}
+.pressable:active {
+  opacity: 0.7;
+}
+
+/* 页面转场：右进左出 */
+.slide-enter-active,
+.slide-leave-active {
+  transition: transform var(--dur-page) ease, opacity var(--dur-page) ease;
+}
+.slide-enter-from {
+  transform: translateX(24px);
+  opacity: 0;
+}
+.slide-leave-to {
+  transform: translateX(-16px);
+  opacity: 0;
+}

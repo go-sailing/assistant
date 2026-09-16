@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: assistant-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: assistant_pwd
+      POSTGRES_DB: assistant
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - assistant_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assistant -d assistant"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  assistant_pgdata:

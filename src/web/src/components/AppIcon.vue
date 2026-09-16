@@ -1,0 +1,65 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+
+/** 统一线性图标集（24pt 线性，描边 1.8pt；filled-* 用于 Tab 选中态） */
+const props = withDefaults(
+  defineProps<{
+    name: string
+    size?: number
+    color?: string
+  }>(),
+  { size: 24, color: 'currentColor' }
+)
+
+const STROKE = 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"'
+
+const ICONS: Record<string, string> = {
+  search: `<g ${STROKE}><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></g>`,
+  plus: `<g ${STROKE}><path d="M12 5v14M5 12h14"/></g>`,
+  back: `<g ${STROKE}><path d="M15 4.5 7.5 12 15 19.5"/></g>`,
+  'chevron-right': `<g ${STROKE}><path d="M9.5 5 16.5 12 9.5 19"/></g>`,
+  'chevron-down': `<g ${STROKE}><path d="M5 9.5 12 16.5 19 9.5"/></g>`,
+  edit: `<g ${STROKE}><path d="M4 20h4L19.2 8.8a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M14.5 6.5l3 3"/></g>`,
+  trash: `<g ${STROKE}><path d="M4 7h16M9.5 7V4.5h5V7"/><path d="M6.2 7l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.8a1.5 1.5 0 0 0 1.5-1.4L17.8 7"/><path d="M10.5 11v6M13.5 11v6"/></g>`,
+  eye: `<g ${STROKE}><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></g>`,
+  'eye-off': `<g ${STROKE}><path d="M3.5 3.5l17 17"/><path d="M10.2 5.9A9.7 9.7 0 0 1 12 5.8c6 0 9.5 6.2 9.5 6.2a17.6 17.6 0 0 1-3.2 4"/><path d="M6.4 7.5A17.4 17.4 0 0 0 2.5 12S6 18.2 12 18.2c1.3 0 2.5-.3 3.5-.7"/><path d="M9.9 9.9a2.8 2.8 0 0 0 3.9 3.9"/></g>`,
+  clock: `<g ${STROKE}><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.3 1.9"/></g>`,
+  folder: `<g ${STROKE}><path d="M3 7.5A2 2 0 0 1 5 5.5h3.6l2 2.2H19a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5z"/></g>`,
+  flag: `<g ${STROKE}><path d="M6.5 21V3.5"/><path d="M6.5 4.5h11l-1.6 3.6 1.6 3.6h-11"/></g>`,
+  more: `<g fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></g>`,
+  check: `<g ${STROKE}><path d="M5 12.5l4.5 4.5L19 7"/></g>`,
+  close: `<g ${STROKE}><path d="M6 6l12 12M18 6L6 18"/></g>`,
+  alert: `<g ${STROKE}><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.2"/><circle cx="12" cy="16" r="0.9" fill="currentColor" stroke="none"/></g>`,
+  refresh: `<g ${STROKE}><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3.8v4.4h-4.4"/></g>`,
+  list: `<g ${STROKE}><path d="M4 6.5h16M4 12h16M4 17.5h10"/></g>`,
+  'list-fill': `<g fill="currentColor"><rect x="3.5" y="5" width="17" height="2.4" rx="1.2"/><rect x="3.5" y="10.8" width="17" height="2.4" rx="1.2"/><rect x="3.5" y="16.6" width="10.5" height="2.4" rx="1.2"/></g>`,
+  chat: `<g ${STROKE}><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9.5l-4.6 3.6A.5.5 0 0 1 4 19.2V6.5z"/></g>`,
+  'chat-fill': `<g fill="currentColor"><path d="M6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9.5l-4.6 3.6A.5.5 0 0 1 4 19.2V6.5A2.5 2.5 0 0 1 6.5 4z"/></g>`,
+  send: `<g ${STROKE}><path d="M12 19.5V5"/><path d="M6 11l6-6 6 6"/></g>`,
+  gear: `<g ${STROKE}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1 2 2 0 1 1-4 0 1.6 1.6 0 0 0-2.7-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 15a2 2 0 1 1 0-4 1.6 1.6 0 0 0 1.4-2.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 4.6a2 2 0 1 1 4 0 1.6 1.6 0 0 0 2.7 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 11a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.4 1z"/></g>`,
+  inbox: `<g ${STROKE}><path d="M3.5 12.5 6 6.2A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.2l2.5 6.3v4.3a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4.3z"/><path d="M3.5 12.5H9a3 3 0 0 0 6 0h5.5"/></g>`,
+}
+
+const inner = computed(() => ICONS[props.name] || '')
+</script>
+
+<template>
+  <svg
+    class="app-icon"
+    :width="size"
+    :height="size"
+    viewBox="0 0 24 24"
+    :style="{ color }"
+    aria-hidden="true"
+    focusable="false"
+    v-html="inner"
+  />
+</template>
+
+<style scoped>
+.app-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+</style>

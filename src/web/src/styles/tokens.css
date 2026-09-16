@@ -1,0 +1,75 @@
+/* Design Tokens —— 对应 UXUI 设计文档 6.1 ~ 6.3 */
+:root {
+  /* 品牌主色 */
+  --color-primary: #3d5afe;
+  --color-primary-pressed: #2a44d6;
+  --color-primary-light: #eef1ff;
+
+  /* 中性色 */
+  --text-primary: #1a1d26;
+  --text-secondary: #6b7080;
+  --text-disabled: #b5b9c4;
+  --border-color: #e8eaf0;
+  --bg-page: #f6f7fa;
+  --bg-card: #ffffff;
+
+  /* 语义色 */
+  /* 与白底/白字组合的对比度均 ≥ 4.5:1（原 #f5483b 仅 3.58:1，不满足 WCAG AA） */
+  --color-danger: #d93025;
+  --color-warning: #ff8f1f;
+  --color-success: #22b573;
+
+  /* 优先级 */
+  --priority-high: #f5483b;
+  --priority-medium: #ff8f1f;
+  --priority-low: #3d5afe;
+  --priority-none: #b5b9c4;
+
+  /* 字号 / 行高 */
+  --font-heading-l: 22px;
+  --font-heading-l-lh: 30px;
+  --font-heading-m: 18px;
+  --font-heading-m-lh: 26px;
+  --font-body-l: 16px;
+  --font-body-l-lh: 24px;
+  --font-body-m: 14px;
+  --font-body-m-lh: 22px;
+  --font-caption: 12px;
+  --font-caption-lh: 18px;
+
+  /* 间距 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* 圆角 */
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --radius-bubble: 16px;
+
+  /* 阴影 */
+  --shadow-card: 0 2px 8px rgba(26, 29, 38, 0.08);
+
+  /* 布局 */
+  --page-padding: 16px;
+  --navbar-height: 44px;
+  --tabbar-height: 49px;
+  --chat-input-height: 52px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* 动效 */
+  --dur-fast: 120ms;
+  --dur-page: 250ms;
+}
+
+/* 尊重系统「减弱动态效果」设置：位移动画降级为淡入淡出 */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
