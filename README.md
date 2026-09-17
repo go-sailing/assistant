@@ -156,7 +156,7 @@
 
 ```bash
 cd src
-docker compose up -d
+docker compose up -d postgres   # 只起数据库；起全套（用 CI 镜像）见「容器化与镜像发布」
 ```
 
 ### 2. 配置并启动后端
@@ -242,7 +242,24 @@ npm run dev          # 启动在 http://localhost:5173，/api 已代理到后端
 | server | [src/server/Dockerfile](src/server/Dockerfile) | `node:22-alpine` | 多阶段构建：`tsc` 编译 → 仅拷贝产物 + 生产依赖 + 迁移 SQL（`dist/db/migrations`），以非 root 用户 `node` 运行；启动时按 `DB_AUTO_MIGRATE` 自动迁移；健康检查走 `/healthz`（含数据库探测） |
 | web | [src/web/Dockerfile](src/web/Dockerfile) | `nginx:1.27-alpine` | 多阶段构建：`vue-tsc + vite build` → nginx 托管静态产物；同源反向代理 `/api` 到后端（**已关闭 proxy_buffering**，保证对话 SSE 正常流式返回）；SPA 路由回落 `index.html`，带内容指纹的 `/assets/*` 强缓存 |
 
-### 本地构建与运行
+### compose 一键起（使用 CI 镜像）
+
+[src/docker-compose.yml](src/docker-compose.yml) 已编排 `postgres` + `server` + `web`，其中后端与前端**直接拉取 CI 推送到 GHCR 的镜像，不在本地构建**（镜像标签由 `docker-publish.yml` 产出）：
+
+```bash
+cd src
+# 可选：把 JWT_SECRET / DEEPSEEK_API_KEY 写进 src/.env，compose 会自动读取
+docker compose up -d                           # 全套：http://localhost:8080
+docker compose up -d postgres                  # 只起数据库（本地 npm run dev 时用）
+docker compose pull && docker compose up -d    # 更新到 CI 最新镜像
+```
+
+- `latest` 可换成 CI 产出的任意标签：分支名、`v0.3.0`、`sha-xxxxxxx`；包为私有时需先 `echo <PAT> | docker login ghcr.io -u <用户名> --password-stdin`
+- 容器内 `DATABASE_URL` 指向 compose 服务名 `postgres`（不是 `localhost`），`DB_AUTO_MIGRATE` 默认开启，首次启动自动迁移 001~006
+- `server` 的宿主端口 `3000` 便于直接 curl；本机若已在跑 `npm run dev` 需错开或先停掉
+- 与本地开发共用同一个数据卷 `assistant_pgdata` 与库 `assistant`，两种方式连的是同一份数据
+
+### 本地构建与运行（可选）
 
 ```bash
 # 后端（必需 DATABASE_URL / JWT_SECRET）
@@ -261,7 +278,6 @@ docker run -d --name assistant-web -p 8080:80 \
 ```
 
 容器运行时可配的环境变量：**后端**同[环境变量](#环境变量)章节（`PORT`/`DATABASE_URL`/`JWT_SECRET`/`DB_AUTO_MIGRATE`/DeepSeek 相关等）；**前端**仅 `API_UPSTREAM`（后端基址）与 `API_PROXY_TIMEOUT`（SSE/长请求超时秒数，默认 300）。
-`src/docker-compose.yml` 仅用于本地开发起 PostgreSQL（应用本身按上面的方式单独运行）。
 
 ### CI 自动构建推送
 
@@ -320,7 +336,7 @@ docker pull ghcr.io/<owner>/<repo>/web:latest
 │       └── 测试报告-个人助手v0.3.0.md
 ├── .github/workflows/             # CI：docker-publish.yml（多架构构建并推送 GHCR）
 └── src/
-    ├── docker-compose.yml         # 本地开发用 PostgreSQL
+    ├── docker-compose.yml         # 编排 postgres + server + web（应用服务使用 GHCR 上的 CI 镜像）
     ├── server/                    # 后端
     │   ├── Dockerfile             # 多阶段构建（tsc → 生产依赖 + 迁移 SQL，非 root 运行）
     │   └── src/

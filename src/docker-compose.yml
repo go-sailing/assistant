@@ -1,3 +1,16 @@
+# 个人助手：数据库 + 后端 + 前端 一键起。
+#
+# server / web 直接使用 GitHub Actions（.github/workflows/docker-publish.yml）构建并推送到 GHCR 的镜像，
+# 本文件不做本地构建（不写 build:）。镜像标签由 CI 产出：latest（默认分支）/ 分支名 / v0.3.0 / sha-xxxxxxx。
+# 若拉取报 unauthorized / denied，说明包为私有，先登录：
+#   echo <GitHub PAT> | docker login ghcr.io -u <用户名> --password-stdin
+#
+# 常用命令（在 src/ 目录执行）：
+#   docker compose up -d                # 全套（postgres + server + web）
+#   docker compose up -d postgres       # 只起本地开发用的数据库（配合 npm run dev）
+#   docker compose pull && docker compose up -d      # 更新到 CI 最新镜像
+#
+# 变量可在 src/.env（compose 自动读取）或 shell 环境中提供：JWT_SECRET、DEEPSEEK_API_KEY。
 services:
   postgres:
     image: postgres:15-alpine
@@ -17,6 +30,41 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  server:
+    image: ghcr.io/go-sailing/assistant/server:latest
+    container_name: assistant-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 容器内走 compose 网络的服务名，与 server/.env 里的 localhost 写法不同
+      DATABASE_URL: postgres://assistant:assistant_pwd@postgres:5432/assistant
+      # 生产务必改掉；也可用 src/.env 提供
+      JWT_SECRET: ${JWT_SECRET:-please-change-this-secret-in-production}
+      JWT_EXPIRES_IN: 2h
+      # 缺失则仅对话功能不可用，任务/日程管理不受影响
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # 其余可选变量（模型名、限流、循环/子任务上限等）见 server/.env.example，按需追加
+    ports:
+      # 便于直接 curl 后端；若本机已跑 npm run dev 占用 3000，改左侧宿主端口即可
+      - "7300:3000"
+
+  web:
+    image: ghcr.io/go-sailing/assistant/web:latest
+    container_name: assistant-web
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      # nginx 把 /api 反代到后端（同 compose 网络内即服务名）
+      API_UPSTREAM: http://server:3000
+      # SSE / 长请求超时（秒）
+      API_PROXY_TIMEOUT: "300"
+    ports:
+      - "8080:80"
 
 volumes:
   assistant_pgdata:
