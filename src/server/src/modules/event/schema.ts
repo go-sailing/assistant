@@ -53,6 +53,15 @@ const monthRuleSchema = z.object({
 });
 
 /**
+ * v0.3.0：yearly 指定的月日。结构边界在此拦截；「仅 yearly 可携带」的语义约束
+ * 由 Service 的 validateRule 抛 4011（保持 zod 与业务校验的分工一致）。
+ */
+const byMonthDaySchema = z.object({
+  month: z.number().int().min(1).max(12),
+  day: z.number().int().min(1).max(31),
+});
+
+/**
  * 结束条件字段在所有分支均可出现，交由 Service 的 validateRule 做「矛盾组合」校验
  * （如 end_type=never 却带 until/count），避免被 zod 静默剥离（TC-SEC-025c）。
  */
@@ -66,6 +75,7 @@ const recurrenceBase = {
   interval: z.coerce.number().int().min(1).max(config.event.recurIntervalMax).default(1),
   by_week_days: weekdayArray.optional(),
   month_rule: monthRuleSchema.optional(),
+  by_month_day: byMonthDaySchema.optional(),
   ...endFields,
 };
 

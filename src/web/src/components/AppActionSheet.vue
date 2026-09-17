@@ -18,7 +18,7 @@ const emit = defineEmits<{ (e: 'select', value: string): void; (e: 'cancel'): vo
   <Transition name="sheet">
     <div v-if="visible" class="sheet-root" role="dialog" aria-modal="true">
       <div class="sheet-root__mask" @click="emit('cancel')" />
-      <div class="sheet-root__panel">
+      <div class="sheet-root__panel sheet-panel">
         <p v-if="title" class="sheet-root__title">{{ title }}</p>
         <ul class="sheet-root__list">
           <li v-for="item in items" :key="item.value">

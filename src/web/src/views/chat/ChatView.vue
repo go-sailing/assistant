@@ -1,19 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import * as convApi from '@/api/conversations'
 import * as taskApi from '@/api/tasks'
 import { restoreOccurrence } from '@/api/events'
 import { errorText } from '@/api/client'
-import type {
-  CalendarEvent,
-  ConfirmBlock,
-  Conversation,
-  EventScope,
-  Occurrence,
-  ScopeBlock,
-  Task,
-} from '@/types'
+import type { CalendarEvent, ConfirmBlock, EventScope, Occurrence, ScopeBlock, Task } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppModal from '@/components/AppModal.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -21,36 +13,37 @@ import StateError from '@/components/StateError.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import MessageItem from '@/components/chat/MessageItem.vue'
 import { useChatStore } from '@/stores/chat'
+import { useConversationStore } from '@/stores/conversation'
+import { useDrawerStore } from '@/stores/drawer'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
 import { formatDaySeparator } from '@/utils/time'
 
-const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
 const chat = useChatStore()
+const conversation = useConversationStore()
+const drawer = useDrawerStore()
 const taskSync = useTaskSyncStore()
 const eventSync = useEventSyncStore()
 
-const convId = computed(() => String(route.params.id))
-const messages = computed(() => chat.messagesOf(convId.value))
-const loading = computed(() => !!chat.loadingByConv[convId.value])
-const loadError = computed(() => chat.errorByConv[convId.value] || '')
-const streaming = computed(() => chat.isStreaming(convId.value))
+/** v0.3.0：每用户唯一会话；URL 始终是 /chat，会话 id 由自举获得 */
+const convId = computed(() => (conversation.conversationId ? String(conversation.conversationId) : ''))
+const messages = computed(() => (convId.value ? chat.messagesOf(convId.value) : []))
+const streaming = computed(() => !!convId.value && chat.isStreaming(convId.value))
 
-const title = ref('对话')
-const conversation = ref<Conversation | null>(null)
+const booting = ref(true)
+const bootError = ref('')
+const loadError = computed(() => bootError.value || (convId.value ? chat.errorByConv[convId.value] || '' : ''))
+const loading = computed(() => booting.value || (!!convId.value && !!chat.loadingByConv[convId.value]))
+
 const scroller = ref<HTMLElement | null>(null)
-const actionVisible = ref(false)
-const renameVisible = ref(false)
-const renameName = ref('')
-const deleteVisible = ref(false)
+const moreVisible = ref(false)
+const clearVisible = ref(false)
+const clearing = ref(false)
 
-const actionItems = [
-  { label: '重命名会话', value: 'rename' },
-  { label: '删除会话', value: 'delete', danger: true },
-]
+const moreItems = [{ label: '清除聊天记录', value: 'clear', danger: true }]
 
 function sameDay(a: string, b: string): boolean {
   const d1 = new Date(a)
@@ -82,30 +75,39 @@ function scrollToBottom(smooth = false): void {
   el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
 }
 
-async function loadConversation(): Promise<void> {
+/**
+ * 会话自举（SDD 3.5.1）：取唯一会话 id（幂等）→ 拉历史。
+ * 本地缓存的 id 与服务端不一致（清库/换环境）时丢弃旧缓存消息，避免展示他人轮次或陈旧数据。
+ */
+async function bootstrap(force = false): Promise<void> {
+  booting.value = true
+  bootError.value = ''
+  const staleId = conversation.conversationId
   try {
-    const list = await convApi.fetchConversations()
-    const found = list.find((c) => String(c.id) === convId.value) || null
-    conversation.value = found
-    if (found) title.value = found.title
-  } catch {
-    // 标题获取失败不阻塞对话，使用默认标题
+    const id = await conversation.ensureConversationId()
+    if (staleId && staleId !== id) chat.clearHistory(staleId)
+    if (force) await chat.reloadHistory(id)
+    else await chat.loadHistory(id)
+    await nextTick()
+    // 从任务详情返回时恢复滚动位置，否则定位到最新消息
+    const saved = chat.scrollTopOf(id)
+    const el = scroller.value
+    if (el && saved > 0) el.scrollTop = saved
+    else scrollToBottom()
+  } catch (e) {
+    bootError.value = errorText(e)
+  } finally {
+    booting.value = false
   }
 }
 
-onMounted(async () => {
-  await Promise.all([loadConversation(), chat.loadHistory(convId.value)])
-  await nextTick()
-  // 从任务详情返回时恢复滚动位置，否则定位到最新消息
-  const saved = chat.scrollTopOf(convId.value)
-  const el = scroller.value
-  if (el && saved > 0) el.scrollTop = saved
-  else scrollToBottom()
+onMounted(() => {
+  void bootstrap()
 })
 
 onBeforeUnmount(() => {
   const el = scroller.value
-  if (el) chat.saveScrollTop(convId.value, el.scrollTop)
+  if (el && convId.value) chat.saveScrollTop(convId.value, el.scrollTop)
 })
 
 watch(
@@ -117,11 +119,13 @@ watch(
 )
 
 function onSend(text: string): void {
+  if (!convId.value) return
   void nextTick(() => scrollToBottom())
   void chat.send(convId.value, text)
 }
 
 function onRetry(message: Parameters<typeof chat.retrySend>[1]): void {
+  if (!convId.value) return
   chat.retrySend(convId.value, message)
 }
 
@@ -277,39 +281,33 @@ function onCancel(msg: (typeof messages.value)[number], block: ConfirmBlock): vo
   void chat.cancelAction(convId.value, msg, block)
 }
 
-function onActionSelect(v: string): void {
-  actionVisible.value = false
-  if (v === 'rename') {
-    renameName.value = title.value
-    renameVisible.value = true
-  } else if (v === 'delete') {
-    deleteVisible.value = true
-  }
+/** 流式进行中禁用入口，避免与清除产生并发（不主动断连，SDD 3.5.3） */
+function openMore(): void {
+  if (streaming.value) return
+  moreVisible.value = true
 }
 
-async function submitRename(): Promise<void> {
-  const name = renameName.value.trim()
-  if (!name) return
-  try {
-    const updated = await convApi.renameConversation(convId.value, name)
-    title.value = updated.title
-    conversation.value = updated
-    renameVisible.value = false
-    toast.show('已重命名')
-  } catch (e) {
-    toast.show(errorText(e))
-  }
+function onMoreSelect(v: string): void {
+  moreVisible.value = false
+  if (v === 'clear') clearVisible.value = true
 }
 
-async function confirmDelete(): Promise<void> {
-  deleteVisible.value = false
+/** 清除聊天记录：会话保留，只删消息与待确认动作；输入框草稿保留 */
+async function confirmClear(): Promise<void> {
+  const id = convId.value
+  if (!id) return
+  clearing.value = true
   try {
-    await convApi.deleteConversation(convId.value)
-    chat.clearConversation(convId.value)
-    toast.show('已删除会话')
-    router.replace('/chat')
+    await convApi.clearConversation(id)
+    chat.clearHistory(id)
+    clearVisible.value = false
+    await nextTick()
+    if (scroller.value) scroller.value.scrollTop = 0
+    toast.show('聊天记录已清除')
   } catch (e) {
     toast.show(errorText(e))
+  } finally {
+    clearing.value = false
   }
 }
 </script>
@@ -317,17 +315,28 @@ async function confirmDelete(): Promise<void> {
 <template>
   <div class="page chat">
     <header class="chat__head">
-      <button class="chat__back pressable" aria-label="返回" @click="router.back()">‹</button>
-      <h1 class="chat__title ellipsis">{{ title }}</h1>
-      <button class="chat__more pressable" aria-label="会话操作" @click="actionVisible = true">
+      <button
+        class="chat__menu pressable"
+        aria-label="打开菜单"
+        @click="drawer.openDrawer('hamburger')"
+      >
+        <AppIcon name="list" :size="22" />
+      </button>
+      <h1 class="chat__title">助手</h1>
+      <button
+        class="chat__more pressable"
+        aria-label="更多"
+        :disabled="streaming"
+        @click="openMore"
+      >
         <AppIcon name="more" :size="20" color="#1A1D26" />
       </button>
     </header>
 
     <div ref="scroller" class="page-body chat__body" role="log" aria-live="polite">
-      <p v-if="loading" class="chat__loading">正在加载会话…</p>
+      <p v-if="loading" class="chat__loading">正在加载…</p>
 
-      <StateError v-else-if="loadError" :text="loadError" @retry="chat.reloadHistory(convId)" />
+      <StateError v-else-if="loadError" :text="loadError" @retry="bootstrap(true)" />
 
       <div v-else-if="!messages.length" class="chat__guide">
         <p class="chat__guide-title">和助手说一句话试试</p>
@@ -362,30 +371,21 @@ async function confirmDelete(): Promise<void> {
     <ChatInput :streaming="streaming" @send="onSend" />
 
     <AppActionSheet
-      :visible="actionVisible"
-      :items="actionItems"
-      @select="onActionSelect"
-      @cancel="actionVisible = false"
+      :visible="moreVisible"
+      :items="moreItems"
+      @select="onMoreSelect"
+      @cancel="moreVisible = false"
     />
 
     <AppModal
-      :visible="renameVisible"
-      title="重命名会话"
-      confirm-text="保存"
-      @confirm="submitRename"
-      @cancel="renameVisible = false"
-    >
-      <input v-model="renameName" class="chat__rename" maxlength="100" aria-label="会话标题" />
-    </AppModal>
-
-    <AppModal
-      :visible="deleteVisible"
-      title="删除该会话？"
-      text="会话中的所有消息将被删除，且不可恢复。"
-      confirm-text="删除"
+      :visible="clearVisible"
+      title="清除聊天记录？"
+      text="将永久清除与助手的全部聊天记录，且不可恢复。任务与日程数据不会被删除。"
+      confirm-text="清除"
       danger
-      @confirm="confirmDelete"
-      @cancel="deleteVisible = false"
+      :loading="clearing"
+      @confirm="confirmClear"
+      @cancel="clearVisible = false"
     />
   </div>
 </template>
@@ -404,13 +404,14 @@ async function confirmDelete(): Promise<void> {
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
 }
-.chat__back {
+.chat__menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-width: 44px;
   min-height: 44px;
-  margin-left: -8px;
-  font-size: 26px;
-  color: var(--color-primary);
-  text-align: left;
+  margin-left: -12px;
+  color: var(--text-primary);
 }
 .chat__title {
   flex: 1;
@@ -425,6 +426,9 @@ async function confirmDelete(): Promise<void> {
   width: 44px;
   height: 44px;
   margin-right: -10px;
+}
+.chat__more:disabled {
+  opacity: 0.4;
 }
 .chat__body {
   display: flex;
@@ -457,18 +461,5 @@ async function confirmDelete(): Promise<void> {
   margin-top: var(--sp-2);
   font-size: var(--font-body-m);
   color: var(--text-secondary);
-}
-.chat__rename {
-  width: 100%;
-  margin-top: var(--sp-4);
-  min-height: 44px;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-control);
-  outline: none;
-  font-size: var(--font-body-m);
-}
-.chat__rename:focus {
-  border-color: var(--color-primary);
 }
 </style>

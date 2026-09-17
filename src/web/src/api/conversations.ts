@@ -2,23 +2,21 @@ import { BASE_URL, authHeaders, request } from './client'
 import { localTimezone } from './events'
 import type { Conversation, Paged, RawMessage } from '@/types'
 
-export function fetchConversations(): Promise<Conversation[]> {
-  return request<Conversation[]>('/conversations')
+/**
+ * v0.3.0：每用户唯一会话的幂等获取（存在即返回，不存在则创建）。
+ * 不再有新建/重命名/删除会话的接口。
+ */
+export function createConversation(): Promise<Conversation> {
+  return request<Conversation>('/conversations', { method: 'POST' })
 }
 
-export function createConversation(title?: string): Promise<Conversation> {
-  return request<Conversation>('/conversations', {
+/** v0.3.0：清除聊天记录（会话保留，删除全部消息与待确认动作） */
+export function clearConversation(
+  id: string | number
+): Promise<{ id: number; deleted_messages: number }> {
+  return request<{ id: number; deleted_messages: number }>(`/conversations/${id}/clear`, {
     method: 'POST',
-    body: title ? { title } : {},
   })
-}
-
-export function renameConversation(id: string | number, title: string): Promise<Conversation> {
-  return request<Conversation>(`/conversations/${id}`, { method: 'PATCH', body: { title } })
-}
-
-export function deleteConversation(id: string | number): Promise<unknown> {
-  return request<unknown>(`/conversations/${id}`, { method: 'DELETE' })
 }
 
 export function fetchMessages(

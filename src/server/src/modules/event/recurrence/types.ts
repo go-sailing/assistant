@@ -26,6 +26,14 @@ export interface MonthRule {
   weekday?: number;
 }
 
+/** v0.3.0：yearly 指定的每年重复月日 */
+export interface ByMonthDay {
+  /** 1..12 */
+  month: number;
+  /** 1..31；目标月无该日时落到当月最后一天 */
+  day: number;
+}
+
 export interface RecurrenceRule {
   freq: RecurFreq;
   /** 1..EVENT_RECUR_INTERVAL_MAX，默认 1 */
@@ -34,6 +42,8 @@ export interface RecurrenceRule {
   by_week_days?: number[];
   /** 仅 monthly */
   month_rule?: MonthRule;
+  /** v0.3.0 仅 yearly：指定每年的月日；缺省=取首次实例（anchor）的月日 */
+  by_month_day?: ByMonthDay;
   end_type: RecurEndType;
   /** end_type=count：1..EVENT_SERIES_MAX_COUNT */
   count?: number;

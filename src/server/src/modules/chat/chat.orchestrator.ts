@@ -91,6 +91,7 @@ function seriesForModel(series?: SeriesDTO[]) {
     title: s.title,
     recurrence_summary: s.recurrence_summary,
     next_occurrence: s.next_occurrence,
+    first_occurrence_at: s.first_occurrence_at,
     total_count: s.total_count,
     all_day: s.all_day,
     location: s.location,
@@ -619,7 +620,7 @@ export const chatOrchestrator = {
 
   async cancel(ctx: ChatContext & { pendingActionId: string }): Promise<{ message: unknown }> {
     const { userId, conversationId } = ctx;
-    const action = await pendingActionService.getOwned(userId, conversationId, ctx.pendingActionId);
+    const action = await pendingActionService.resolveOwned(userId, conversationId, ctx.pendingActionId);
     if (action.status === 'pending') {
       await pendingActionService.markStatus(action.id, 'canceled');
     }

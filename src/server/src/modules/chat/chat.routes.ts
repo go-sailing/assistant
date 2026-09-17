@@ -25,7 +25,6 @@ const chatBodySchema = z.object({
 });
 
 const createConversationSchema = z.object({ title: z.string().max(100).optional() });
-const renameConversationSchema = z.object({ title: z.string().min(1).max(100) });
 
 const chatLimiter = rateLimit({
   windowMs: 60_000,
@@ -48,8 +47,9 @@ chatRoutes.post(
   '/conversations',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
-    const { title } = parse(createConversationSchema, req.body ?? {}, '会话参数');
-    ok(res, await conversationService.create(user.id, title));
+    // v0.3.0：幂等 get-or-create；body 可选、title 兼容接收但忽略
+    parse(createConversationSchema, req.body ?? {}, '会话参数');
+    ok(res, await conversationService.getOrCreate(user.id));
   })
 );
 
@@ -64,23 +64,13 @@ chatRoutes.get(
   })
 );
 
-chatRoutes.patch(
-  '/conversations/:id',
+/** v0.3.0：清除聊天记录（会话保留，消息与待确认动作删除） */
+chatRoutes.post(
+  '/conversations/:id/clear',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '会话 ID');
-    const { title } = parse(renameConversationSchema, req.body, '会话参数');
-    ok(res, await conversationService.rename(user.id, id, title));
-  })
-);
-
-chatRoutes.delete(
-  '/conversations/:id',
-  asyncHandler(async (req, res) => {
-    const user = getUser(req);
-    const id = parse(idParam, req.params.id, '会话 ID');
-    await conversationService.remove(user.id, id);
-    ok(res, { id });
+    ok(res, await conversationService.clearHistory(user.id, id));
   })
 );
 

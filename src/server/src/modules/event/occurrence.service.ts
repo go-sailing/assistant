@@ -64,6 +64,10 @@ export function normalizeRule(input: RecurrenceRule): RecurrenceRule {
         ? { type: 'day_of_month', day: mr.day }
         : { type: 'day_of_week', ord: mr.ord ?? 1, weekday: mr.weekday };
   }
+  // v0.3.0：yearly 指定月日（仅保留 month/day 两个字段）
+  if (input.freq === 'yearly' && input.by_month_day) {
+    rule.by_month_day = { month: input.by_month_day.month, day: input.by_month_day.day };
+  }
   if (rule.end_type === 'count') rule.count = input.count;
   if (rule.end_type === 'until') rule.until = input.until;
   return rule;

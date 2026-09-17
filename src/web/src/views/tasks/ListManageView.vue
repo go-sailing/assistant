@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import * as listApi from '@/api/lists'
 import * as taskApi from '@/api/tasks'
 import { errorText } from '@/api/client'
 import type { TaskList } from '@/types'
-import AppButton from '@/components/AppButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
 import StateError from '@/components/StateError.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
+import ListFormSheet from '@/components/tasks/ListFormSheet.vue'
 import { useToastStore } from '@/stores/toast'
 
 const toast = useToastStore()
@@ -17,13 +17,11 @@ const lists = ref<TaskList[]>([])
 const loading = ref(true)
 const error = ref('')
 
-/** 新建/重命名行内输入 */
-const creating = ref(false)
-const createName = ref('')
-const createInput = ref<HTMLInputElement | null>(null)
-const editingId = ref('')
-const editName = ref('')
-const submitting = ref(false)
+/** v0.3.0：新建/重命名统一走底部表单弹层（原行内输入已移除） */
+const sheetOpen = ref(false)
+const sheetMode = ref<'create' | 'rename'>('create')
+const sheetTarget = ref<TaskList | null>(null)
+const sheetRef = ref<InstanceType<typeof ListFormSheet> | null>(null)
 
 const deleteTarget = ref<TaskList | null>(null)
 const deleteCount = ref<number | null>(null)
@@ -45,54 +43,35 @@ async function load(): Promise<void> {
 }
 
 function startCreate(): void {
-  creating.value = true
-  createName.value = ''
-  void nextTick(() => createInput.value?.focus())
-}
-
-async function submitCreate(): Promise<void> {
-  const name = createName.value.trim()
-  if (!name || submitting.value) return
-  submitting.value = true
-  try {
-    const created = await listApi.createList(name)
-    lists.value = [...lists.value, created]
-    creating.value = false
-    createName.value = ''
-    toast.show('已新建清单')
-  } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    submitting.value = false
-  }
-}
-
-/** 行内输入聚焦（v-for 内使用函数式 ref） */
-function focusInput(el: unknown): void {
-  const input = el as HTMLInputElement | null
-  if (input && typeof input.focus === 'function') window.setTimeout(() => input.focus(), 0)
+  sheetMode.value = 'create'
+  sheetTarget.value = null
+  sheetOpen.value = true
 }
 
 function startEdit(list: TaskList): void {
-  editingId.value = String(list.id)
-  editName.value = list.name
+  sheetMode.value = 'rename'
+  sheetTarget.value = list
+  sheetOpen.value = true
 }
 
-async function submitEdit(): Promise<void> {
-  const id = editingId.value
-  const name = editName.value.trim()
-  if (!id || !name || submitting.value) return
-  submitting.value = true
+/** 弹层确认：成功关闭并就地更新；失败内联报错（弹层不关、输入不丢） */
+async function submitSheet(name: string): Promise<void> {
+  const target = sheetTarget.value
   try {
-    const updated = await listApi.renameList(id, name)
-    const i = lists.value.findIndex((l) => String(l.id) === id)
-    if (i >= 0) lists.value[i] = updated
-    editingId.value = ''
-    toast.show('已重命名')
+    if (sheetMode.value === 'create') {
+      const created = await listApi.createList(name)
+      lists.value = [...lists.value, created]
+      toast.show('已新建清单')
+    } else if (target) {
+      const updated = await listApi.renameList(target.id, name)
+      const i = lists.value.findIndex((l) => String(l.id) === String(target.id))
+      if (i >= 0) lists.value[i] = updated
+      toast.show('已重命名')
+    }
+    sheetRef.value?.done()
+    sheetOpen.value = false
   } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    submitting.value = false
+    sheetRef.value?.fail(errorText(e))
   }
 }
 
@@ -148,59 +127,31 @@ onMounted(load)
       <StateError v-else-if="error" :text="error" @retry="load" />
 
       <template v-else>
-        <!-- 新建清单：顶部滑入行内输入 -->
-        <div v-if="creating" class="lists__row lists__row--input">
-          <input
-            ref="createInput"
-            v-model="createName"
-            class="lists__input"
-            placeholder="清单名称…"
-            aria-label="新清单名称"
-            maxlength="50"
-            @keydown.enter="submitCreate"
-          />
-          <AppButton type="text" :loading="submitting" @click="submitCreate">确认</AppButton>
-          <AppButton type="text" @click="creating = false">取消</AppButton>
-        </div>
-
         <ul class="lists__list">
           <li v-for="l in ordered()" :key="String(l.id)" class="lists__row">
-            <template v-if="editingId === String(l.id)">
-              <input
-                :ref="focusInput"
-                v-model="editName"
-                class="lists__input"
-                aria-label="清单名称"
-                maxlength="50"
-                @keydown.enter="submitEdit"
-              />
-              <AppButton type="text" :loading="submitting" @click="submitEdit">确认</AppButton>
-              <AppButton type="text" @click="editingId = ''">取消</AppButton>
-            </template>
+            <span class="lists__name ellipsis">{{ l.name }}</span>
+            <span v-if="l.is_default" class="lists__badge">默认</span>
             <template v-else>
-              <span class="lists__name ellipsis">{{ l.name }}</span>
-              <span v-if="l.is_default" class="lists__badge">默认</span>
-              <template v-else>
-                <button
-                  class="lists__action pressable"
-                  aria-label="重命名清单"
-                  @click="startEdit(l)"
-                >
-                  <AppIcon name="edit" :size="18" color="#6B7080" />
-                </button>
-                <button
-                  class="lists__action pressable"
-                  aria-label="删除清单"
-                  @click="askDelete(l)"
-                >
-                  <AppIcon name="trash" :size="18" color="#F5483B" />
-                </button>
-              </template>
+              <button class="lists__action pressable" aria-label="重命名清单" @click="startEdit(l)">
+                <AppIcon name="edit" :size="18" color="#6B7080" />
+              </button>
+              <button class="lists__action pressable" aria-label="删除清单" @click="askDelete(l)">
+                <AppIcon name="trash" :size="18" color="#F5483B" />
+              </button>
             </template>
           </li>
         </ul>
       </template>
     </div>
+
+    <ListFormSheet
+      ref="sheetRef"
+      :visible="sheetOpen"
+      :mode="sheetMode"
+      :initial-name="sheetTarget?.name ?? ''"
+      @confirm="submitSheet"
+      @cancel="sheetOpen = false"
+    />
 
     <AppModal
       :visible="deleteVisible"
@@ -258,10 +209,6 @@ onMounted(load)
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border-color);
 }
-.lists__row--input {
-  background: var(--bg-card);
-  margin-top: var(--sp-2);
-}
 .lists__name {
   flex: 1;
   font-size: var(--font-body-l);
@@ -269,19 +216,6 @@ onMounted(load)
 .lists__badge {
   font-size: var(--font-caption);
   color: var(--text-disabled);
-}
-.lists__input {
-  flex: 1;
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-control);
-  outline: none;
-  font-size: var(--font-body-m);
-}
-.lists__input:focus {
-  border-color: var(--color-primary);
 }
 .lists__action {
   display: flex;

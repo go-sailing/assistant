@@ -65,7 +65,7 @@ const DEFAULT_SCOPE: EventScope = 'this'
     <div v-if="visible" class="scope" role="dialog" aria-modal="true" :aria-label="title">
       <div class="scope__mask" @click="emit('cancel')" />
 
-      <div class="scope__panel">
+      <div class="scope__panel sheet-panel">
         <span class="scope__grabber" aria-hidden="true" />
         <h2 class="scope__title">{{ title }}</h2>
 

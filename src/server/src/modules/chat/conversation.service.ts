@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
-import { query } from '../../db/pool';
+import { query, withTransaction } from '../../db/pool';
 import { AppError } from '../../common/errors';
+import { logger } from '../../common/logger';
 import { config } from '../../config';
 import type { TaskDTO } from '../task/types';
 import { taskService } from '../task/task.service';
@@ -189,10 +190,18 @@ export const conversationService = {
     return res.rows.map(toConversationDTO);
   },
 
-  async create(userId: number, title = '新对话'): Promise<ConversationDTO> {
+  /**
+   * v0.3.0：每用户唯一会话的幂等获取。
+   * 单条 SQL 完成「有则返回、无则插入」，避免应用层 check-then-insert 的并发竞态；
+   * DO UPDATE 为空更新（不改 updated_at），保证重复调用不把会话顶到最前。
+   * 依赖迁移 006 的唯一索引 uniq_conversations_user。
+   */
+  async getOrCreate(userId: number): Promise<ConversationDTO> {
     const res = await query<ConversationRow>(
-      `INSERT INTO conversations(user_id, title) VALUES ($1, $2) RETURNING *`,
-      [userId, title.slice(0, 100)]
+      `INSERT INTO conversations(user_id) VALUES ($1)
+       ON CONFLICT (user_id) DO UPDATE SET updated_at = conversations.updated_at
+       RETURNING *`,
+      [userId]
     );
     return toConversationDTO(res.rows[0]);
   },
@@ -206,23 +215,35 @@ export const conversationService = {
     return res.rows[0];
   },
 
-  async rename(userId: number, conversationId: number, title: string): Promise<ConversationDTO> {
+  /**
+   * v0.3.0：清除聊天记录（会话本身保留）。
+   * 单事务删除该会话全部消息与待确认动作，并重置标题；
+   * 不触碰任何任务 / 日程 / 清单数据。
+   */
+  async clearHistory(
+    userId: number,
+    conversationId: number
+  ): Promise<{ id: number; deleted_messages: number }> {
     await this.getOwned(userId, conversationId);
-    const trimmed = (title ?? '').trim();
-    if (!trimmed) throw AppError.paramInvalid('会话标题不能为空');
-    const res = await query<ConversationRow>(
-      `UPDATE conversations SET title = $1, updated_at = now() WHERE id = $2 RETURNING *`,
-      [trimmed.slice(0, 100), conversationId]
-    );
-    return toConversationDTO(res.rows[0]);
-  },
-
-  async remove(userId: number, conversationId: number): Promise<void> {
-    const res = await query(`DELETE FROM conversations WHERE id = $1 AND user_id = $2`, [
-      conversationId,
-      userId,
-    ]);
-    if (res.rowCount === 0) throw AppError.notFound('会话不存在');
+    const deleted = await withTransaction(async (client) => {
+      const msg = await client.query(`DELETE FROM messages WHERE conversation_id = $1`, [
+        conversationId,
+      ]);
+      await client.query(`DELETE FROM pending_actions WHERE conversation_id = $1`, [
+        conversationId,
+      ]);
+      await client.query(
+        `UPDATE conversations SET title = '新对话', updated_at = now() WHERE id = $1`,
+        [conversationId]
+      );
+      return msg.rowCount ?? 0;
+    });
+    logger.info('chat_history_cleared', {
+      user_id: userId,
+      conversation_id: conversationId,
+      deleted_messages: deleted,
+    });
+    return { id: conversationId, deleted_messages: deleted };
   },
 
   async touch(conversationId: number): Promise<void> {
@@ -451,13 +472,20 @@ export const pendingActionService = {
     return res.rows[0];
   },
 
-  async getOwned(userId: number, conversationId: number, id: string): Promise<PendingActionRow> {
-    const res = await query<PendingActionRow>(
-      `SELECT * FROM pending_actions WHERE id = $1 AND user_id = $2 AND conversation_id = $3`,
-      [id, userId, conversationId]
-    );
-    if (res.rowCount === 0) throw AppError.notFound('待确认操作不存在');
-    return res.rows[0];
+  /**
+   * v0.3.0：取出「属于该用户会话」的待确认动作，用于确认/取消。
+   * 与「按 id + 归属一起查」的差别在于错误语义：清除聊天记录会**物理删除** pending，
+   * 此时该 id 已不存在 → 按 PRD 7.3 返回「该操作已失效」（pendingActionInvalid），
+   * 而不是「不存在」。越权（他人 id / 他人会话）仍按不存在处理，不泄露存在性。
+   */
+  async resolveOwned(userId: number, conversationId: number, id: string): Promise<PendingActionRow> {
+    const res = await query<PendingActionRow>(`SELECT * FROM pending_actions WHERE id = $1`, [id]);
+    const row = res.rows[0];
+    if (!row) throw AppError.pendingActionInvalid();
+    if (row.user_id !== userId || row.conversation_id !== conversationId) {
+      throw AppError.notFound('待确认操作不存在');
+    }
+    return row;
   },
 
   /**
@@ -465,7 +493,7 @@ export const pendingActionService = {
    * 过期时顺手标记为 expired。
    */
   async takeExecutable(userId: number, conversationId: number, id: string): Promise<PendingActionRow> {
-    const action = await this.getOwned(userId, conversationId, id);
+    const action = await this.resolveOwned(userId, conversationId, id);
     if (action.status !== 'pending') {
       throw AppError.pendingActionInvalid('该操作已被处理，请重新发起');
     }

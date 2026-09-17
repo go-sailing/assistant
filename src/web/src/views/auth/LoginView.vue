@@ -31,7 +31,8 @@ async function onSubmit(): Promise<void> {
   loading.value = true
   try {
     await auth.login(email.value.trim(), password.value)
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/tasks'
+    // v0.3.0：默认落地日程主页（与路由 `/` → `/calendar`、PRD 3.3「登录后默认落地」一致）
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/calendar'
     router.replace(redirect)
   } catch (e) {
     formError.value = errorText(e)

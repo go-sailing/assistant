@@ -44,7 +44,7 @@ function timeText(item: { all_day: boolean; start_at: string; end_at: string }):
     <div v-if="visible" class="rc" role="dialog" aria-modal="true" aria-label="多个日期有冲突">
       <div class="rc__mask" @click="emit('cancel')" />
 
-      <div class="rc__panel">
+      <div class="rc__panel sheet-panel">
         <span class="rc__grabber" aria-hidden="true" />
         <div class="rc__head">
           <AppIcon name="conflict" :size="20" color="var(--color-warning)" />

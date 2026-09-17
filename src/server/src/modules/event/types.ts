@@ -1,7 +1,7 @@
 import type { Priority, TaskStatus } from '../task/types';
 import { config } from '../../config';
 import { summarizeRecurrence } from './recurrence/summary';
-import { firstOccurrenceAfter, countOccurrences } from './recurrence/engine';
+import { firstOccurrenceAfter, firstOccurrenceAt, countOccurrences } from './recurrence/engine';
 import type { OverrideState, RecurrenceRule } from './recurrence/types';
 
 export type EventType = 'normal' | 'task';
@@ -105,6 +105,11 @@ export interface SeriesDTO extends EventDTO {
   recurrence: RecurrenceRule;
   recurrence_summary: string;
   next_occurrence: string | null;
+  /**
+   * v0.3.0：首次实例时间（UTC ISO）。
+   * yearly 指定月日时可能晚于系列开始时间（本年已过则落到次年）；规则已耗尽为 null。
+   */
+  first_occurrence_at: string | null;
   /** 规则推算的实例总数（count 精确，其余为上限内估算） */
   total_count: number;
 }
@@ -251,17 +256,19 @@ export function toEventDTO(row: EventRow, tz: string = config.event.defaultTz): 
   };
 }
 
-/** 系列 DTO：附带下一次实例时间与总次数（引擎按需小窗口展开） */
+/** 系列 DTO：附带首次/下一次实例时间与总次数（引擎按需小窗口展开） */
 export function toSeriesDTO(row: EventRow, tz: string, now = new Date()): SeriesDTO {
   const dto = toEventDTO(row, tz);
   const rule = row.recurrence as RecurrenceRule;
   const durationMs = eventDurationMs(row);
   const next = firstOccurrenceAfter(rule, row.start_at, durationMs, now, tz);
+  const first = firstOccurrenceAt(rule, row.start_at, durationMs, tz);
   return {
     ...dto,
     recurrence: rule,
     recurrence_summary: dto.recurrence_summary ?? '',
     next_occurrence: next ? next.start_at.toISOString() : null,
+    first_occurrence_at: first ? first.start_at.toISOString() : null,
     total_count: countOccurrences(rule, row.start_at, durationMs, tz),
   };
 }

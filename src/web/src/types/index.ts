@@ -101,6 +101,14 @@ export interface MonthRule {
   weekday?: number
 }
 
+/** v0.3.0：yearly 指定每年重复的月日 */
+export interface ByMonthDay {
+  /** 1..12 */
+  month: number
+  /** 1..31；该月无此日时落到当月最后一天 */
+  day: number
+}
+
 export interface RecurrenceRule {
   freq: RecurFreq
   /** 1..99，默认 1 */
@@ -109,6 +117,8 @@ export interface RecurrenceRule {
   by_week_days?: number[]
   /** 仅 monthly */
   month_rule?: MonthRule
+  /** 仅 yearly：指定月日；缺省取首次开始日期的月日 */
+  by_month_day?: ByMonthDay
   end_type: RecurEndType
   /** end_type=count：1..730 */
   count?: number
@@ -181,6 +191,8 @@ export interface SeriesDetail extends CalendarEvent {
   recurrence: RecurrenceRule
   recurrence_summary: string
   next_occurrence: string | null
+  /** v0.3.0：首次实例时间（UTC ISO）；yearly 指定月日本年已过时会落在次年 */
+  first_occurrence_at?: string | null
   total_count: number
   occurrences: { upcoming: Occurrence[]; past: Occurrence[] }
   next_cursor: string | null

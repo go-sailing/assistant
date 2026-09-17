@@ -343,6 +343,16 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
                   weekday: { type: 'number', description: 'day_of_week：0=周日 … 6=周六' },
                 },
               },
+              by_month_day: {
+                type: 'object',
+                description:
+                  '（v0.3.0）仅 yearly：指定每年重复的月日，可与开始日期不同（如开始日是 9 月 17 日、' +
+                  '用户说「每年 6 月 1 日体检」则传 {month:6,day:1}）。缺省取开始日期的月日。',
+                properties: {
+                  month: { type: 'number', description: '1~12' },
+                  day: { type: 'number', description: '1~31（该月无此日时落到当月最后一天）' },
+                },
+              },
               end_type: { type: 'string', enum: ['never', 'count', 'until'], description: '结束条件' },
               count: { type: 'number', description: 'end_type=count：重复次数 1~730' },
               until: { type: 'string', description: 'end_type=until：截止日期 YYYY-MM-DD（含当天）' },

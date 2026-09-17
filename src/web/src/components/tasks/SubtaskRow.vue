@@ -16,19 +16,16 @@ const props = withDefaults(
     expandable?: boolean
     expanded?: boolean
     loading?: boolean
-    /** 是否展示行内「添加子任务」入口 */
-    showAdd?: boolean
     /** 只读模式（如对话卡片中的预览） */
     interactive?: boolean
   }>(),
-  { level: 1, expandable: false, expanded: false, loading: false, showAdd: true, interactive: true }
+  { level: 1, expandable: false, expanded: false, loading: false, interactive: true }
 )
 
 const emit = defineEmits<{
   (e: 'detail', task: Task): void
   (e: 'toggle', task: Task): void
   (e: 'toggle-expand', task: Task): void
-  (e: 'add', task: Task): void
 }>()
 
 const completed = computed(() => props.task.status === 'completed')
@@ -106,15 +103,6 @@ const indent = computed(() => Math.min(Math.max(props.level - 1, 0), 4) * 14)
       </button>
 
       <span v-if="loading" class="srow__loading" aria-hidden="true">…</span>
-      <button
-        v-else-if="showAdd && interactive"
-        class="srow__add pressable"
-        type="button"
-        :aria-label="`在「${task.title}」下添加子任务`"
-        @click.stop="emit('add', task)"
-      >
-        <AppIcon name="plus" :size="16" color="#3D5AFE" />
-      </button>
     </div>
   </div>
 </template>
@@ -214,14 +202,5 @@ const indent = computed(() => Math.min(Math.max(props.level - 1, 0), 4) * 14)
 .srow__loading {
   font-size: var(--font-caption);
   color: var(--text-disabled);
-}
-.srow__add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  margin-right: -12px;
-  flex-shrink: 0;
 }
 </style>

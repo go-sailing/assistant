@@ -462,12 +462,13 @@ onMounted(async () => {
                 {{ treeError[String(t.id)] }}
                 <button class="home__tree-retry pressable" type="button" @click="loadLevel1(t)">重试</button>
               </p>
-              <!-- 展开子树：更深层级由树内部继续懒加载 -->
+              <!-- 展开子树：更深层级由树内部继续懒加载；v0.3.0 仅根任务可加直接子任务 -->
               <SubtaskTree
                 v-if="treeData[String(t.id)]"
                 :key="filterKey"
                 :nodes="treeData[String(t.id)]"
                 :root-id="t.id"
+                allow-add
                 @changed="onTreeChanged(t)"
               />
             </div>

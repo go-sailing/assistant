@@ -39,7 +39,7 @@ const activeKey = computed(() => {
   return ''
 })
 
-const email = computed(() => auth.user?.email ?? '')
+const email = computed(() => auth.email)
 const initial = computed(() => (email.value.trim()[0] ?? '?').toUpperCase())
 
 /** 焦点陷阱：打开后聚焦首个可聚焦元素，Tab 在面板内循环 */

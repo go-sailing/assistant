@@ -101,7 +101,7 @@ function pick(parentId: number | null): void {
   <Transition name="sheet">
     <div v-if="visible" class="picker" role="dialog" aria-modal="true" aria-labelledby="parent-picker-title">
       <div class="picker__mask" @click="emit('cancel')" />
-      <div class="picker__panel">
+      <div class="picker__panel sheet-panel">
         <p class="picker__handle" aria-hidden="true" />
         <h3 id="parent-picker-title" class="picker__title">{{ title }}</h3>
 

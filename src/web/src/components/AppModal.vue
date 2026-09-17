@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
 import AppButton from './AppButton.vue'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     visible: boolean
     title: string
@@ -15,6 +16,22 @@ withDefaults(
 )
 
 const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>()
+
+/**
+ * v0.3.0：危险操作的默认焦点不落在破坏性按钮上（UXUI 5.6）。
+ * 仅 danger 弹窗生效（这类弹窗无输入框，不会抢走输入焦点）。
+ */
+const cancelRef = ref<InstanceType<typeof AppButton> | null>(null)
+watch(
+  () => props.visible,
+  (v) => {
+    if (!v || !props.danger) return
+    void nextTick(() => {
+      const el = cancelRef.value?.$el as HTMLElement | undefined
+      el?.focus()
+    })
+  }
+)
 </script>
 
 <template>
@@ -26,7 +43,7 @@ const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>()
         <p v-if="text" class="modal__text">{{ text }}</p>
         <slot />
         <div class="modal__actions">
-          <AppButton type="secondary" :disabled="loading" @click="emit('cancel')">
+          <AppButton ref="cancelRef" type="secondary" :disabled="loading" @click="emit('cancel')">
             {{ cancelText }}
           </AppButton>
           <AppButton

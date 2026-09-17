@@ -1,0 +1,8 @@
+# 构建上下文瘦身：依赖与产物在镜像内重建，密钥文件严禁进入镜像
+node_modules
+dist
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*

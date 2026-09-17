@@ -7,8 +7,6 @@ import { defineStore } from 'pinia'
  */
 export const useEventSyncStore = defineStore('eventSync', () => {
   const dirty = ref(false)
-  /** 进入月视图时希望定位到的日期（YYYY-MM-DD），仅消费一次 */
-  const focusDate = ref('')
 
   function markDirty(): void {
     dirty.value = true
@@ -20,16 +18,5 @@ export const useEventSyncStore = defineStore('eventSync', () => {
     return v
   }
 
-  /** 从对话/任务详情跳到某个日期时使用 */
-  function setFocusDate(date: string): void {
-    focusDate.value = date
-  }
-
-  function takeFocusDate(): string {
-    const v = focusDate.value
-    focusDate.value = ''
-    return v
-  }
-
-  return { dirty, focusDate, markDirty, consumeDirty, setFocusDate, takeFocusDate }
+  return { dirty, markDirty, consumeDirty }
 })

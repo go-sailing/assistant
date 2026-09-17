@@ -47,7 +47,10 @@ function freqPart(rule: RecurrenceRule, firstStart: Date, tz: string): string {
       return `${everyPrefix(rule.interval, '月')} ${day} 日`;
     }
     default:
-      return `${everyPrefix(rule.interval, '年')} ${anchor.m} 月 ${anchor.d} 日`;
+      // v0.3.0：年度月日取显式 by_month_day，缺省回退首次实例月日（与 v0.2.0 等价）
+      return `${everyPrefix(rule.interval, '年')} ${rule.by_month_day?.month ?? anchor.m} 月 ${
+        rule.by_month_day?.day ?? anchor.d
+      } 日`;
   }
 }
 
@@ -55,7 +58,7 @@ function anchorWeekday(firstStart: Date, tz: string): number {
   return new Date(toZonedNaive(firstStart, tz)).getUTCDay();
 }
 
-/** 小月 / 闰年回落注释 */
+/** 小月回落注释（monthly，沿用 v0.2.0 文案与位置） */
 function fallbackNote(rule: RecurrenceRule, firstStart: Date, tz: string): string {
   const anchor = zonedParts(firstStart, tz);
   if (rule.freq === 'monthly') {
@@ -65,9 +68,20 @@ function fallbackNote(rule: RecurrenceRule, firstStart: Date, tz: string): strin
       if (day > 28) return '，遇到小月落到当月最后一天';
     }
   }
-  if (rule.freq === 'yearly' && anchor.m === 2 && anchor.d === 29) {
-    return '，遇到平年落到 2 月 28 日';
-  }
+  return '';
+}
+
+/**
+ * 年度月日的月末/闰年括注（v0.3.0，PRD 5.4）：
+ * 以「实际生效的月日」（by_month_day ?? 首次实例月日）为准；只输出适用的一条。
+ */
+function yearlyFallbackNote(rule: RecurrenceRule, firstStart: Date, tz: string): string {
+  if (rule.freq !== 'yearly') return '';
+  const anchor = zonedParts(firstStart, tz);
+  const month = rule.by_month_day?.month ?? anchor.m;
+  const day = rule.by_month_day?.day ?? anchor.d;
+  if (month === 2 && day === 29) return '（平年安排在 2 月 28 日）';
+  if (day >= 29) return '（遇到小月落到当月最后一天）';
   return '';
 }
 
@@ -91,6 +105,16 @@ export function summarizeRecurrence(
   tz: string
 ): string {
   if (!rule || !rule.freq) throw AppError.recurrenceInvalid('缺少重复频率');
+  const yearlyNote = yearlyFallbackNote(rule, firstStart, tz);
+  if (yearlyNote) {
+    // 年度括注缀于末尾（PRD 5.3/5.4 示例：每年 2 月 29 日，全天，共 3 次（平年安排在 2 月 28 日））
+    return [
+      freqPart(rule, firstStart, tz),
+      timePart(allDay, firstStart, tz),
+      endPart(rule),
+      yearlyNote,
+    ].join('');
+  }
   return [
     freqPart(rule, firstStart, tz),
     timePart(allDay, firstStart, tz),

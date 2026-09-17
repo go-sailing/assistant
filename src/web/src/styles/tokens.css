@@ -71,6 +71,8 @@
   /* 布局 */
   --page-padding: 16px;
   --navbar-height: 44px;
+  /* v0.3.0：宽屏内容中栏最大宽度（月历格子宽等按中栏容器计算，不再用 100vw） */
+  --content-max-width: 480px;
   /* v0.2.0：底部 Tab 已下线；保留变量一个版本周期避免外部引用报错，值置 0 */
   --tabbar-height: 0px;
   --chat-input-height: 52px;

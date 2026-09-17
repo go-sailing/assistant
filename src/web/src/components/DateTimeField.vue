@@ -48,7 +48,7 @@ function clear(): void {
     <Transition name="sheet">
       <div v-if="visible" class="dt__sheet" role="dialog" aria-modal="true">
         <div class="dt__mask" @click="visible = false" />
-        <div class="dt__panel">
+        <div class="dt__panel sheet-panel">
           <div class="dt__panel-head">
             <button class="dt__panel-btn" @click="clear">清除</button>
             <span class="dt__panel-title">选择截止时间</span>

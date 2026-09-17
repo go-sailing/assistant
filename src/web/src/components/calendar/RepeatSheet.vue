@@ -68,6 +68,11 @@ const monthMode = ref<MonthRuleType>('day_of_month')
 const monthDayInput = ref('1')
 const monthOrd = ref<-1 | 1 | 2 | 3 | 4>(1)
 const monthWeekday = ref(1)
+/** v0.3.0：yearly 指定的月、日（1..12 / 1..31） */
+const yearMonth = ref(1)
+const yearDay = ref(1)
+/** 用户手动改过年度月日后，开始时间变化不再覆盖 */
+const yearlyTouched = ref(false)
 const endType = ref<RecurEndType>('never')
 const countInput = ref('10')
 const until = ref('')
@@ -104,6 +109,10 @@ function reset(): void {
   monthDayInput.value = String(init?.month_rule?.day ?? firstDate.value.getDate())
   monthOrd.value = init?.month_rule?.ord ?? defaultOrd()
   monthWeekday.value = init?.month_rule?.weekday ?? firstDate.value.getDay()
+  // 存量系列无 by_month_day：回填首次开始日期的月日（与引擎缺省语义一致）
+  yearMonth.value = init?.by_month_day?.month ?? firstDate.value.getMonth() + 1
+  yearDay.value = init?.by_month_day?.day ?? firstDate.value.getDate()
+  yearlyTouched.value = !!init?.by_month_day
   endType.value = init?.end_type ?? 'never'
   countInput.value = String(init?.count ?? 10)
   const fallback = new Date(firstDate.value)
@@ -159,6 +168,10 @@ function buildRule(): RecurrenceRule {
       monthMode.value === 'day_of_month'
         ? { type: 'day_of_month', day: Number(monthDayInput.value) }
         : { type: 'day_of_week', ord: monthOrd.value, weekday: monthWeekday.value }
+  }
+  // v0.3.0：年度月日始终显式提交（缺省值等价于服务端缺省语义，统一形态降低分支）
+  if (freq.value === 'yearly') {
+    rule.by_month_day = { month: yearMonth.value, day: yearDay.value }
   }
   if (endType.value === 'count') rule.count = Number(countInput.value)
   if (endType.value === 'until') rule.until = until.value
@@ -225,10 +238,14 @@ function matchesDay(d: Date, rule: RecurrenceRule): boolean {
     }
     return nthWeekdayMatches(d, mr.ord ?? defaultOrd(), mr.weekday ?? anchor.getDay())
   }
-  // yearly
+  // yearly：优先用指定月日（缺省回退首次月日），月内无该日时落到月末
   const yearDiff = d.getFullYear() - anchor.getFullYear()
   if (yearDiff < 0 || yearDiff % gap !== 0) return false
-  return d.getMonth() === anchor.getMonth() && d.getDate() === anchor.getDate()
+  const bmd = rule.by_month_day
+  const ym = bmd?.month ?? anchor.getMonth() + 1
+  const yd = bmd?.day ?? anchor.getDate()
+  if (d.getMonth() + 1 !== ym) return false
+  return d.getDate() === Math.min(yd, daysInMonth(d.getFullYear(), ym))
 }
 
 /** 截止日期前的发生次数（本地估算，仅用于预览"共 N 次"） */
@@ -254,6 +271,7 @@ const previewSummary = computed(() => {
     weekDays.value.length === WORK_DAYS.length && WORK_DAYS.every((d) => weekDays.value.includes(d))
 
   let head = ''
+  let yearlyNote = ''
   if (rule.freq === 'daily') {
     head = rule.interval > 1 ? `每 ${rule.interval} 天` : '每天'
   } else if (rule.freq === 'weekly') {
@@ -270,7 +288,17 @@ const previewSummary = computed(() => {
       head = `每月${ord}周${WEEKDAY_CN[mr.weekday ?? 0]}`
     }
   } else {
-    head = `每年 ${firstDate.value.getMonth() + 1} 月 ${firstDate.value.getDate()} 日`
+    // v0.3.0：年度月日取指定值（与后端 summary 同构）
+    const m = rule.by_month_day?.month ?? firstDate.value.getMonth() + 1
+    const d = rule.by_month_day?.day ?? firstDate.value.getDate()
+    head = `每年 ${m} 月 ${d} 日`
+    // 29/30/31 的月末括注与后端一致，缀于摘要末尾
+    yearlyNote =
+      m === 2 && d === 29
+        ? '（平年安排在 2 月 28 日）'
+        : d >= 29
+          ? '（遇到小月落到当月最后一天）'
+          : ''
   }
 
   let tail = ''
@@ -278,11 +306,46 @@ const previewSummary = computed(() => {
   else if (rule.end_type === 'count') tail = `共 ${rule.count ?? 0} 次`
   else tail = `至 ${rule.until} 止，共 ${previewCount(rule)} 次`
 
-  // 与后端文案一致：定时日程「频率 + 空格 + 时段」，全天单独成段
-  return props.allDay ? `${head}，全天，${tail}` : `${head} ${previewTimeText()}，${tail}`
+  // 与后端文案一致：定时日程「频率 + 空格 + 时段」，全天单独成段；年度括注缀于末尾
+  const base = props.allDay
+    ? `${head}，全天，${tail}`
+    : `${head} ${previewTimeText()}，${tail}`
+  return `${base}${yearlyNote}`
 })
 
 /* ---------------- 交互 ---------------- */
+
+/** 日选择 29/30/31 时的月末弱提示 */
+const yearDayHint = computed(() => (yearDay.value >= 29 ? '当月没有这一天时，将安排在当月最后一天' : ''))
+
+/**
+ * 首次安排预览（端上唯一允许的年规则推算，仅用于提示跨年，权威结果以服务端为准）：
+ * 候选年从开始日期的年起按 interval 递增，取指定月日（回落月末）不早于开始日期的第一个。
+ * 仅当落在开始日期之后的年份时才展示该行。
+ */
+const yearFirstOccurrence = computed(() => {
+  if (freq.value !== 'yearly') return null
+  const anchor = firstDate.value
+  const anchorMs = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate()).getTime()
+  const gap = Math.max(1, interval.value || 1)
+  for (let i = 0; i < 100; i += 1) {
+    const y = anchor.getFullYear() + i * gap
+    const day = Math.min(yearDay.value, daysInMonth(y, yearMonth.value - 1))
+    const candidate = new Date(y, yearMonth.value - 1, day)
+    if (candidate.getTime() >= anchorMs) {
+      return candidate.getFullYear() > anchor.getFullYear() ? candidate : null
+    }
+  }
+  return null
+})
+
+const yearFirstOccurrenceText = computed(() => {
+  const d = yearFirstOccurrence.value
+  if (!d) return ''
+  return `首次安排：${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 周${
+    WEEKDAY_CN[d.getDay()]
+  }`
+})
 
 function onFreqChange(v: string): void {
   freq.value = v as RecurFreq
@@ -315,11 +378,16 @@ function confirm(): void {
   emit('confirm', buildRule(), previewSummary.value)
 }
 
-// 用户未手动改过星期时，开始时间变化同步默认勾选（UX 5.3）
+// 用户未手动改过星期/年度月日时，开始时间变化同步默认值（UX 5.3 / 5.4）
 watch(
   () => props.firstStart,
   () => {
-    if (props.visible && !weekTouched.value) weekDays.value = [firstDate.value.getDay()]
+    if (!props.visible) return
+    if (!weekTouched.value) weekDays.value = [firstDate.value.getDay()]
+    if (!yearlyTouched.value) {
+      yearMonth.value = firstDate.value.getMonth() + 1
+      yearDay.value = firstDate.value.getDate()
+    }
   }
 )
 </script>
@@ -329,7 +397,7 @@ watch(
     <div v-if="visible" class="rep" role="dialog" aria-modal="true" aria-label="重复设置">
       <div class="rep__mask" @click="emit('cancel')" />
 
-      <div class="rep__panel">
+      <div class="rep__panel sheet-panel">
         <span class="rep__grabber" aria-hidden="true" />
         <header class="rep__head">
           <button class="rep__head-btn pressable" @click="emit('cancel')">取消</button>
@@ -436,9 +504,25 @@ watch(
 
           <section v-if="freq === 'yearly'" class="rep__block">
             <h3 class="rep__label">每年重复于</h3>
-            <p class="rep__readonly">
-              每年 {{ firstDate.getMonth() + 1 }} 月 {{ firstDate.getDate() }} 日（由首次时间决定）
-            </p>
+            <div class="rep__year-row">
+              <select
+                v-model.number="yearMonth"
+                class="rep__select"
+                aria-label="每年重复的月份"
+                @change="yearlyTouched = true"
+              >
+                <option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option>
+              </select>
+              <select
+                v-model.number="yearDay"
+                class="rep__select"
+                aria-label="每年重复的日期"
+                @change="yearlyTouched = true"
+              >
+                <option v-for="d in 31" :key="d" :value="d">{{ d }} 日</option>
+              </select>
+            </div>
+            <p v-if="yearDayHint" class="rep__hint">{{ yearDayHint }}</p>
           </section>
 
           <section class="rep__block">
@@ -482,6 +566,7 @@ watch(
               <AppIcon name="repeat" :size="14" color="var(--color-primary)" />
               <span class="rep__preview-text">{{ previewSummary }}</span>
             </p>
+            <p v-if="yearFirstOccurrenceText" class="rep__first">{{ yearFirstOccurrenceText }}</p>
           </section>
         </div>
 
@@ -685,10 +770,23 @@ watch(
   background: var(--bg-page);
   font-size: var(--font-body-m);
 }
-.rep__readonly {
-  font-size: var(--font-body-m);
-  line-height: var(--font-body-m-lh);
-  color: var(--text-primary);
+/* v0.3.0：年度月日双下拉（复用 select 样式，高度 ≥36pt） */
+.rep__year-row {
+  display: flex;
+  gap: var(--sp-3);
+}
+.rep__hint {
+  margin-top: var(--sp-2);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
+}
+/* 指定月日本年已过时明示首次安排（避免"设了 6 月今年却看不到"） */
+.rep__first {
+  margin-top: var(--sp-2);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--color-success);
 }
 .rep__error {
   margin-top: var(--sp-1);

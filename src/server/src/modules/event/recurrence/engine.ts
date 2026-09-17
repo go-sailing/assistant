@@ -191,6 +191,20 @@ export function validateRule(rule: RecurrenceRule, firstStart: Date, tz: string)
     throw AppError.recurrenceInvalid('「每天」重复不支持星期或月内规则');
   }
 
+  // v0.3.0：by_month_day 仅 yearly 可用（结构与范围已由 zod 拦截，此处做业务兜底）
+  if (rule.by_month_day !== undefined) {
+    if (rule.freq !== 'yearly') {
+      throw AppError.recurrenceInvalid('只有「每年」重复才能指定月日');
+    }
+    const { month, day } = rule.by_month_day;
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      throw AppError.recurrenceInvalid('月份取值需在 1~12 之间');
+    }
+    if (!Number.isInteger(day) || day < 1 || day > 31) {
+      throw AppError.recurrenceInvalid('日期取值需在 1~31 之间');
+    }
+  }
+
   const firstDateMs = Date.UTC(first.y, first.m - 1, first.d);
 
   // 结束条件必须自洽：never 不接受 count/until，count 与 until 互斥（TC-SEC-025c）
@@ -294,9 +308,12 @@ function cycleCandidates(
 
     case 'yearly': {
       const y = anchor.y + k * rule.interval;
-      const dim = daysInMonth(y, anchor.m);
-      // 2 月 29 日在平年落到 2 月 28 日
-      return [at(y, anchor.m, Math.min(anchor.d, dim))];
+      // v0.3.0：优先使用显式指定的月日，缺省回退首次实例的月日（与 v0.2.0 等价）
+      const m = rule.by_month_day?.month ?? anchor.m;
+      const d = rule.by_month_day?.day ?? anchor.d;
+      const dim = daysInMonth(y, m);
+      // 31 日遇到小月落到当月最后一天；2 月 29 日在平年落到 2 月 28 日
+      return [at(y, m, Math.min(d, dim))];
     }
 
     default:
@@ -436,6 +453,20 @@ export function firstOccurrenceAfter(
     windowStart = windowEnd;
   }
   return null;
+}
+
+/**
+ * 系列的首次实例（v0.3.0，读模型 first_occurrence_at）。
+ * 语义 = 「不早于系列开始时间的第一个候选」：yearly 指定月日本年已过时自然落到次年
+ * （按 interval 步进）；其余频率结果即开始时间当次。规则已耗尽时为 null。
+ */
+export function firstOccurrenceAt(
+  rule: RecurrenceRule,
+  firstStart: Date,
+  durationMs: number,
+  tz: string
+): OccurrenceSeed | null {
+  return firstOccurrenceAfter(rule, firstStart, durationMs, firstStart, tz);
 }
 
 /** 按规则推算的实例总数（count 精确；until/never 用窗口展开估算，上限 maxCount） */

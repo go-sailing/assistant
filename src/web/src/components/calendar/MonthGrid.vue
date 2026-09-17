@@ -1,16 +1,28 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { MonthDayCount } from '@/types'
-import { buildMonthGrid, toDateKey } from '@/utils/time'
+import { buildMonthGrid, buildWeekGrid, toDateKey } from '@/utils/time'
 
-const props = defineProps<{
-  year: number
-  /** 1 ~ 12 */
-  month: number
-  counts: MonthDayCount[]
-  /** 选中日 YYYY-MM-DD */
-  selected: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    year: number
+    /** 1 ~ 12 */
+    month: number
+    counts: MonthDayCount[]
+    /** 选中日 YYYY-MM-DD */
+    selected: string
+    /** v0.3.0：month = 6 行整月；week = 仅选中日所在周一行（折叠态） */
+    mode?: 'month' | 'week'
+    /**
+     * v0.3.0 折叠动画：日期行整体上移的像素位移（周标题行不参与位移），
+     * 收起时把选中周滑到可视区，避免"跳变"。
+     */
+    weekShift?: number
+    /** 折叠动画结束后的内容切换：位移需瞬时归零、不做过渡 */
+    noShiftAnim?: boolean
+  }>(),
+  { mode: 'month', weekShift: 0, noShiftAnim: false }
+)
 
 const emit = defineEmits<{ (e: 'select', date: string): void }>()
 
@@ -25,7 +37,10 @@ interface CellMark {
   core?: 'primary' | 'link'
 }
 
-const days = computed(() => buildMonthGrid(props.year, props.month))
+// v0.3.0：折叠态只渲染选中日所在周一行，其余复用同一套格子
+const days = computed(() =>
+  props.mode === 'week' ? buildWeekGrid(props.selected) : buildMonthGrid(props.year, props.month)
+)
 const todayKey = toDateKey(new Date())
 
 /** 日期 → 计数：42 个格子逐个线性查找太浪费，先建 Map */
@@ -98,7 +113,11 @@ const cells = computed<CellInfo[]>(() =>
     <div class="grid__week" aria-hidden="true">
       <span v-for="w in WEEK_LABELS" :key="w" class="grid__week-item">{{ w }}</span>
     </div>
-    <ul class="grid__days">
+    <ul
+      class="grid__days"
+      :class="{ 'grid__days--noanim': noShiftAnim }"
+      :style="{ transform: `translateY(${weekShift}px)` }"
+    >
       <li v-for="cell in cells" :key="cell.key">
         <button
           class="grid__day"
@@ -133,11 +152,14 @@ const cells = computed<CellInfo[]>(() =>
 .grid {
   background: var(--bg-card);
 }
+/* v0.3.0：列宽按「中栏容器」计算（1fr + 页面内边距），不再引用 100vw——
+   宽屏下格子随中栏宽度走（修复异常放大），手机上格子尺寸与 v0.2.0 一致 */
 .grid__week {
   display: grid;
-  grid-template-columns: repeat(7, calc((100vw - 32px) / 7));
+  grid-template-columns: repeat(7, 1fr);
   align-items: center;
   height: 28px;
+  padding: 0 var(--page-padding);
 }
 .grid__week-item {
   text-align: center;
@@ -146,15 +168,20 @@ const cells = computed<CellInfo[]>(() =>
 }
 .grid__days {
   display: grid;
-  grid-template-columns: repeat(7, calc((100vw - 32px) / 7));
-  padding-bottom: var(--sp-2);
+  grid-template-columns: repeat(7, 1fr);
+  padding: 0 var(--page-padding) var(--sp-2);
+  /* 折叠动画：仅日期行位移，周标题行保持不动 */
+  transition: transform var(--dur-page) ease-out;
+}
+.grid__days--noanim {
+  transition: none;
 }
 .grid__day {
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* 格子即热区，正方形保证触控面积 ≥ 44px */
-  width: calc((100vw - 32px) / 7);
+  /* 格子即热区，正方形保证触控面积 ≥ 44px（宽度随容器，尺寸比例与 v0.2.0 一致） */
+  width: 100%;
   aspect-ratio: 1;
   padding-top: 4px;
   gap: 2px;

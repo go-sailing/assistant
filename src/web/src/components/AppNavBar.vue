@@ -20,7 +20,8 @@ const route = useRoute()
 const drawer = useDrawerStore()
 
 /** v0.2.0：一级页（日程/任务/助手）左侧渲染汉堡菜单，底部 Tab 已下线 */
-const MENU_ROUTE_NAMES = new Set(['calendar-month', 'task-home', 'conversation-list'])
+/** v0.3.0：会话列表页下线，助手改为一页（route name = chat） */
+const MENU_ROUTE_NAMES = new Set(['calendar-month', 'task-home', 'chat'])
 const showMenu = computed(() => MENU_ROUTE_NAMES.has(String(route.name ?? '')))
 
 function goBack(): void {

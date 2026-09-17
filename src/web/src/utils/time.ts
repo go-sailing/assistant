@@ -172,6 +172,20 @@ export function formatDayTitle(key: string): string {
   return base
 }
 
+/**
+ * v0.3.0 日程主页标题条（去重）：月/年由头部承载，这里只表达「相对日 + 星期 + 日序」
+ * 今天 → `今天 周三`；明天/昨天同理；其余 → `周三 17 日`
+ */
+export function formatDayBarTitle(key: string): string {
+  const d = fromDateKey(key)
+  const weekday = WEEKDAYS[d.getDay()]
+  const diff = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000)
+  if (diff === 0) return `今天 ${weekday}`
+  if (diff === 1) return `明天 ${weekday}`
+  if (diff === -1) return `昨天 ${weekday}`
+  return `${weekday} ${d.getDate()} 日`
+}
+
 /** 月视图标题：YYYY年M月 */
 export function formatMonthTitle(year: number, month: number): string {
   return `${year}年${month}月`
@@ -236,6 +250,28 @@ export function buildMonthGrid(year: number, month: number): Date[] {
     days.push(d)
   }
   return days
+}
+
+/**
+ * v0.3.0：选中日所在自然周（周一~周日）的 7 天，供折叠态 MonthGrid 单行渲染。
+ * 与 buildMonthGrid 共用同一套「周一起始」规则，保证两种形态格子位置一致。
+ */
+export function buildWeekGrid(dateKey: string): Date[] {
+  const d = fromDateKey(dateKey)
+  const monday = new Date(d)
+  monday.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+  const days: Date[] = []
+  for (let i = 0; i < 7; i += 1) {
+    const day = new Date(monday)
+    day.setDate(monday.getDate() + i)
+    days.push(day)
+  }
+  return days
+}
+
+/** 两个日期相差的整天数（b - a） */
+export function diffDays(a: Date, b: Date): number {
+  return Math.round((startOfDay(b) - startOfDay(a)) / 86400000)
 }
 
 /** 下一整天（全天日程结束边界） */

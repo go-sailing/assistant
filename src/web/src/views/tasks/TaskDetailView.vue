@@ -61,6 +61,11 @@ const allSubtasksDone = computed(
 const subtreeNodes = computed<Task[]>(() =>
   subtree.value.length ? subtree.value : task.value ? [task.value] : []
 )
+/**
+ * v0.3.0：当前任务绝对层级 = 祖先数 + 1；已达 5 级时禁止再加子任务
+ * （depth 是相对查询根的深度，故用面包屑链长度推算绝对层级）
+ */
+const atDepthLimit = computed(() => ancestors.value.length + 1 >= 5)
 
 const deleteText = computed(() => {
   const info = deleteCascade.value
@@ -365,8 +370,14 @@ onMounted(load)
             <button class="detail__subtasks-retry pressable" @click="load">重试</button>
           </p>
 
-          <!-- 树容器：更深层级由树内部懒加载 -->
-          <SubtaskTree :nodes="subtreeNodes" :root-id="task.id" @changed="onSubtreeChanged" />
+          <!-- 树容器：更深层级由树内部懒加载；v0.3.0 主任务可加直接子任务，第 5 级置灰 -->
+          <SubtaskTree
+            :nodes="subtreeNodes"
+            :root-id="task.id"
+            allow-add
+            :add-disabled="atDepthLimit"
+            @changed="onSubtreeChanged"
+          />
         </section>
 
         <section class="detail__times">

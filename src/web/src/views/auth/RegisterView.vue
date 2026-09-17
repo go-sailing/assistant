@@ -49,7 +49,8 @@ async function onSubmit(): Promise<void> {
   try {
     // MVP 无验证码、无邮箱激活：注册成功即登录
     await auth.register(email.value.trim(), password.value)
-    router.replace('/tasks')
+    // v0.3.0：默认落地日程主页（与登录一致）
+    router.replace('/calendar')
   } catch (e) {
     formError.value = errorText(e)
   } finally {

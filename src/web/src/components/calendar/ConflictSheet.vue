@@ -54,7 +54,7 @@ const restText = computed(() => `等 ${props.conflicts.length} 项`)
     <div v-if="visible" class="conflict" role="dialog" aria-modal="true">
       <div class="conflict__mask" @click="emit('cancel')" />
 
-      <div class="conflict__panel">
+      <div class="conflict__panel sheet-panel">
         <div class="conflict__head">
           <AppIcon name="conflict" :size="20" color="var(--color-warning)" />
           <h2 class="conflict__title">{{ title }}</h2>

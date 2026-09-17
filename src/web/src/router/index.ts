@@ -30,9 +30,12 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/calendar/day',
-    name: 'calendar-day',
-    component: () => import('@/views/calendar/DayView.vue'),
-    meta: { requiresAuth: true },
+    name: 'calendar-day-legacy',
+    // v0.3.0：当日列表页已下线，旧链重定向到主页并透传 date，由主页恢复选中日
+    redirect: (to) =>
+      typeof to.query.date === 'string' && to.query.date
+        ? { path: '/calendar', query: { date: to.query.date } }
+        : { path: '/calendar' },
   },
   {
     path: '/calendar/new',
@@ -103,15 +106,15 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/chat',
-    name: 'conversation-list',
-    component: () => import('@/views/chat/ConversationListView.vue'),
+    name: 'chat',
+    // v0.3.0：/chat 直接渲染唯一对话页（会话列表页下线）
+    component: () => import('@/views/chat/ChatView.vue'),
     meta: { requiresAuth: true },
   },
   {
+    // v0.3.0：旧链 /chat/:id 重定向到 /chat
     path: '/chat/:id',
-    name: 'chat',
-    component: () => import('@/views/chat/ChatView.vue'),
-    meta: { requiresAuth: true },
+    redirect: '/chat',
   },
   { path: '/:pathMatch(.*)*', redirect: '/calendar' },
 ]

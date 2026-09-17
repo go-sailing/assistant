@@ -3,12 +3,12 @@ import AppIcon from './AppIcon.vue'
 
 /**
  * 浮动按钮（v0.2.0，系统设计文档 3.2）：
- * 由 props 驱动形态 —— open-chat（日历/任务页 → 进入助手）、
- * new-conversation（会话列表 → 新建对话）、hidden（对话详情页不渲染）。
+ * 由 props 驱动形态 —— open-chat（日历/任务页 → 进入助手）、hidden（其余页面不渲染）。
+ * v0.3.0：会话列表下线，`new-conversation`（新建对话）形态删除。
  */
 withDefaults(
   defineProps<{
-    mode?: 'open-chat' | 'new-conversation' | 'hidden'
+    mode?: 'open-chat' | 'hidden'
   }>(),
   { mode: 'open-chat' }
 )
@@ -16,12 +16,7 @@ const emit = defineEmits<{ (e: 'click'): void }>()
 </script>
 
 <template>
-  <button
-    v-if="mode !== 'hidden'"
-    class="fab pressable"
-    :aria-label="mode === 'new-conversation' ? '新建对话' : '打开助手'"
-    @click="emit('click')"
-  >
+  <button v-if="mode !== 'hidden'" class="fab pressable" aria-label="打开助手" @click="emit('click')">
     <AppIcon name="chat-fill" :size="24" color="#fff" />
   </button>
 </template>

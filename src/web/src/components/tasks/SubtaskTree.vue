@@ -1,17 +1,14 @@
-<script setup lang="ts">
-import { computed, inject, provide, reactive, ref, watch } from 'vue'
+<script lang="ts">
 import type { InjectionKey } from 'vue'
-import { useRouter } from 'vue-router'
-import * as taskApi from '@/api/tasks'
-import { ApiError, errorText } from '@/api/client'
 import type { Task } from '@/types'
-import { useToastStore } from '@/stores/toast'
-import AppIcon from '../AppIcon.vue'
-import AppModal from '../AppModal.vue'
-import SubtaskComposer from './SubtaskComposer.vue'
-import SubtaskRow from './SubtaskRow.vue'
 
-interface TreeState {
+/**
+ * 递归树共享状态。**必须定义在模块作用域**（普通 <script> 块）：
+ * 若写在 <script setup> 内，每个组件实例都会重新执行并创建新的 Symbol，
+ * 递归子实例的 inject 永远匹配不到父实例 provide 的 key，
+ * 会各自新建 state 并从「不随懒加载更新的 props.nodes」还原子树，导致第 3 层起无法渲染。
+ */
+export interface TreeState {
   /** 已知的扁平节点（含懒加载合并进来的节点） */
   nodes: Task[]
   /** 已展开的节点 id */
@@ -28,7 +25,20 @@ interface TreeState {
   composing: string
 }
 
-const TREE_KEY: InjectionKey<TreeState> = Symbol('subtask-tree')
+export const TREE_KEY: InjectionKey<TreeState> = Symbol('subtask-tree')
+</script>
+
+<script setup lang="ts">
+import { computed, inject, provide, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import * as taskApi from '@/api/tasks'
+import { ApiError, errorText } from '@/api/client'
+import { useToastStore } from '@/stores/toast'
+import AppIcon from '../AppIcon.vue'
+import AppModal from '../AppModal.vue'
+import SubtaskComposer from './SubtaskComposer.vue'
+import SubtaskRow from './SubtaskRow.vue'
+
 /** 服务端子树节点上限（系统设计 6.6） */
 const NODE_LIMIT = 200
 
@@ -42,8 +52,15 @@ const props = withDefaults(
     interactive?: boolean
     /** 本层行在整棵树中的层级（根任务 = 1，故直接子级为 2） */
     level?: number
+    /**
+     * v0.3.0：是否提供「添加子任务」入口（仅宿主实例传 true）。
+     * 递归渲染出的深层子分组不再提供入口——孙任务只能进详情页创建。
+     */
+    allowAdd?: boolean
+    /** v0.3.0：已达 5 级上限：入口置灰并说明（服务端 4013 仍为兜底） */
+    addDisabled?: boolean
   }>(),
-  { interactive: true, level: 2 }
+  { interactive: true, level: 2, allowAdd: false, addDisabled: false }
 )
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -225,19 +242,11 @@ function invalidateBelow(id: string): void {
   })
 }
 
-/* ---------------- 行内添加子任务 ---------------- */
+/* ---------------- 添加子任务（仅宿主实例） ---------------- */
 
-async function startCompose(task?: Task): Promise<void> {
-  if (!props.interactive) return
-  if (!task) {
-    state.composing = nodeId.value
-    return
-  }
-  const id = String(task.id)
-  state.expanded.add(id)
-  state.composing = id
-  // 首次为该节点添加：先补齐已有子任务，避免只看到新增项
-  if (!state.loaded.has(id)) await loadChildren(id)
+async function startCompose(): Promise<void> {
+  if (!props.interactive || !props.allowAdd || props.addDisabled) return
+  state.composing = nodeId.value
 }
 
 function onCreated(task: Task): void {
@@ -274,7 +283,6 @@ function goDetail(task: Task): void {
           @detail="goDetail"
           @toggle="toggleTask"
           @toggle-expand="toggleExpand"
-          @add="startCompose"
         />
 
         <p v-if="state.errors[String(child.id)]" class="tree__hint tree__hint--error">
@@ -285,10 +293,11 @@ function goDetail(task: Task): void {
           {{ state.notices[String(child.id)] }}
         </p>
 
-        <!-- 递归渲染下一级：节点/展开态由共享状态承载，切换清单后由父层 :key 重置 -->
+        <!-- 递归渲染下一级：传共享 state.nodes（而非可能滞后的 props.nodes），
+             节点/展开态由模块级 TREE_KEY 的 provide/inject 共享 -->
         <SubtaskTree
           v-if="isExpanded(child)"
-          :nodes="nodes"
+          :nodes="state.nodes"
           :root-id="child.id"
           :level="childLevel"
           :interactive="interactive"
@@ -305,7 +314,7 @@ function goDetail(task: Task): void {
       <button class="tree__retry pressable" type="button" @click="loadChildren(nodeId)">重试</button>
     </p>
 
-    <div v-if="interactive" class="tree__compose">
+    <div v-if="interactive && allowAdd" class="tree__compose">
       <SubtaskComposer
         v-if="composing"
         :parent-id="rootId"
@@ -314,10 +323,18 @@ function goDetail(task: Task): void {
         @created="onCreated"
         @cancel="stopCompose"
       />
-      <button v-else class="tree__add pressable" type="button" @click="startCompose()">
-        <AppIcon name="plus" :size="14" color="#3D5AFE" />
+      <button
+        v-else
+        class="tree__add pressable"
+        type="button"
+        :disabled="addDisabled"
+        :aria-label="`给「${rootNode ? rootNode.title : ''}」添加子任务`"
+        @click="startCompose"
+      >
+        <AppIcon name="plus" :size="14" :color="addDisabled ? '#B5B9C4' : '#3D5AFE'" />
         添加子任务
       </button>
+      <p v-if="addDisabled" class="tree__hint">任务最多支持 5 级层级</p>
     </div>
   </div>
 
@@ -365,5 +382,9 @@ function goDetail(task: Task): void {
   padding: 0 var(--sp-4);
   font-size: var(--font-body-m);
   color: var(--color-primary);
+}
+/* v0.3.0：达 5 级上限时置灰并通过说明给出原因 */
+.tree__add:disabled {
+  color: var(--text-disabled);
 }
 </style>

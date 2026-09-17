@@ -1,49 +1,32 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppDrawer from '@/components/AppDrawer.vue'
 import AppFAB from '@/components/AppFAB.vue'
 import AppToast from '@/components/AppToast.vue'
-import { createConversation } from '@/api/conversations'
 import { useAuthStore } from '@/stores/auth'
 import { useDrawerStore } from '@/stores/drawer'
-import { useToastStore } from '@/stores/toast'
-import { errorText } from '@/api/client'
 
 const route = useRoute()
 const router = useRouter()
 const drawer = useDrawerStore()
 const auth = useAuthStore()
-const toast = useToastStore()
 
 /** 抽屉仅在登录后的一级页面可用（登录/注册/引导页禁用） */
 const drawerEnabled = computed(() => route.meta.requiresAuth === true)
 
 /**
- * FAB 形态（系统设计文档 3.2）：
- * /calendar、/tasks 等 → open-chat；/chat 会话列表 → new-conversation；/chat/:id → hidden。
+ * FAB 形态（系统设计文档 3.2，v0.3.0 收敛）：
+ * /calendar、/tasks → open-chat（进入唯一对话页）；/chat 自身不再需要入口；其余页面隐藏。
  */
-const fabMode = computed<'open-chat' | 'new-conversation' | 'hidden'>(() => {
+const fabMode = computed<'open-chat' | 'hidden'>(() => {
   const path = route.path
-  if (path.startsWith('/chat/')) return 'hidden'
-  if (path === '/chat') return 'new-conversation'
   if (path.startsWith('/calendar') || path.startsWith('/tasks')) return 'open-chat'
   return 'hidden'
 })
 
-async function onFabClick(): Promise<void> {
-  if (fabMode.value === 'open-chat') {
-    router.push('/chat')
-    return
-  }
-  if (fabMode.value === 'new-conversation') {
-    try {
-      const conversation = await createConversation()
-      router.push(`/chat/${conversation.id}`)
-    } catch (err) {
-      toast.show(errorText(err))
-    }
-  }
+function onFabClick(): void {
+  router.push('/chat')
 }
 
 /* ---------------- 抽屉手势与后退关闭 ---------------- */
@@ -144,9 +127,12 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-shell" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
-    <router-view v-slot="{ Component }">
-      <component :is="Component" :key="route.fullPath" />
-    </router-view>
+    <!-- v0.3.0 宽屏中栏：页面内容限宽居中，抽屉/FAB/Toast 仍相对视口定位 -->
+    <div class="app-column">
+      <router-view v-slot="{ Component }">
+        <component :is="Component" :key="route.fullPath" />
+      </router-view>
+    </div>
     <AppFAB v-if="drawerEnabled" :mode="fabMode" @click="onFabClick" />
     <AppDrawer @close="closeDrawer" @navigate="navigateFromDrawer" @logout="logoutFromDrawer" />
     <AppToast />
@@ -161,5 +147,16 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+/* 内容中栏：手机宽度下即全宽（与 v0.2.0 像素一致），宽视口居中限宽 */
+.app-column {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  background: var(--bg-page);
 }
 </style>

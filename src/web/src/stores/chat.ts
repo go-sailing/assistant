@@ -484,7 +484,8 @@ export const useChatStore = defineStore('chat', () => {
     // 仅折叠提示块，等待用户输入新时间（不自动发消息，避免替用户编时间）
   }
 
-  function clearConversation(convId: string | number): void {
+  /** v0.3.0：清除聊天记录后复位本地状态（会话 id 不变，无需重新自举） */
+  function clearHistory(convId: string | number): void {
     const k = keyOf(convId)
     delete messagesByConv.value[k]
     delete loadingByConv.value[k]
@@ -510,7 +511,7 @@ export const useChatStore = defineStore('chat', () => {
     pickScope,
     conflictForce,
     conflictChange,
-    clearConversation,
+    clearHistory,
     saveScrollTop,
     scrollTopOf,
     appendMessage,

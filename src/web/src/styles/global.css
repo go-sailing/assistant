@@ -87,6 +87,13 @@ a {
   text-overflow: ellipsis;
 }
 
+/* v0.3.0 宽屏中栏：底部弹层面板统一限宽居中贴底（各 Sheet 面板挂 .sheet-panel） */
+.sheet-panel {
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+}
+
 /* 通用按压反馈 */
 .pressable {
   transition: opacity var(--dur-fast) ease, transform var(--dur-fast) ease;

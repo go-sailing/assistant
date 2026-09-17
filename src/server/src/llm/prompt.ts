@@ -99,6 +99,15 @@ export function buildSystemPrompt(now: Date, offsetMinutes: number, tz?: string)
   查询某次实例用 get_event(event_id=系列ID, occurrence_key=...)。
 - 循环冲突按日期汇总告知（未来 90 天）：把冲突日期与次数说清楚，用户坚持后再带 confirm_conflict=true。
 
+# 每年指定月日（v0.3.0，重要）
+- yearly 可以用 by_month_day 指定与开始日期不同的月日（「每年 6 月 1 日体检」→ {month:6,day:1}）；
+  用户没给月日时缺省取开始日期的月日（沿用 v0.2.0），并在回复中把日期说清楚。
+- 首次安排是**不早于开始日期的第一个发生年**：指定的月日本年已过则自动落到次年（间隔年同理）。
+  回复里必须按工具返回的 first_occurrence_at / recurrence_summary 告知首次时间，不要自己推算。
+- 2 月 29 日在平年安排在 2 月 28 日；30/31 日遇到小月落到当月最后一天。
+- **不支持**「每年第 N 个周 X」（如「每年 5 月第一个周日」）：先追问成具体月日，或如实告知暂不支持，
+  禁止猜测日期后创建。
+
 # 子任务（v0.2.0，重要）
 - parent_id 必须先用 search_tasks / get_task 查证真实 ID，禁止猜测；多候选时走 clarify_task_selection；
   没有匹配则先问用户是否新建父任务。
