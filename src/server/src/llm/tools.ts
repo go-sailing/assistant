@@ -331,7 +331,18 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
               by_week_days: {
                 type: 'array',
                 items: { type: 'number' },
-                description: '仅 weekly：0=周日、1=周一 … 6=周六；缺省取首次时间所在星期',
+                description:
+                  '仅 weekly：0=周日、1=周一 … 6=周六；缺省取首次时间所在星期。' +
+                  '与 week_mode 互斥（用户说的是"工作日/上班日"时不要用本字段）',
+              },
+              week_mode: {
+                type: 'string',
+                enum: ['workdays_cn'],
+                description:
+                  '（v0.4.0）仅 weekly，且必须与 by_week_days 互斥：' +
+                  '填 workdays_cn 表示「法定工作日」——避开法定节假日、调休补班日照常执行。' +
+                  '用户在说「每个工作日/上班日」时用它；说「周一到周五」时用 by_week_days:[1,2,3,4,5]。' +
+                  '该模式不支持隔周（interval 必须为 1）。',
               },
               month_rule: {
                 type: 'object',
@@ -346,11 +357,25 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
               by_month_day: {
                 type: 'object',
                 description:
-                  '（v0.3.0）仅 yearly：指定每年重复的月日，可与开始日期不同（如开始日是 9 月 17 日、' +
-                  '用户说「每年 6 月 1 日体检」则传 {month:6,day:1}）。缺省取开始日期的月日。',
+                  '（v0.3.0）仅 yearly：指定每年重复的**公历**月日，可与开始日期不同（如开始日是 9 月 17 日、' +
+                  '用户说「每年 6 月 1 日体检」则传 {month:6,day:1}）。缺省取开始日期的月日。' +
+                  '与 by_lunar_month_day 互斥。',
                 properties: {
                   month: { type: 'number', description: '1~12' },
                   day: { type: 'number', description: '1~31（该月无此日时落到当月最后一天）' },
+                },
+              },
+              by_lunar_month_day: {
+                type: 'object',
+                description:
+                  '（v0.4.0）仅 yearly：指定每年重复的**农历**月日，公历日期逐年浮动（如「每年农历八月十五」' +
+                  '传 {month:8,day:15}、「每年腊月三十」传 {month:12,day:30}）。' +
+                  '只支持正常月（1=正月 … 12=腊月），不支持指定闰月；day 传 1~30，' +
+                  '该农历月为小月时系统自动落到当月最后一天（腊月三十即除夕）。' +
+                  '与 by_month_day 互斥；不要自己换算公历日期，也不要向用户输出这段 JSON。',
+                properties: {
+                  month: { type: 'number', description: '农历月 1~12（1=正月 … 12=腊月，不含闰月）' },
+                  day: { type: 'number', description: '农历日 1~30（小月自动落到当月最后一天）' },
                 },
               },
               end_type: { type: 'string', enum: ['never', 'count', 'until'], description: '结束条件' },
@@ -570,6 +595,72 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           pending_intent: { type: 'string', description: '用户原本想执行的操作描述，例如「删除日程」' },
         },
         required: ['question'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'resolve_lunar_date',
+      description:
+        '（v0.4.0）把农历月日换算为公历日期。用户给出农历日期要求**单次**安排时'
+        + '（如「今年农历九月初九安排体检」），必须先用本工具拿到公历日期，再创建日程；禁止自己心算。'
+        + '返回值同时带节日名与是否发生小月回落。',
+      parameters: {
+        type: 'object',
+        properties: {
+          lunar_year: {
+            type: 'number',
+            description: '农历年份（公历年号，1900~2100）；用户说「今年」时用当前年份',
+          },
+          month: { type: 'number', description: '农历月 1~12（1=正月 … 12=腊月，不支持闰月）' },
+          day: { type: 'number', description: '农历日 1~30；该月为小月时系统自动落到当月最后一天' },
+        },
+        required: ['lunar_year', 'month', 'day'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'present_proposal',
+      description:
+        '（v0.4.0）写操作意图明确、只缺**非关键**参数时，用合理默认补齐后向用户展示一个完整方案征求确认。' +
+        '这是默认工作方式：不要为单个参数反复追问。' +
+        '禁止用于：查询类需求（直接回答即可）、删除/批量等危险动作（仍走系统确认）、' +
+        '多候选/对象不存在/时间无法换算等硬边界（仍走 clarify 或追问）。' +
+        '一次回复最多给一个方案；调用后本轮结束，用户确认（说「就这么办」或点按钮）后' +
+        '你再用**完全相同的参数**调用真实工具执行。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: '方案的动作名，如「创建日程」「创建任务」「修改日程」',
+          },
+          params: {
+            type: 'array',
+            description:
+              '方案的参数行（用户一眼可读的中文值，不要放 JSON 或技术细节）。' +
+              'defaulted=true 标记这是你替用户补的默认值，必须如实标记。',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', description: '参数名，如「标题」「时间」「重复」「所属清单」' },
+                value: { type: 'string', description: '参数值，如「季度复盘」「明天 15:00–16:00」「长期重复」' },
+                defaulted: { type: 'boolean', description: '是否为你补的默认值' },
+              },
+              required: ['label', 'value'],
+            },
+          },
+          note: {
+            type: 'string',
+            description:
+              '默认项集中说明，把所有替用户默认的参数讲清楚，例如'
+              + '「未指定具体时间，我按 15:00 安排；重复按不重复处理」。',
+          },
+        },
+        required: ['title', 'params'],
       },
     },
   },

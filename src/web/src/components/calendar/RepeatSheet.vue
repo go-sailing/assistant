@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import type { MonthRuleType, RecurEndType, RecurFreq, RecurrenceRule } from '@/types'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import * as eventApi from '@/api/events'
+import { errorText } from '@/api/client'
+import type {
+  LunarResolved,
+  MonthRuleType,
+  RecurEndType,
+  RecurFreq,
+  RecurrenceRule,
+} from '@/types'
 import { parseDate, toDateKey } from '@/utils/time'
 import AppButton from '@/components/AppButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -58,24 +66,122 @@ const MIN_INTERVAL = 1
 const MAX_INTERVAL = 99
 const MAX_COUNT = 730
 const MAX_UNTIL_YEARS = 5
+/** 已录入法定安排的年份上限（2026 已录入；超过则按周一至周五回退并提示） */
+const PUBLISHED_YEAR = 2026
+
+/** v0.4.0：每周三选一（① 指定星期 ② 字面一至五 ③ 法定工作日） */
+type WeekMode = 'pick' | 'mon_fri' | 'workdays_cn'
+/** v0.4.0：每年三选一（① 跟随首次日期 ② 指定公历月日 ③ 指定农历月日） */
+type YearMode = 'first' | 'solar' | 'lunar'
+
+/** 农历月名（正月…腊月，不含闰月） */
+const LUNAR_MONTH_LABELS = [
+  '正月',
+  '二月',
+  '三月',
+  '四月',
+  '五月',
+  '六月',
+  '七月',
+  '八月',
+  '九月',
+  '十月',
+  '冬月',
+  '腊月',
+]
+
+/** 农历日名（初一…三十）：固定 30 项，不随月份动态减项（小月回落由提示与预览承担） */
+function lunarDayLabel(n: number): string {
+  const digits = ['十', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+  if (n <= 10) return `初${digits[n % 10]}`
+  if (n < 20) return `十${digits[n - 10]}`
+  if (n === 20) return '二十'
+  if (n < 30) return `廿${digits[n - 20]}`
+  return '三十'
+}
+const LUNAR_DAY_LABELS = Array.from({ length: 30 }, (_, i) => lunarDayLabel(i + 1))
 
 const freq = ref<RecurFreq>('weekly')
 const interval = ref(1)
 const weekDays = ref<number[]>([])
 /** 用户手动改过星期后，开始时间变化不再覆盖勾选 */
 const weekTouched = ref(false)
+/** v0.4.0：每周三选一 */
+const weekMode = ref<WeekMode>('pick')
 const monthMode = ref<MonthRuleType>('day_of_month')
 const monthDayInput = ref('1')
 const monthOrd = ref<-1 | 1 | 2 | 3 | 4>(1)
 const monthWeekday = ref(1)
-/** v0.3.0：yearly 指定的月、日（1..12 / 1..31） */
+/** v0.3.0：yearly 指定的公历月、日（1..12 / 1..31） */
 const yearMonth = ref(1)
 const yearDay = ref(1)
 /** 用户手动改过年度月日后，开始时间变化不再覆盖 */
 const yearlyTouched = ref(false)
+/** v0.4.0：每年三选一 + 农历月日（1..12 / 1..30） */
+const yearMode = ref<YearMode>('first')
+const lunarMonth = ref(1)
+const lunarDay = ref(1)
 const endType = ref<RecurEndType>('never')
 const countInput = ref('10')
 const until = ref('')
+
+/* ---------------- v0.4.0 农历年度循环预览（服务端换算，端上不推测） ---------------- */
+
+const lunarPreview = ref<LunarResolved[]>([])
+const lunarPreviewLoading = ref(false)
+const lunarPreviewError = ref('')
+let lunarTimer = 0
+
+/** 农历预览生效条件：每年 + 指定农历月日 */
+const lunarPreviewActive = computed(() => freq.value === 'yearly' && yearMode.value === 'lunar')
+
+/** 换算失败/加载中禁止保存（宁停不猜，不凭端上猜测提交公历日期） */
+const lunarBlocked = computed(
+  () =>
+    lunarPreviewActive.value &&
+    (lunarPreviewLoading.value || !!lunarPreviewError.value || !lunarPreview.value.length)
+)
+
+async function fetchLunarPreview(): Promise<void> {
+  lunarPreviewLoading.value = true
+  lunarPreviewError.value = ''
+  try {
+    const res = await eventApi.resolveLunar({
+      lunarYear: new Date().getFullYear(),
+      month: lunarMonth.value,
+      day: lunarDay.value,
+      n: 3,
+      anchor: firstKey.value,
+    })
+    lunarPreview.value = res || []
+  } catch (e) {
+    lunarPreview.value = []
+    lunarPreviewError.value = errorText(e)
+  } finally {
+    lunarPreviewLoading.value = false
+  }
+}
+
+/** 月日变化后防抖 200ms 换算（避免连点下拉狂发请求） */
+function scheduleLunarPreview(): void {
+  window.clearTimeout(lunarTimer)
+  if (!lunarPreviewActive.value) {
+    lunarPreview.value = []
+    lunarPreviewError.value = ''
+    lunarPreviewLoading.value = false
+    return
+  }
+  lunarTimer = window.setTimeout(() => void fetchLunarPreview(), 200)
+}
+
+/** 预览行：`2027 年 公历 2 月 5 日（周五）· 除夕`（无节日只显示周几） */
+const lunarPreviewRows = computed(() =>
+  lunarPreview.value.map((r) => {
+    const [y, m, d] = r.gregorian_date.split('-').map(Number)
+    const festival = r.festival ? ` · ${r.festival}` : ''
+    return `${y} 年 公历 ${m} 月 ${d} 日（周${WEEKDAY_CN[r.weekday]}）${festival}`
+  })
+)
 
 const firstDate = computed(() => parseDate(props.firstStart) || new Date())
 const firstKey = computed(() => toDateKey(firstDate.value))
@@ -105,6 +211,10 @@ function reset(): void {
   const days = init?.by_week_days?.length ? [...init.by_week_days] : [firstDate.value.getDay()]
   weekDays.value = days
   weekTouched.value = !!init?.by_week_days?.length
+  // v0.4.0 每周三选一回填：workdays_cn > 恰为 [1..5] > 指定星期
+  if (init?.week_mode === 'workdays_cn') weekMode.value = 'workdays_cn'
+  else if (sameWorkDays(init?.by_week_days)) weekMode.value = 'mon_fri'
+  else weekMode.value = 'pick'
   monthMode.value = init?.month_rule?.type ?? 'day_of_month'
   monthDayInput.value = String(init?.month_rule?.day ?? firstDate.value.getDate())
   monthOrd.value = init?.month_rule?.ord ?? defaultOrd()
@@ -113,11 +223,29 @@ function reset(): void {
   yearMonth.value = init?.by_month_day?.month ?? firstDate.value.getMonth() + 1
   yearDay.value = init?.by_month_day?.day ?? firstDate.value.getDate()
   yearlyTouched.value = !!init?.by_month_day
+  // v0.4.0 每年三选一回填：农历月日 > 公历月日 > 跟随首次日期
+  if (init?.by_lunar_month_day) {
+    yearMode.value = 'lunar'
+    lunarMonth.value = init.by_lunar_month_day.month
+    lunarDay.value = init.by_lunar_month_day.day
+  } else if (init?.by_month_day) {
+    yearMode.value = 'solar'
+  } else {
+    yearMode.value = 'first'
+  }
   endType.value = init?.end_type ?? 'never'
   countInput.value = String(init?.count ?? 10)
   const fallback = new Date(firstDate.value)
   fallback.setDate(fallback.getDate() + 90)
   until.value = init?.until || toDateKey(fallback)
+  // 打开即按当前农历月日取一次未来实例（防抖 200ms）
+  scheduleLunarPreview()
+}
+
+/** by_week_days 是否恰为周一至周五（用于回填第 2 项） */
+function sameWorkDays(days?: number[]): boolean {
+  if (!days || days.length !== WORK_DAYS.length) return false
+  return WORK_DAYS.every((d) => days.includes(d))
 }
 
 watch(
@@ -127,10 +255,19 @@ watch(
   }
 )
 
+/** 农历月日/模式变化 → 防抖换算预览 */
+watch([lunarPreviewActive, lunarMonth, lunarDay], () => {
+  if (props.visible) scheduleLunarPreview()
+})
+
+onBeforeUnmount(() => window.clearTimeout(lunarTimer))
+
 /* ---------------- 校验 ---------------- */
 
 const weekError = computed(() =>
-  freq.value === 'weekly' && !weekDays.value.length ? '请至少选择一个星期' : ''
+  freq.value === 'weekly' && weekMode.value === 'pick' && !weekDays.value.length
+    ? '请至少选择一个星期'
+    : ''
 )
 const monthDayError = computed(() => {
   if (freq.value !== 'monthly' || monthMode.value !== 'day_of_month') return ''
@@ -151,7 +288,30 @@ const untilError = computed(() => {
 })
 
 const valid = computed(
-  () => !weekError.value && !monthDayError.value && !countError.value && !untilError.value
+  () =>
+    !weekError.value &&
+    !monthDayError.value &&
+    !countError.value &&
+    !untilError.value &&
+    !lunarBlocked.value
+)
+
+/** 法定工作日模式：interval 只允许为 1（>1 服务端返回 4011） */
+const intervalLocked = computed(
+  () => freq.value === 'weekly' && weekMode.value === 'workdays_cn'
+)
+
+/** 法定工作日 + until 跨入未公布年份：提示按周一至周五回退（文案带 until 年份） */
+const workdaysNotice = computed(() => {
+  if (!intervalLocked.value || endType.value !== 'until' || !until.value) return ''
+  const y = Number(until.value.slice(0, 4))
+  if (!y || y <= PUBLISHED_YEAR) return ''
+  return `${y} 年安排公布前按周一至周五计算，公布后自动按法定工作日执行`
+})
+
+/** 当前生效的星期集合（第 2 项固定为字面一至五） */
+const effectiveWeekDays = computed(() =>
+  weekMode.value === 'mon_fri' ? [...WORK_DAYS] : weekDays.value
 )
 
 /* ---------------- 规则与预览 ---------------- */
@@ -159,19 +319,26 @@ const valid = computed(
 function buildRule(): RecurrenceRule {
   const rule: RecurrenceRule = {
     freq: freq.value,
-    interval: interval.value,
+    interval: intervalLocked.value ? 1 : interval.value,
     end_type: endType.value,
   }
-  if (freq.value === 'weekly') rule.by_week_days = [...weekDays.value].sort((a, b) => a - b)
+  if (freq.value === 'weekly') {
+    // v0.4.0：法定工作日只带 week_mode（与 by_week_days 互斥）；第 2 项输出字面一至五
+    if (weekMode.value === 'workdays_cn') rule.week_mode = 'workdays_cn'
+    else if (weekMode.value === 'mon_fri') rule.by_week_days = [...WORK_DAYS]
+    else rule.by_week_days = [...weekDays.value].sort((a, b) => a - b)
+  }
   if (freq.value === 'monthly') {
     rule.month_rule =
       monthMode.value === 'day_of_month'
         ? { type: 'day_of_month', day: Number(monthDayInput.value) }
         : { type: 'day_of_week', ord: monthOrd.value, weekday: monthWeekday.value }
   }
-  // v0.3.0：年度月日始终显式提交（缺省值等价于服务端缺省语义，统一形态降低分支）
+  // v0.4.0：年度三选一——跟随首次日期则两个字段都不传（沿用服务端缺省语义）
   if (freq.value === 'yearly') {
-    rule.by_month_day = { month: yearMonth.value, day: yearDay.value }
+    if (yearMode.value === 'solar') rule.by_month_day = { month: yearMonth.value, day: yearDay.value }
+    else if (yearMode.value === 'lunar')
+      rule.by_lunar_month_day = { month: lunarMonth.value, day: lunarDay.value }
   }
   if (endType.value === 'count') rule.count = Number(countInput.value)
   if (endType.value === 'until') rule.until = until.value
@@ -225,6 +392,8 @@ function matchesDay(d: Date, rule: RecurrenceRule): boolean {
   const weekDiff = Math.round((mondayOf(d) - mondayOf(anchor)) / (7 * 86400000))
   if (weekDiff < 0 || weekDiff % gap !== 0) return false
   if (rule.freq === 'weekly') {
+    // 法定工作日：端上无假日数据，次数估算按周一至周五近似（权威摘要由服务端下发）
+    if (rule.week_mode === 'workdays_cn') return d.getDay() >= 1 && d.getDay() <= 5
     return (rule.by_week_days ?? [anchor.getDay()]).includes(d.getDay())
   }
   const monthDiff = (d.getFullYear() - anchor.getFullYear()) * 12 + (d.getMonth() - anchor.getMonth())
@@ -266,17 +435,17 @@ function previewCount(rule: RecurrenceRule): number {
 /** 预览摘要：与后端 summary 同构的人话文案（本地拼装仅供预览） */
 const previewSummary = computed(() => {
   const rule = buildRule()
-  const weekLabels = WEEK_CHIPS.filter((c) => weekDays.value.includes(c.value)).map((c) => `周${c.label}`)
-  const isWorkDays =
-    weekDays.value.length === WORK_DAYS.length && WORK_DAYS.every((d) => weekDays.value.includes(d))
+  const weekLabels = WEEK_CHIPS.filter((c) => effectiveWeekDays.value.includes(c.value)).map(
+    (c) => `周${c.label}`
+  )
 
   let head = ''
   let yearlyNote = ''
   if (rule.freq === 'daily') {
     head = rule.interval > 1 ? `每 ${rule.interval} 天` : '每天'
   } else if (rule.freq === 'weekly') {
-    head = isWorkDays
-      ? '工作日'
+    head = intervalLocked.value
+      ? '每个工作日'
       : `${rule.interval > 1 ? `每 ${rule.interval} 周` : '每'}${weekLabels.join('、')}`
   } else if (rule.freq === 'monthly') {
     const mr = rule.month_rule
@@ -287,10 +456,13 @@ const previewSummary = computed(() => {
       const ord = ORD_OPTIONS.find((o) => o.value === mr.ord)?.label ?? '第一个'
       head = `每月${ord}周${WEEKDAY_CN[mr.weekday ?? 0]}`
     }
+  } else if (yearMode.value === 'lunar') {
+    // v0.4.0：农历年度循环（公历日期逐年不同，权威结果以服务端换算为准）
+    head = `每年农历${LUNAR_MONTH_LABELS[lunarMonth.value - 1]}${lunarDayLabel(lunarDay.value)}`
   } else {
-    // v0.3.0：年度月日取指定值（与后端 summary 同构）
-    const m = rule.by_month_day?.month ?? firstDate.value.getMonth() + 1
-    const d = rule.by_month_day?.day ?? firstDate.value.getDate()
+    // v0.3.0：年度月日取指定值（与后端 summary 同构）；跟随首次日期时取首次月日
+    const m = yearMode.value === 'solar' ? yearMonth.value : firstDate.value.getMonth() + 1
+    const d = yearMode.value === 'solar' ? yearDay.value : firstDate.value.getDate()
     head = `每年 ${m} 月 ${d} 日`
     // 29/30/31 的月末括注与后端一致，缀于摘要末尾
     yearlyNote =
@@ -304,7 +476,11 @@ const previewSummary = computed(() => {
   let tail = ''
   if (rule.end_type === 'never') tail = '长期重复'
   else if (rule.end_type === 'count') tail = `共 ${rule.count ?? 0} 次`
-  else tail = `至 ${rule.until} 止，共 ${previewCount(rule)} 次`
+  else if (rule.week_mode === 'workdays_cn') {
+    // 法定工作日的次数依赖节假日/调休数据，端上无法准确估算：
+    // 这里不给数字，避免显示一个与真实展开不符的"共 N 次"（权威摘要由服务端下发）
+    tail = `至 ${rule.until} 止`
+  } else tail = `至 ${rule.until} 止，共 ${previewCount(rule)} 次`
 
   // 与后端文案一致：定时日程「频率 + 空格 + 时段」，全天单独成段；年度括注缀于末尾
   const base = props.allDay
@@ -315,16 +491,18 @@ const previewSummary = computed(() => {
 
 /* ---------------- 交互 ---------------- */
 
-/** 日选择 29/30/31 时的月末弱提示 */
-const yearDayHint = computed(() => (yearDay.value >= 29 ? '当月没有这一天时，将安排在当月最后一天' : ''))
+/** 日选择 29/30/31 时的月末弱提示（仅公历指定月日时需要） */
+const yearDayHint = computed(() =>
+  yearDay.value >= 29 ? '当月没有这一天时，将安排在当月最后一天' : ''
+)
 
 /**
  * 首次安排预览（端上唯一允许的年规则推算，仅用于提示跨年，权威结果以服务端为准）：
- * 候选年从开始日期的年起按 interval 递增，取指定月日（回落月末）不早于开始日期的第一个。
- * 仅当落在开始日期之后的年份时才展示该行。
+ * 候选年从开始日期的年起按 interval 递增，取指定公历月日（回落月末）不早于开始日期的第一个。
+ * 仅当落在开始日期之后的年份时才展示该行；农历模式改用服务端换算的实例预览。
  */
 const yearFirstOccurrence = computed(() => {
-  if (freq.value !== 'yearly') return null
+  if (freq.value !== 'yearly' || yearMode.value !== 'solar') return null
   const anchor = firstDate.value
   const anchorMs = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate()).getTime()
   const gap = Math.max(1, interval.value || 1)
@@ -352,25 +530,19 @@ function onFreqChange(v: string): void {
 }
 
 function changeInterval(delta: number): void {
+  if (intervalLocked.value) return
   const next = interval.value + delta
   if (next < MIN_INTERVAL || next > MAX_INTERVAL) return
   interval.value = next
 }
 
 function toggleWeekDay(day: number): void {
+  if (weekMode.value !== 'pick') return
   weekTouched.value = true
   const set = new Set(weekDays.value)
   if (set.has(day)) set.delete(day)
   else set.add(day)
   weekDays.value = [...set]
-}
-
-function applyWorkDays(): void {
-  weekTouched.value = true
-  const allSelected = WORK_DAYS.every((d) => weekDays.value.includes(d))
-  weekDays.value = allSelected
-    ? weekDays.value.filter((d) => !WORK_DAYS.includes(d))
-    : [...new Set([...weekDays.value, ...WORK_DAYS])]
 }
 
 function confirm(): void {
@@ -424,16 +596,16 @@ watch(
                 <button
                   class="rep__step pressable"
                   aria-label="减少间隔"
-                  :disabled="interval <= MIN_INTERVAL"
+                  :disabled="interval <= MIN_INTERVAL || intervalLocked"
                   @click="changeInterval(-1)"
                 >
                   －
                 </button>
-                <span class="rep__step-value">{{ interval }}</span>
+                <span class="rep__step-value">{{ intervalLocked ? 1 : interval }}</span>
                 <button
                   class="rep__step pressable"
                   aria-label="增加间隔"
-                  :disabled="interval >= MAX_INTERVAL"
+                  :disabled="interval >= MAX_INTERVAL || intervalLocked"
                   @click="changeInterval(1)"
                 >
                   ＋
@@ -441,25 +613,61 @@ watch(
               </div>
               <span class="rep__label">{{ freq === 'daily' ? '天' : freq === 'weekly' ? '周' : '月' }}重复</span>
             </div>
+            <p v-if="intervalLocked" class="rep__hint">法定工作日暂不支持隔周</p>
           </section>
 
+          <!-- v0.4.0：每周三选一（第 1 项与星期 chips 为从属关系，未选中时 chips 置灰） -->
           <section v-if="freq === 'weekly'" class="rep__block">
             <h3 class="rep__label">重复于</h3>
-            <div class="rep__chips" role="group" aria-label="重复的星期">
-              <button
-                v-for="c in WEEK_CHIPS"
-                :key="c.value"
-                class="rep__chip pressable"
-                :class="{ 'rep__chip--on': weekDays.includes(c.value) }"
-                :aria-pressed="weekDays.includes(c.value)"
-                :aria-label="`周${c.label}`"
-                @click="toggleWeekDay(c.value)"
-              >
-                <span class="rep__chip-inner">{{ c.label }}</span>
-              </button>
+            <div role="radiogroup" aria-label="每周重复方式">
+              <label class="rep__radio-row">
+                <input
+                  v-model="weekMode"
+                  class="rep__radio"
+                  type="radio"
+                  name="week-mode"
+                  value="pick"
+                />
+                <span class="rep__radio-text">每周指定星期</span>
+              </label>
+              <div class="rep__chips rep__sub" role="group" aria-label="重复的星期">
+                <button
+                  v-for="c in WEEK_CHIPS"
+                  :key="c.value"
+                  class="rep__chip pressable"
+                  :class="{ 'rep__chip--on': weekMode === 'pick' && weekDays.includes(c.value) }"
+                  :aria-pressed="weekMode === 'pick' && weekDays.includes(c.value)"
+                  :aria-disabled="weekMode !== 'pick'"
+                  :disabled="weekMode !== 'pick'"
+                  :aria-label="`周${c.label}`"
+                  @click="toggleWeekDay(c.value)"
+                >
+                  <span class="rep__chip-inner">{{ c.label }}</span>
+                </button>
+              </div>
+              <p v-if="weekError" class="rep__error rep__sub">{{ weekError }}</p>
+              <label class="rep__radio-row">
+                <input
+                  v-model="weekMode"
+                  class="rep__radio"
+                  type="radio"
+                  name="week-mode"
+                  value="mon_fri"
+                />
+                <span class="rep__radio-text">周一至周五</span>
+              </label>
+              <label class="rep__radio-row">
+                <input
+                  v-model="weekMode"
+                  class="rep__radio"
+                  type="radio"
+                  name="week-mode"
+                  value="workdays_cn"
+                />
+                <span class="rep__radio-text">工作日（法定）</span>
+              </label>
+              <p class="rep__hint rep__sub">避开法定节假日，调休补班日照常</p>
             </div>
-            <button class="rep__quick pressable" @click="applyWorkDays">工作日（一至五）</button>
-            <p v-if="weekError" class="rep__error">{{ weekError }}</p>
           </section>
 
           <section v-if="freq === 'monthly'" class="rep__block">
@@ -504,25 +712,94 @@ watch(
 
           <section v-if="freq === 'yearly'" class="rep__block">
             <h3 class="rep__label">每年重复于</h3>
-            <div class="rep__year-row">
-              <select
-                v-model.number="yearMonth"
-                class="rep__select"
-                aria-label="每年重复的月份"
-                @change="yearlyTouched = true"
-              >
-                <option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option>
-              </select>
-              <select
-                v-model.number="yearDay"
-                class="rep__select"
-                aria-label="每年重复的日期"
-                @change="yearlyTouched = true"
-              >
-                <option v-for="d in 31" :key="d" :value="d">{{ d }} 日</option>
-              </select>
+            <div role="radiogroup" aria-label="每年重复方式">
+              <label class="rep__radio-row">
+                <input
+                  v-model="yearMode"
+                  class="rep__radio"
+                  type="radio"
+                  name="year-mode"
+                  value="first"
+                />
+                <span class="rep__radio-text">
+                  跟随首次日期（公历 {{ firstDate.getMonth() + 1 }} 月 {{ firstDate.getDate() }} 日）
+                </span>
+              </label>
+
+              <label class="rep__radio-row">
+                <input
+                  v-model="yearMode"
+                  class="rep__radio"
+                  type="radio"
+                  name="year-mode"
+                  value="solar"
+                />
+                <span class="rep__radio-text">指定公历月日</span>
+              </label>
+              <div class="rep__year-row rep__sub">
+                <select
+                  v-model.number="yearMonth"
+                  class="rep__select"
+                  aria-label="每年重复的月份"
+                  :aria-disabled="yearMode !== 'solar'"
+                  :disabled="yearMode !== 'solar'"
+                  @change="yearlyTouched = true"
+                >
+                  <option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option>
+                </select>
+                <select
+                  v-model.number="yearDay"
+                  class="rep__select"
+                  aria-label="每年重复的日期"
+                  :aria-disabled="yearMode !== 'solar'"
+                  :disabled="yearMode !== 'solar'"
+                  @change="yearlyTouched = true"
+                >
+                  <option v-for="d in 31" :key="d" :value="d">{{ d }} 日</option>
+                </select>
+              </div>
+              <p v-if="yearMode === 'solar' && yearDayHint" class="rep__hint rep__sub">
+                {{ yearDayHint }}
+              </p>
+
+              <label class="rep__radio-row">
+                <input
+                  v-model="yearMode"
+                  class="rep__radio"
+                  type="radio"
+                  name="year-mode"
+                  value="lunar"
+                />
+                <span class="rep__radio-text">指定农历月日</span>
+              </label>
+              <div class="rep__year-row rep__sub">
+                <select
+                  v-model.number="lunarMonth"
+                  class="rep__select"
+                  aria-label="农历月份"
+                  :aria-disabled="yearMode !== 'lunar'"
+                  :disabled="yearMode !== 'lunar'"
+                >
+                  <option v-for="(label, i) in LUNAR_MONTH_LABELS" :key="i" :value="i + 1">
+                    {{ label }}
+                  </option>
+                </select>
+                <select
+                  v-model.number="lunarDay"
+                  class="rep__select"
+                  aria-label="农历日期"
+                  :aria-disabled="yearMode !== 'lunar'"
+                  :disabled="yearMode !== 'lunar'"
+                >
+                  <option v-for="(label, i) in LUNAR_DAY_LABELS" :key="i" :value="i + 1">
+                    {{ label }}
+                  </option>
+                </select>
+              </div>
+              <p v-if="yearMode === 'lunar'" class="rep__hint rep__sub">
+                遇农历小月按当月最后一天（廿九）
+              </p>
             </div>
-            <p v-if="yearDayHint" class="rep__hint">{{ yearDayHint }}</p>
           </section>
 
           <section class="rep__block">
@@ -566,7 +843,28 @@ watch(
               <AppIcon name="repeat" :size="14" color="var(--color-primary)" />
               <span class="rep__preview-text">{{ previewSummary }}</span>
             </p>
+
+            <!-- 法定工作日跨入未公布年份：回退规则提示 -->
+            <p v-if="workdaysNotice" class="rep__notice">
+              <AppIcon name="alert" :size="14" color="var(--color-notice-text)" />
+              <span>{{ workdaysNotice }}</span>
+            </p>
+
             <p v-if="yearFirstOccurrenceText" class="rep__first">{{ yearFirstOccurrenceText }}</p>
+
+            <!-- v0.4.0 农历年度循环：未来 3 个候选由服务端换算，失败则禁止保存 -->
+            <div v-if="lunarPreviewActive" class="rep__lunar" aria-live="polite">
+              <template v-if="lunarPreviewLoading">
+                <p class="rep__lunar-caption">换算中…</p>
+                <span v-for="i in 3" :key="i" class="rep__lunar-skeleton" aria-hidden="true" />
+              </template>
+              <p v-else-if="lunarPreviewError" class="rep__lunar-error">暂无法换算，请稍后重试</p>
+              <ul v-else class="rep__lunar-list">
+                <li v-for="(row, i) in lunarPreviewRows" :key="i" class="rep__lunar-row">
+                  {{ row }}
+                </li>
+              </ul>
+            </div>
           </section>
         </div>
 
@@ -717,14 +1015,25 @@ watch(
   color: var(--color-primary);
   font-weight: 600;
 }
-.rep__quick {
-  min-height: 44px;
-  margin-top: var(--sp-2);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-color);
-  border-radius: 18px;
-  font-size: var(--font-caption);
-  color: var(--text-primary);
+/* 从属控件缩进 12pt；未选中时置灰不可点（UXUI 5.3/5.4） */
+.rep__sub {
+  padding-left: 12px;
+}
+.rep__chips.rep__sub {
+  margin-bottom: var(--sp-2);
+}
+.rep__year-row.rep__sub {
+  margin-bottom: var(--sp-2);
+}
+.rep__hint.rep__sub,
+.rep__error.rep__sub {
+  padding-left: 12px;
+}
+.rep__chip:disabled .rep__chip-inner {
+  background: var(--bg-page);
+  border-color: var(--border-color);
+  color: var(--text-disabled);
+  font-weight: 400;
 }
 .rep__radio-row {
   display: flex;
@@ -761,6 +1070,11 @@ watch(
   background: var(--bg-page);
   font-size: var(--font-body-m);
 }
+/* 从属下拉未选中时置灰不可点 */
+.rep__select:disabled {
+  color: var(--text-disabled);
+  opacity: 0.6;
+}
 .rep__date {
   flex: 1;
   min-height: 36px;
@@ -787,6 +1101,61 @@ watch(
   font-size: var(--font-caption);
   line-height: var(--font-caption-lh);
   color: var(--color-success);
+}
+/* 法定工作日跨入未公布年份的回退提示（浅黄底信息条，样式同 v0.3.0 首次安排行） */
+.rep__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-card);
+  background: var(--color-notice-bg);
+  color: var(--color-notice-text);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+}
+/* 农历年度循环的未来实例预览（服务端换算） */
+.rep__lunar {
+  margin-top: var(--sp-2);
+}
+.rep__lunar-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.rep__lunar-row {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.rep__lunar-caption {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
+}
+.rep__lunar-skeleton {
+  display: block;
+  height: 12px;
+  margin-top: var(--sp-2);
+  border-radius: 6px;
+  background: #eceef4;
+  animation: rep-pulse 1.4s ease-in-out infinite;
+}
+.rep__lunar-error {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--color-danger);
+}
+@keyframes rep-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 .rep__error {
   margin-top: var(--sp-1);

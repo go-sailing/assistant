@@ -216,6 +216,8 @@ onMounted(load)
             <AppIcon name="repeat" :size="14" color="var(--color-primary)" />
             <span class="series__summary-text">{{ detail.recurrence_summary }}</span>
           </p>
+          <!-- v0.4.0：规则补充说明（法定工作日回退、农历逐年浮动，服务端下发） -->
+          <p v-if="detail.recurrence_note" class="series__note">{{ detail.recurrence_note }}</p>
 
           <!-- 已结束的系列：下一次替换为灰色结束说明 -->
           <p v-if="finished" class="series__finished">
@@ -390,6 +392,12 @@ onMounted(load)
 .series__summary-text {
   flex: 1;
   min-width: 0;
+}
+/* 规则补充说明：小字 secondary，紧随摘要 */
+.series__note {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
 }
 .series__next {
   display: flex;

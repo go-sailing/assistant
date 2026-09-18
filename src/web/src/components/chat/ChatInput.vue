@@ -2,7 +2,14 @@
 import { nextTick, ref } from 'vue'
 import AppIcon from '../AppIcon.vue'
 
-const props = defineProps<{ streaming: boolean }>()
+const props = withDefaults(
+  defineProps<{
+    streaming: boolean
+    /** 占位文案：方案卡「调整一下」会临时替换为引导文案 */
+    placeholder?: string
+  }>(),
+  { placeholder: '输入消息…' }
+)
 const emit = defineEmits<{ (e: 'send', text: string): void }>()
 
 const text = ref('')
@@ -42,6 +49,13 @@ function onKeydown(e: KeyboardEvent): void {
     submit()
   }
 }
+
+/** 供「调整一下」聚焦输入框（不发任何请求） */
+function focus(): void {
+  textareaRef.value?.focus()
+}
+
+defineExpose({ focus })
 </script>
 
 <template>
@@ -50,7 +64,7 @@ function onKeydown(e: KeyboardEvent): void {
       ref="textareaRef"
       class="chat-input__field"
       rows="1"
-      placeholder="输入消息…"
+      :placeholder="placeholder"
       aria-label="输入消息"
       :value="text"
       @input="onInput"

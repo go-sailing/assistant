@@ -1,5 +1,11 @@
 import type { ApiResponse } from '@/types'
-import { clearToken, getToken } from '@/utils/token'
+import {
+  accessExpiringSoon,
+  clearTokens,
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+} from '@/utils/token'
 
 export const BASE_URL = '/api/v1'
 
@@ -34,13 +40,19 @@ export function setUnauthorizedHandler(fn: () => void): void {
   unauthorizedHandler = fn
 }
 
+/** 凭证更新通知（auth store 订阅后同步内存态，例如改密拿到新对） */
+let tokensUpdatedHandler: (() => void) | null = null
+export function setTokensUpdatedHandler(fn: () => void): void {
+  tokensUpdatedHandler = fn
+}
+
 export function authHeaders(): Record<string, string> {
-  const token = getToken()
+  const token = getAccessToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
   body?: unknown
   query?: Record<string, string | number | undefined | null>
   signal?: AbortSignal
@@ -61,15 +73,56 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
   return url
 }
 
+/* ---------------------- v0.4.0 静默续期（单飞） ---------------------- */
+
 /**
- * 统一请求：解析 { code, message, data }，code!==0 抛 ApiError；
- * 401（HTTP 或 code=1002）清除凭证并触发跳登录。
+ * 刷新凭证对。多个并发请求同时触发时**共用同一个 Promise**，
+ * 避免同一 refresh 被并发使用而触发轮转重放保护。
  */
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+let inflightRefresh: Promise<boolean> | null = null
+
+export function refreshTokens(): Promise<boolean> {
+  if (inflightRefresh) return inflightRefresh
+  inflightRefresh = (async () => {
+    const refresh = getRefreshToken()
+    if (!refresh) return false
+    try {
+      const res = await fetch(`${BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refresh }),
+      })
+      const json = (await res.json()) as ApiResponse<{ token: string; refresh_token: string }>
+      if (json.code !== 0 || !json.data?.token) return false
+      setTokens(json.data.token, json.data.refresh_token)
+      if (tokensUpdatedHandler) tokensUpdatedHandler()
+      return true
+    } catch {
+      return false
+    } finally {
+      inflightRefresh = null
+    }
+  })()
+  return inflightRefresh
+}
+
+/** 请求前：access 临近过期则先静默续期（失败不阻断，交给 401 分支处理） */
+async function ensureFreshAccess(): Promise<void> {
+  if (accessExpiringSoon()) {
+    await refreshTokens()
+  }
+}
+
+/** 401：清凭证 + 跳登录 */
+function handle401(): void {
+  clearTokens()
+  if (unauthorizedHandler) unauthorizedHandler()
+}
+
+async function doFetch(path: string, options: RequestOptions): Promise<Response> {
   const { method = 'GET', body, query, signal } = options
-  let res: Response
   try {
-    res = await fetch(buildUrl(path, query), {
+    return await fetch(buildUrl(path, query), {
       method,
       headers: {
         Accept: 'application/json',
@@ -83,10 +136,33 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     if (e instanceof DOMException && e.name === 'AbortError') throw e
     throw new ApiError('网络连接失败，请检查网络后重试', -1, 0)
   }
+}
 
+/**
+ * 统一请求：解析 { code, message, data }，code!==0 抛 ApiError。
+ *
+ * v0.4.0 登录态策略（PRD 11.2）：
+ * 1. 请求前若 access 剩余有效期不足则静默续期；
+ * 2. 收到 401 时**先尝试一次刷新并重放原请求**，仍失败才清凭证跳登录——
+ *    这样"长时间使用中突然被踢回登录页"的问题不再出现。
+ */
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  await ensureFreshAccess()
+
+  let res = await doFetch(path, options)
+
+  // 401：刷新一次并重放（仅重试一次，避免死循环）
   if (res.status === 401) {
-    handle401()
-    throw new ApiError('登录已失效，请重新登录', 1002, 401)
+    const refreshed = await refreshTokens()
+    if (!refreshed) {
+      handle401()
+      throw new ApiError('登录已失效，请重新登录', 1002, 401)
+    }
+    res = await doFetch(path, options)
+    if (res.status === 401) {
+      handle401()
+      throw new ApiError('登录已失效，请重新登录', 1002, 401)
+    }
   }
 
   let json: ApiResponse<T> | null = null
@@ -107,9 +183,4 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw new ApiError(json.message || '请求失败', json.code, res.status, json.details ?? null)
   }
   return json.data
-}
-
-function handle401(): void {
-  clearToken()
-  if (unauthorizedHandler) unauthorizedHandler()
 }

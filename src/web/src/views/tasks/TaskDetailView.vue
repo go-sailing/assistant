@@ -346,11 +346,15 @@ onMounted(load)
         <!-- 子任务分区：进度 + 树 + 行内添加 -->
         <section class="detail__subtasks">
           <div class="detail__subtasks-head">
-            <h2 class="detail__subtasks-title">
-              子任务<span v-if="hasSubtasks" class="detail__subtasks-count">
-                （{{ task.subtask_completed }}/{{ task.subtask_total }}）</span
-              >
-            </h2>
+            <div class="detail__subtasks-group">
+              <h2 class="detail__subtasks-title">
+                子任务<span v-if="hasSubtasks" class="detail__subtasks-count">
+                  （{{ task.subtask_completed }}/{{ task.subtask_total }}）</span
+                >
+              </h2>
+              <!-- v0.4.0：首页已扁平化，此处明确子任务的唯一载体 -->
+              <span class="detail__subtasks-caption">在任务内管理</span>
+            </div>
             <button class="detail__subtasks-move pressable" :disabled="actionLoading" @click="pickerVisible = true">
               <AppIcon name="chevron-right" :size="14" color="#3D5AFE" />
               移动
@@ -609,6 +613,17 @@ onMounted(load)
   justify-content: space-between;
   gap: var(--sp-2);
   padding: 0 var(--sp-4);
+}
+.detail__subtasks-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.detail__subtasks-caption {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-disabled);
 }
 .detail__subtasks-title {
   font-size: var(--font-caption);

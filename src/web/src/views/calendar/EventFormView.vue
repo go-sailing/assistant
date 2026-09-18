@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as eventApi from '@/api/events'
 import * as taskApi from '@/api/tasks'
@@ -12,9 +12,11 @@ import type {
   EventPayload,
   EventScope,
   EventType,
+  LunarResolved,
   RecurrenceRule,
 } from '@/types'
 import {
+  diffDays,
   formatDue,
   fromDateKey,
   fromLocalInputValue,
@@ -129,6 +131,164 @@ const startIso = computed<string | null>(() =>
 const endIso = computed<string | null>(() =>
   allDay.value ? toIso(nextDay(fromDateKey(endDay.value))) : fromLocalInputValue(endLocal.value)
 )
+
+/* ---------------- v0.4.0：日期区公历 / 农历切换（PRD 5.6.2） ---------------- */
+
+type CalendarMode = 'solar' | 'lunar'
+const calendarOptions = [
+  { label: '公历', value: 'solar' },
+  { label: '农历', value: 'lunar' },
+]
+/** 事件不保存农历来源：编辑已有日程恒为公历 */
+const calendarMode = ref<CalendarMode>('solar')
+const calendarYear = new Date().getFullYear()
+/** 年份下拉范围：当前年 ±1（超范围不出现在选项中，避免越界换算） */
+const lunarYears = [calendarYear - 1, calendarYear, calendarYear + 1]
+const lunarYear = ref(calendarYear)
+const lunarMonth = ref(1)
+const lunarDay = ref(1)
+const lunarResult = ref<LunarResolved | null>(null)
+const lunarLoading = ref(false)
+const lunarError = ref('')
+let lunarTimer = 0
+/** 换算基准：进入农历态时的公历起止（换日期后按同一 delta 平移，时长/时刻逻辑完全沿用） */
+let lunarBase: { startDay: string; endDay: string } | null = null
+
+/** 农历月名（正月…腊月）/ 日名（初一…三十），与 RepeatSheet 同构 */
+const LUNAR_MONTH_LABELS = [
+  '正月',
+  '二月',
+  '三月',
+  '四月',
+  '五月',
+  '六月',
+  '七月',
+  '八月',
+  '九月',
+  '十月',
+  '冬月',
+  '腊月',
+]
+function lunarDayLabel(n: number): string {
+  const digits = ['十', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+  if (n <= 10) return `初${digits[n % 10]}`
+  if (n < 20) return `十${digits[n - 10]}`
+  if (n === 20) return '二十'
+  if (n < 30) return `廿${digits[n - 20]}`
+  return '三十'
+}
+const LUNAR_DAY_LABELS = Array.from({ length: 30 }, (_, i) => lunarDayLabel(i + 1))
+const WEEKS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/** 换算未完成/失败时禁止保存（不凭端上猜测提交公历日期） */
+const lunarBlocked = computed(
+  () => calendarMode.value === 'lunar' && (lunarLoading.value || !!lunarError.value || !lunarResult.value)
+)
+
+/** 换算结果行：`对应公历 2026-09-25（周五）· 中秋节` */
+const lunarResultText = computed(() => {
+  const r = lunarResult.value
+  if (!r) return ''
+  const festival = r.festival ? ` · ${r.festival}` : ''
+  return `对应公历 ${r.gregorian_date}（${WEEKS[r.weekday]}）${festival}`
+})
+/** 小月回落提示：选三十而该农历月仅 29 天 */
+const lunarClampText = computed(() => {
+  const r = lunarResult.value
+  return r?.clamped ? `该月为小月，对应${r.day_label}` : ''
+})
+
+async function resolveLunarDate(): Promise<void> {
+  lunarLoading.value = true
+  lunarError.value = ''
+  try {
+    const res = await eventApi.resolveLunar({
+      lunarYear: lunarYear.value,
+      month: lunarMonth.value,
+      day: lunarDay.value,
+      n: 1,
+    })
+    lunarResult.value = res?.[0] ?? null
+    if (!lunarResult.value) lunarError.value = '暂无法换算，请稍后重试'
+    else applyLunarDate()
+  } catch (e) {
+    lunarResult.value = null
+    lunarError.value = errorText(e)
+  } finally {
+    lunarLoading.value = false
+  }
+}
+
+/** 任一项变化 → 防抖 200ms 换算 */
+function scheduleLunarResolve(): void {
+  window.clearTimeout(lunarTimer)
+  if (calendarMode.value !== 'lunar') return
+  lunarTimer = window.setTimeout(() => void resolveLunarDate(), 200)
+}
+
+/**
+ * 把换算出的公历日期写回表单的「日期部分」：时刻字段不动，起止同步平移以保持时长。
+ * 基准取自进入农历态时的公历起止，因此反复换算不会累积漂移。
+ */
+function applyLunarDate(): void {
+  const g = lunarResult.value?.gregorian_date
+  if (!g || !lunarBase) return
+  const delta = diffDays(fromDateKey(lunarBase.startDay), fromDateKey(g))
+  const end = fromDateKey(lunarBase.endDay)
+  end.setDate(end.getDate() + delta)
+  writeStartDay(g)
+  writeEndDay(toDateKey(end))
+  // 以落位后的实际值作为下一次换算的基准：起止同步平移保持时长，反复换算不累积漂移
+  lunarBase = {
+    startDay: allDay.value ? startDay.value : startLocal.value.slice(0, 10),
+    endDay: allDay.value ? endDay.value : endLocal.value.slice(0, 10),
+  }
+}
+
+function writeStartDay(day: string): void {
+  if (allDay.value) {
+    startDay.value = day
+    if (!endDay.value || endDay.value < day) endDay.value = day
+    return
+  }
+  startLocal.value = `${day}${startLocal.value.slice(10) || 'T09:00'}`
+}
+
+function writeEndDay(day: string): void {
+  if (allDay.value) {
+    endDay.value = day
+    return
+  }
+  endLocal.value = `${day}${endLocal.value.slice(10) || 'T10:00'}`
+}
+
+/** 切换历法：进入农历态时记录基准并按当前公历月日初值（用户随后可改选） */
+function onCalendarChange(v: string): void {
+  if (editId.value) return
+  const next = v as CalendarMode
+  if (next === calendarMode.value) return
+  calendarMode.value = next
+  window.clearTimeout(lunarTimer)
+  if (next === 'solar') {
+    lunarBase = null
+    lunarResult.value = null
+    lunarError.value = ''
+    lunarLoading.value = false
+    return
+  }
+  const baseStart = allDay.value ? startDay.value : startLocal.value.slice(0, 10)
+  const baseEnd = allDay.value ? endDay.value : endLocal.value.slice(0, 10) || baseStart
+  lunarBase = { startDay: baseStart, endDay: baseEnd }
+  const d = fromDateKey(baseStart)
+  lunarYear.value = lunarYears.includes(d.getFullYear()) ? d.getFullYear() : calendarYear
+  lunarMonth.value = Math.min(12, Math.max(1, d.getMonth() + 1))
+  lunarDay.value = Math.min(30, Math.max(1, d.getDate()))
+  scheduleLunarResolve()
+}
+
+watch([lunarYear, lunarMonth, lunarDay], () => scheduleLunarResolve())
+
+onBeforeUnmount(() => window.clearTimeout(lunarTimer))
 
 const startDisplay = computed(() =>
   startLocal.value ? formatDue(fromLocalInputValue(startLocal.value)) : '未选择'
@@ -441,6 +601,11 @@ function successText(): string {
 async function submit(confirmConflict = false): Promise<void> {
   if (saving.value) return
   formError.value = ''
+  // 农历态：提交前确认换算完成，并按换算结果落一次日期（基准不变，重复落位幂等）
+  if (calendarMode.value === 'lunar') {
+    if (lunarBlocked.value) return
+    applyLunarDate()
+  }
   if (!validate()) return
   saving.value = true
   try {
@@ -570,6 +735,16 @@ watch(
         </section>
 
         <section class="form__group form__group--rows">
+          <!-- v0.4.0：日期区历法切换（仅新建可用；单次事件不保存农历来源） -->
+          <div class="form__lunar-switch" :class="{ 'form__lunar-switch--locked': !!editId }">
+            <SegmentedControl
+              :model-value="calendarMode"
+              :options="calendarOptions"
+              @update:model-value="onCalendarChange"
+            />
+          </div>
+          <p v-if="editId" class="form__type-hint">已建日程按公历编辑</p>
+
           <div class="form__row form__row--switch">
             <AppIcon name="allday" :size="20" color="#6B7080" />
             <span class="form__row-label">全天</span>
@@ -584,6 +759,35 @@ watch(
                 <span class="form__knob" />
               </span>
             </button>
+          </div>
+
+          <!-- v0.4.0 农历态：年/月/日下拉 + 服务端换算对照（失败禁止保存） -->
+          <div v-if="calendarMode === 'lunar'" class="form__lunar">
+            <div class="form__lunar-row">
+              <select v-model.number="lunarYear" class="form__select" aria-label="农历年份">
+                <option v-for="y in lunarYears" :key="y" :value="y">{{ y }} 年</option>
+              </select>
+              <select v-model.number="lunarMonth" class="form__select" aria-label="农历月份">
+                <option v-for="(label, i) in LUNAR_MONTH_LABELS" :key="i" :value="i + 1">
+                  {{ label }}
+                </option>
+              </select>
+              <select v-model.number="lunarDay" class="form__select" aria-label="农历日期">
+                <option v-for="(label, i) in LUNAR_DAY_LABELS" :key="i" :value="i + 1">
+                  {{ label }}
+                </option>
+              </select>
+            </div>
+            <p v-if="lunarLoading" class="form__lunar-result form__lunar-result--loading">
+              换算中…
+            </p>
+            <p v-else-if="lunarError" class="form__lunar-result form__lunar-result--error">
+              {{ lunarError }}
+            </p>
+            <template v-else>
+              <p class="form__lunar-result" aria-live="polite">{{ lunarResultText }}</p>
+              <p v-if="lunarClampText" class="form__lunar-clamp">{{ lunarClampText }}</p>
+            </template>
           </div>
 
           <div class="form__field">
@@ -668,7 +872,7 @@ watch(
         </section>
 
         <div class="form__submit">
-          <AppButton type="primary" :loading="saving" @click="submit(false)">
+          <AppButton type="primary" :loading="saving" :disabled="lunarBlocked" @click="submit(false)">
             {{ submitText }}
           </AppButton>
         </div>
@@ -771,6 +975,55 @@ watch(
   padding: var(--sp-2) var(--sp-4);
   font-size: var(--font-caption);
   color: var(--text-secondary);
+}
+/* v0.4.0：日期区历法切换；编辑已有日程时农历段禁用（事件不保存农历来源） */
+.form__lunar-switch--locked :deep(.segmented__item:last-child) {
+  color: var(--text-disabled);
+  pointer-events: none;
+}
+.form__lunar {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-color);
+}
+.form__lunar-row {
+  display: flex;
+  gap: var(--sp-2);
+}
+.form__select {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-control);
+  background: var(--bg-page);
+  font-size: var(--font-body-m);
+}
+/* 换算结果行：圆角 8pt、padding 8/12、12.5pt 档（UXUI 6.2） */
+.form__lunar-result {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-control);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  font-variant-numeric: tabular-nums;
+}
+.form__lunar-result--loading {
+  background: var(--bg-page);
+  color: var(--text-secondary);
+}
+.form__lunar-result--error {
+  background: var(--bg-card);
+  border: 1px solid rgba(217, 48, 37, 0.32);
+  color: var(--color-danger);
+}
+.form__lunar-clamp {
+  margin-top: var(--sp-1);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--color-conflict-text);
 }
 /* 作用域复述条：primary 浅底 + repeat 图标，与循环身份三重编码一致 */
 .form__scope {

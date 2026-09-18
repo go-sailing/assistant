@@ -1,6 +1,7 @@
 import { logger } from '../../common/logger';
 import { AppError } from '../../common/errors';
 import { config } from '../../config';
+import { randomUUID } from 'crypto';
 import { buildSystemPrompt } from '../../llm/prompt';
 import { TOOL_DEFINITIONS, isDangerousCall, isKnownTool } from '../../llm/tools';
 import { llmProvider } from '../../llm/deepseek';
@@ -373,6 +374,66 @@ export const chatOrchestrator = {
 
             await this.persistAssistantMessage(conversationId, finalText, blocks);
             emit('done', { finish_reason: 'awaiting_confirmation' });
+            return;
+          }
+
+          // v0.4.0：方案卡（PRD 8.3 / SDD 5.4）——呈现型工具，无副作用、不落 pending，
+          // 用户确认后由模型按方案参数重新调用真实工具（届时照常经过全部服务端门控）
+          if (toolName === 'present_proposal') {
+            const raw = parsedArgs.value as {
+              title?: unknown;
+              params?: unknown;
+              note?: unknown;
+            };
+            const title = typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : '执行方案';
+            const params = Array.isArray(raw.params)
+              ? raw.params
+                  .filter(
+                    (p): p is { label: string; value: string; defaulted?: boolean } =>
+                      !!p &&
+                      typeof p === 'object' &&
+                      typeof (p as { label?: unknown }).label === 'string' &&
+                      typeof (p as { value?: unknown }).value === 'string'
+                  )
+                  .slice(0, 12)
+                  .map((p) => ({
+                    label: p.label,
+                    value: p.value,
+                    ...(p.defaulted === true ? { defaulted: true as const } : {}),
+                  }))
+              : [];
+            // 参数行不可用时视为无效方案，回填错误让模型重来，避免出空白卡片
+            if (params.length === 0) {
+              llmMessages.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                content: JSON.stringify({
+                  ok: false,
+                  error: '方案参数为空，请提供 title 与至少一条 params（label+value）',
+                }),
+              });
+              continue;
+            }
+
+            const proposalBlock: Extract<MessageBlock, { type: 'proposal' }> = {
+              type: 'proposal',
+              proposal_id: randomUUID(),
+              title,
+              params,
+              ...(typeof raw.note === 'string' && raw.note.trim() ? { note: raw.note.trim() } : {}),
+            };
+            blocks.push(proposalBlock);
+            emit('proposal', proposalBlock);
+
+            if (!roundText.trim()) {
+              const hint = '我按下面的方案安排，可以吗？';
+              emit('text_delta', { delta: hint });
+              blocks.push({ type: 'text', text: hint });
+              finalText = hint;
+            }
+
+            await this.persistAssistantMessage(conversationId, finalText, blocks);
+            emit('done', { finish_reason: 'awaiting_proposal_confirmation' });
             return;
           }
 

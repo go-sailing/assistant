@@ -3,6 +3,7 @@ import type {
   CalendarEvent,
   EventPayload,
   EventQuery,
+  LunarResolved,
   MonthDayCount,
   Occurrence,
   SeriesDetail,
@@ -30,11 +31,35 @@ function toQuery(query: EventQuery): Record<string, string | number | undefined>
   return out
 }
 
-/** 月视图聚合：日期 → 计数（normal / task / recurring） */
+/** 月视图聚合：逐日返回计数 + 农历 + 法定状态（dense，无日程的日期也带农历） */
 export function fetchMonthCounts(year: number, month: number): Promise<MonthDayCount[]> {
   return request<MonthDayCount[]>('/events/monthly', {
     query: { year, month, tz: localTimezone() },
   })
+}
+
+/**
+ * v0.4.0：农历 → 公历换算。
+ *
+ * - n=1：单次日程表单，返回单个换算结果（含 festival/clamped）；
+ * - n>1：年度循环表单预览，返回从 lunar_year 起、不早于 anchor 的最多 n 个候选。
+ */
+export function resolveLunar(params: {
+  lunarYear: number
+  month: number
+  day: number
+  n?: number
+  anchor?: string
+}): Promise<LunarResolved[]> {
+  return request<{ results: LunarResolved[] }>('/events/lunar/resolve', {
+    query: {
+      lunar_year: params.lunarYear,
+      month: params.month,
+      day: params.day,
+      n: params.n,
+      anchor: params.anchor,
+    },
+  }).then((data) => data.results)
 }
 
 /** 按日 / 日期范围查询（左闭右开），服务端自动展开循环实例 */

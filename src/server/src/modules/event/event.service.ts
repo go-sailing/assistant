@@ -6,6 +6,8 @@ import { EVENT_LIMITS } from './types';
 import { EVENT_SELECT, findSingleConflicts } from './sql';
 import { fromZonedNaive, naiveOfDate, localDateString } from './recurrence/engine';
 import { occurrenceService, buildRule } from './occurrence.service';
+import { solarToLunar, lunarToSolar } from './lunar/lunar.service';
+import { ensureWorkCalendarLoaded, getCalendarDay } from './workday/workday.service';
 import {
   eventDurationMs,
   normalizeEventSort,
@@ -549,6 +551,22 @@ export const eventService = {
       patch.all_day !== undefined;
     const ruleChanged = patch.recurrence !== undefined;
 
+    /**
+     * v0.4.0（B-01 修复）：单次日程补挂重复规则。
+     *
+     * 原实现只处理「已有规则 → 改规则」，普通日程（recurrence 为 NULL）提交规则时
+     * 不命中任何写入分支，导致"保存成功但重复无效"。这里补齐该分支：
+     * 规则入库后该事件即成为系列主记录，并按新建系列的同一口径做 90 天冲突扫描。
+     */
+    const becomingSeries =
+      !existing.recurrence && ruleChanged && patch.recurrence !== null && patch.recurrence !== undefined;
+    let becomingRule: RecurrenceRule | null = null;
+    if (becomingSeries) {
+      becomingRule = buildRule(patch.recurrence as RecurrenceRule, startAt, tz);
+      sets.push(`recurrence = $${index++}::jsonb`);
+      params.push(JSON.stringify(becomingRule));
+    }
+
     // 整条系列：规则变更需重新校验并重新扫描 90 天
     if (existing.recurrence && ruleChanged) {
       if (!patch.recurrence) {
@@ -586,6 +604,31 @@ export const eventService = {
     } else if (existing.recurrence && timeChanged && !opts.confirmConflict) {
       // 整条改时间：全部实例平移，重新做 90 天扫描
       const rule = existing.recurrence as RecurrenceRule;
+      const scan = await occurrenceService.scanSeriesConflicts(
+        userId,
+        rule,
+        startAt,
+        eventDurationMs({ start_at: startAt, end_at: endAt }),
+        allDay,
+        tz,
+        eventId
+      );
+      if (scan.conflict_total > 0) {
+        return {
+          saved: false,
+          event: null,
+          conflicts: scan.conflict_dates.flatMap((g) => g.conflicts),
+          conflict_level: scan.conflict_level,
+          need_conflict_confirmation: true,
+          conflict_dates: scan.conflict_dates,
+          conflict_dates_total: scan.conflict_dates_total,
+          conflict_total: scan.conflict_total,
+          conflict_scope: 'series',
+        };
+      }
+    } else if (becomingSeries && becomingRule && !opts.confirmConflict) {
+      // v0.4.0：单次 → 系列，按新建系列的口径扫描未来 90 天（命中则要求二次确认）
+      const rule = becomingRule;
       const scan = await occurrenceService.scanSeriesConflicts(
         userId,
         rule,
@@ -987,7 +1030,7 @@ export const eventService = {
     return { deleted_event_count: res.rowCount ?? 0 };
   },
 
-  /** 月视图聚合：只返回「日期 → 计数」，不拉明细（含循环实例归属日期） */
+  /** 月视图聚合：按日返回「计数 + 农历 + 法定状态」，不拉明细（含循环实例归属日期） */
   async monthly(userId: number, year: number, month: number, tzInput?: string): Promise<MonthDayCount[]> {
     if (!Number.isInteger(year) || year < 1970 || year > 9999) {
       throw AppError.paramInvalid('年份不合法');
@@ -996,6 +1039,8 @@ export const eventService = {
       throw AppError.paramInvalid('月份不合法');
     }
     const tz = await resolveTz(tzInput);
+    // v0.4.0：法定工作日整表需已载入（幂等，首次调用载入）
+    await ensureWorkCalendarLoaded();
     const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
     const next = month === 12 ? { y: year + 1, m: 1 } : { y: year, m: month + 1 };
     const monthEnd = `${next.y}-${String(next.m).padStart(2, '0')}-01`;
@@ -1014,14 +1059,25 @@ export const eventService = {
       [tz, userId, monthStart, monthEnd]
     );
 
+    const daysInMonth = new Date(Date.UTC(next.y, next.m - 1, 0)).getUTCDate();
     const map = new Map<string, MonthDayCount>();
-    const pick = (day: string): MonthDayCount => {
-      const item = map.get(day) ?? { date: day, normal: 0, task: 0, recurring: 0 };
-      map.set(day, item);
-      return item;
-    };
+    // v0.4.0：先按该月自然日铺满（dense），保证「无日程的日期也带农历与角标」——
+    // 农历/法定信息是不可变的历法数据，与用户是否有日程无关。
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const date = `${monthStart.slice(0, 8)}${String(d).padStart(2, '0')}`;
+      map.set(date, {
+        date,
+        normal: 0,
+        task: 0,
+        recurring: 0,
+        lunar: solarToLunar(date),
+        calendar_day: getCalendarDay(date),
+      });
+    }
+
     for (const row of res.rows) {
-      const item = pick(row.day);
+      const item = map.get(row.day);
+      if (!item) continue;
       if (row.event_type === 'task') item.task += Number(row.cnt);
       else item.normal += Number(row.cnt);
     }
@@ -1032,12 +1088,71 @@ export const eventService = {
     const instances = await occurrenceService.listSeriesInstances(userId, windowStart, windowEnd, tz);
     for (const inst of instances) {
       const day = localDateString(new Date(inst.start_at), tz);
-      const item = pick(day);
+      const item = map.get(day);
+      if (!item) continue;
       item.normal += 1;
       item.recurring += 1;
     }
 
     return [...map.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+  },
+
+  /**
+   * v0.4.0：农历 → 公历换算（PRD 5.3/5.6）。
+   *
+   * n=1：单次日程表单用，返回单个换算结果（含 weekday/festival/clamped）；
+   * n>1：年度循环表单预览用，从 lunar_year 起逐年换算并跳过早于 anchor 的候选，
+   *      返回最多 n 个未来候选（公历日期 + 周几 + 节日名）。
+   */
+  async resolveLunar(params: {
+    lunarYear: number;
+    month: number;
+    day: number;
+    n?: number;
+    anchor?: string;
+  }): Promise<{
+    results: Array<{
+      lunar_year: number;
+      gregorian_date: string;
+      weekday: number;
+      clamped: boolean;
+      month_label: string;
+      day_label: string;
+      festival: string | null;
+      term: string | null;
+    }>;
+  }> {
+    const n = Math.min(Math.max(params.n ?? 1, 1), 5);
+    const results: Array<{
+      lunar_year: number;
+      gregorian_date: string;
+      weekday: number;
+      clamped: boolean;
+      month_label: string;
+      day_label: string;
+      festival: string | null;
+      term: string | null;
+    }> = [];
+
+    // 从起始农历年起逐年候选；anchor 之后的最多 n 个（anchor 缺省时不过滤）
+    for (let k = 0; k < 12 && results.length < n; k += 1) {
+      const lunarYear = params.lunarYear + k;
+      if (lunarYear > 2100) break;
+      let resolved;
+      try {
+        resolved = lunarToSolar(lunarYear, params.month, params.day);
+      } catch {
+        // 候选年超出农历表支持范围时跳过（不阻断其余候选）
+        continue;
+      }
+      if (params.anchor && resolved.gregorian_date < params.anchor) continue;
+      results.push({ lunar_year: lunarYear, ...resolved });
+    }
+
+    if (results.length === 0) {
+      throw AppError.paramInvalid('该农历日期超出支持范围（1900~2100 年）');
+    }
+    return { results };
   },
 };
 

@@ -17,12 +17,14 @@ import RecurrenceBadge from '@/components/calendar/RecurrenceBadge.vue'
 import ScopeSheet from '@/components/calendar/ScopeSheet.vue'
 import SeriesHeaderCard from '@/components/calendar/SeriesHeaderCard.vue'
 import { useEventSyncStore } from '@/stores/eventSync'
+import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
 const eventSync = useEventSyncStore()
+const settings = useSettingsStore()
 
 const detail = ref<CalendarEvent | Occurrence | null>(null)
 const loading = ref(true)
@@ -67,6 +69,14 @@ const sheetTitle = computed(() =>
 )
 const sheetItemLabel = computed(() => (isTaskEvent.value ? '删除此安排' : '删除日程'))
 const headTitle = computed(() => (isOccurrence.value ? '本次安排' : '日程详情'))
+
+/** v0.4.0：日期下方农历一行（如「农历 八月十五 · 中秋节」），受农历开关控制 */
+const lunarText = computed(() => {
+  const l = detail.value?.lunar
+  if (!l || !settings.lunarEnabled) return ''
+  const festival = l.festival ? ` · ${l.festival}` : l.term ? ` · ${l.term}` : ''
+  return `农历 ${l.month_label}${l.day_label}${festival}`
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -309,6 +319,11 @@ onMounted(load)
             <span>{{ startText }}</span>
             <span v-if="endText"> – {{ endText }}</span>
           </li>
+          <!-- 农历对照：受「显示农历」开关控制 -->
+          <li v-if="lunarText" class="detail__meta-row detail__meta-row--lunar">
+            <AppIcon name="calendar" :size="18" color="#6B7080" />
+            <span>{{ lunarText }}</span>
+          </li>
           <li v-if="detail.location" class="detail__meta-row">
             <AppIcon name="pin" :size="18" color="#6B7080" />
             <span>{{ detail.location }}</span>
@@ -532,6 +547,12 @@ onMounted(load)
   border-bottom: 1px solid var(--border-color);
   font-size: var(--font-body-m);
   color: var(--text-primary);
+}
+/* 农历对照行：小字 secondary，不抢时间主行 */
+.detail__meta-row--lunar {
+  min-height: 40px;
+  font-size: var(--font-caption);
+  color: var(--text-secondary);
 }
 .detail__task {
   display: flex;

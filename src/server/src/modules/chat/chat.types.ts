@@ -57,7 +57,25 @@ export type MessageBlock =
       count: number;
       description: string;
     }
-  | { type: 'error'; message: string; retryable: boolean };
+  | { type: 'error'; message: string; retryable: boolean }
+  | {
+      /**
+       * v0.4.0：助手方案卡（PRD 8.3）。
+       *
+       * 方案是**对话层概念**：present_proposal 工具无任何副作用、不落 pending；
+       * 用户点「就这么办」后，模型按方案参数重新调用真实工具，届时照常经过
+       * 冲突/危险/作用域等全部服务端门控（危险操作因此形成双层确认）。
+       * status 由前端本地维护（服务端不持久化状态机），历史回看一律按只读摘要渲染。
+       */
+      type: 'proposal';
+      proposal_id: string;
+      /** 动作名，如「创建日程」「创建任务」 */
+      title: string;
+      /** 参数行：label + value，defaulted=true 表示这是助手替用户补的默认值 */
+      params: Array<{ label: string; value: string; defaulted?: boolean }>;
+      /** 默认项集中说明（让用户一眼知道改什么） */
+      note?: string;
+    };
 
 export interface MessagePayload {
   blocks: MessageBlock[];

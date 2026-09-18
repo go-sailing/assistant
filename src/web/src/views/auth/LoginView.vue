@@ -2,15 +2,18 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/AppButton.vue'
+import AppIcon from '@/components/AppIcon.vue'
 import AppInput from '@/components/AppInput.vue'
 import AppModal from '@/components/AppModal.vue'
 import { errorText } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
 import { validateEmail } from '@/utils/validate'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const settings = useSettingsStore()
 
 const email = ref('')
 const password = ref('')
@@ -19,8 +22,23 @@ const passwordError = ref('')
 const formError = ref('')
 const loading = ref(false)
 const forgotVisible = ref(false)
+/**
+ * 登录过期提示（UXUI 5.11 / 7.7）：仅在带 session_expired=1 时展示——
+ * 主动退出、改密他端失效等语义不同的跳转不带该参数，因此不显示提示。
+ */
+const expiredNotice = ref(route.query.session_expired === '1')
 
 const canSubmit = computed(() => email.value.trim() !== '' && password.value !== '' && !loading.value)
+
+/** 登录成功落地：优先按 redirect 回跳原目标页（含深链），否则落用户设置的默认启动页 */
+async function landingPath(): Promise<string> {
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  // 仅接受站内路径，避免被构造成开放重定向
+  if (redirect.startsWith('/') && !redirect.startsWith('//')) return redirect
+  // 强制拉取：被动 401 退出后 store 可能残留上个账号的偏好
+  await settings.load(true)
+  return settings.homeRoute
+}
 
 async function onSubmit(): Promise<void> {
   if (loading.value) return
@@ -31,9 +49,8 @@ async function onSubmit(): Promise<void> {
   loading.value = true
   try {
     await auth.login(email.value.trim(), password.value)
-    // v0.3.0：默认落地日程主页（与路由 `/` → `/calendar`、PRD 3.3「登录后默认落地」一致）
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/calendar'
-    router.replace(redirect)
+    // v0.4.0：默认启动页由设置页决定（默认 /calendar），redirect 优先
+    router.replace(await landingPath())
   } catch (e) {
     formError.value = errorText(e)
   } finally {
@@ -51,6 +68,18 @@ async function onSubmit(): Promise<void> {
     </header>
 
     <div class="auth__body">
+      <!-- 登录过期提示条：浅黄底、44pt、可关闭（非阻断，不用 alert） -->
+      <div v-if="expiredNotice" class="auth__notice" role="status">
+        <span class="auth__notice-text">登录已过期，请重新登录</span>
+        <button
+          class="auth__notice-close pressable"
+          aria-label="关闭提示"
+          @click="expiredNotice = false"
+        >
+          <AppIcon name="close" :size="16" color="#8A5A00" />
+        </button>
+      </div>
+
       <h1 class="auth__title">欢迎回来</h1>
       <p class="auth__subtitle">登录继续管理任务</p>
 
@@ -119,6 +148,32 @@ async function onSubmit(): Promise<void> {
   flex: 1;
   overflow-y: auto;
   padding: var(--sp-4) var(--sp-6) calc(var(--sp-6) + var(--safe-bottom));
+}
+.auth__notice {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  margin-bottom: var(--sp-4);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border-radius: var(--radius-control);
+  background: var(--color-notice-bg);
+  color: var(--color-notice-text);
+}
+.auth__notice-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+}
+.auth__notice-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-right: calc(var(--sp-2) * -1);
+  flex-shrink: 0;
 }
 .auth__title {
   font-size: var(--font-heading-l);

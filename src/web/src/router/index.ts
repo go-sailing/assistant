@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-import { getToken } from '@/utils/token'
+import { refreshTokens } from '@/api/client'
+import { hasSession } from '@/utils/token'
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/calendar' },
@@ -116,6 +117,25 @@ const routes: RouteRecordRaw[] = [
     path: '/chat/:id',
     redirect: '/chat',
   },
+  /* ----- v0.4.0：个人信息与设置 ----- */
+  {
+    path: '/me',
+    name: 'me',
+    component: () => import('@/views/me/MeView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/me/password',
+    name: 'me-password',
+    component: () => import('@/views/me/ChangePasswordView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/settings',
+    name: 'settings',
+    component: () => import('@/views/me/SettingsView.vue'),
+    meta: { requiresAuth: true },
+  },
   { path: '/:pathMatch(.*)*', redirect: '/calendar' },
 ]
 
@@ -125,16 +145,25 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 }),
 })
 
-// 登录守卫：除引导/登录/注册外全部要求登录
-router.beforeEach((to) => {
-  const logged = !!getToken()
+/**
+ * 登录守卫：除引导/登录/注册外全部要求登录。
+ *
+ * v0.4.0：access 过期但 refresh 仍有效时**先静默续期再放行**，
+ * 避免"页面回收后返回被踢回登录页"；续期失败才跳登录。
+ * 深链（含 /tasks/:id、/settings 等）登录后按 redirect 回跳原目标页。
+ */
+router.beforeEach(async (to) => {
+  const logged = hasSession()
   if (to.meta.requiresAuth && !logged) {
-    return {
-      path: '/login',
-      query: to.fullPath !== '/calendar' ? { redirect: to.fullPath } : undefined,
+    const restored = await refreshTokens()
+    if (!restored) {
+      return {
+        path: '/login',
+        query: to.fullPath !== '/calendar' ? { redirect: to.fullPath } : undefined,
+      }
     }
   }
-  if (to.meta.public && logged) {
+  if (to.meta.public && (hasSession() || logged)) {
     return { path: '/calendar' }
   }
   return true

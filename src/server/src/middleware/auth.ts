@@ -59,7 +59,10 @@ export const authMiddleware: RequestHandler = (req: Request, _res: Response, nex
   }
 
   try {
-    const payload = jwt.verify(token, config.jwt.secret) as jwt.JwtPayload;
+    // v0.4.0：放宽时钟容忍，消除服务/客户端与服务端之间分钟级偏差导致的伪 401
+    const payload = jwt.verify(token, config.jwt.secret, {
+      clockTolerance: config.jwt.clockToleranceSec,
+    }) as jwt.JwtPayload;
     const jti = payload.jti as string;
     if (jti && revokedTokens.has(jti)) {
       return next(AppError.unauthorized('登录已失效，请重新登录'));

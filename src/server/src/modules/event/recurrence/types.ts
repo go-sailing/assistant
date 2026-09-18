@@ -34,16 +34,37 @@ export interface ByMonthDay {
   day: number;
 }
 
+/** v0.4.0：yearly 指定的每年农历月日（正常月，不含闰月） */
+export interface ByLunarMonthDay {
+  /** 农历月 1..12（1=正月 … 12=腊月） */
+  month: number;
+  /** 农历日 1..30；该农历月为小月（29 天）时落到当月最后一天 */
+  day: number;
+}
+
+/** v0.4.0：weekly 的星期模式 */
+export type WeekMode = 'workdays_cn';
+
 export interface RecurrenceRule {
   freq: RecurFreq;
   /** 1..EVENT_RECUR_INTERVAL_MAX，默认 1 */
   interval: number;
   /** 仅 weekly：0..6（0=周日），缺省=首次所在星期 */
   by_week_days?: number[];
+  /**
+   * v0.4.0 仅 weekly：'workdays_cn' = 法定工作日（避开放假、含调休补班）。
+   * 与 by_week_days 互斥；缺省时按 by_week_days 解释，存量规则语义不变。
+   */
+  week_mode?: WeekMode;
   /** 仅 monthly */
   month_rule?: MonthRule;
   /** v0.3.0 仅 yearly：指定每年的月日；缺省=取首次实例（anchor）的月日 */
   by_month_day?: ByMonthDay;
+  /**
+   * v0.4.0 仅 yearly：指定每年农历月日，公历日期逐年浮动；
+   * 与 by_month_day 互斥（同时出现由 validateRule 抛 4011）。
+   */
+  by_lunar_month_day?: ByLunarMonthDay;
   end_type: RecurEndType;
   /** end_type=count：1..EVENT_SERIES_MAX_COUNT */
   count?: number;

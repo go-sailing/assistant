@@ -20,23 +20,20 @@ const searched = ref(false)
 const loading = ref(false)
 const error = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
-/** 全量任务表：用于本地拼父子路径（不新增接口） */
+/** 祖先节点表：id → 任务，用于本地拼父子路径 */
 const taskMap = ref<Record<string, Task>>({})
 let timer: number | undefined
 
-/** 命中子任务时按需拉取一次全量任务，供路径拼装 */
+/** 命中子任务时按需拉取其祖先链（用 /tasks/:id/ancestors，避免拉全量任务） */
 async function ensureTaskMap(): Promise<void> {
-  if (Object.keys(taskMap.value).length) return
-  try {
-    const res = await taskApi.fetchTasks({ page: 1, page_size: 200 })
-    const map: Record<string, Task> = {}
-    ;(res.list || []).forEach((t) => {
-      map[String(t.id)] = t
-    })
-    taskMap.value = map
-  } catch {
-    // 路径提示失败不影响搜索结果本身
-  }
+  const need = results.value.filter((t) => t.parent_id !== null && t.parent_id !== undefined)
+  if (!need.length) return
+  const chains = await Promise.all(
+    need.map((t) => taskApi.fetchAncestors(t.id).catch(() => [] as Task[]))
+  )
+  const map: Record<string, Task> = { ...taskMap.value }
+  chains.forEach((chain) => chain.forEach((n) => (map[String(n.id)] = n)))
+  taskMap.value = map
 }
 
 function parentOf(id: number | null): Task | null {

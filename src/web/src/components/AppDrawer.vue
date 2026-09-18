@@ -40,7 +40,21 @@ const activeKey = computed(() => {
 })
 
 const email = computed(() => auth.email)
-const initial = computed(() => (email.value.trim()[0] ?? '?').toUpperCase())
+/** 主文案：有昵称显示昵称，否则显示邮箱 */
+const accountPrimary = computed(() => auth.nickname?.trim() || auth.email || '当前账号')
+
+/**
+ * 超长主文案中间省略（UXUI 3.2）：
+ * 邮箱类文本首尾都能区分账号，中间省略比尾部省略更易识别。
+ */
+function middleEllipsis(text: string, max = 18): string {
+  if (text.length <= max) return text
+  const head = Math.ceil((max - 1) / 2)
+  const tail = max - 1 - head
+  return `${text.slice(0, head)}…${text.slice(-tail)}`
+}
+
+const primaryDisplay = computed(() => middleEllipsis(accountPrimary.value))
 
 /** 焦点陷阱：打开后聚焦首个可聚焦元素，Tab 在面板内循环 */
 function focusables(): HTMLElement[] {
@@ -112,11 +126,30 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </button>
       </nav>
       <div class="drawer__foot">
+        <!-- 账号区：整块进个人信息；齿轮为独立 44pt 热区进设置；退出行与整块分离防误触 -->
         <div class="drawer__account">
-          <span class="drawer__avatar" aria-hidden="true">{{ initial }}</span>
-          <span class="drawer__email ellipsis">{{ email || '当前账号' }}</span>
+          <button
+            class="drawer__account-main pressable"
+            aria-label="个人信息"
+            @click="emit('navigate', '/me')"
+          >
+            <span class="drawer__avatar" aria-hidden="true">{{ auth.avatarInitial }}</span>
+            <span class="drawer__account-text">
+              <span class="drawer__account-primary ellipsis">{{ primaryDisplay }}</span>
+              <span v-if="auth.nickname" class="drawer__account-secondary ellipsis">
+                {{ email }}
+              </span>
+            </span>
+          </button>
+          <button
+            class="drawer__gear pressable"
+            aria-label="系统设置"
+            @click="emit('navigate', '/settings')"
+          >
+            <AppIcon name="gear" :size="20" />
+          </button>
         </div>
-        <button class="drawer__logout pressable" @click="emit('logout')">退出登录</button>
+        <button class="drawer__logout pressable" @click="emit('logout')">退出</button>
       </div>
     </aside>
   </Transition>
@@ -185,27 +218,54 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .drawer__account {
   display: flex;
   align-items: center;
+}
+.drawer__account-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: var(--sp-3);
-  min-height: 32px;
+  min-height: 48px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-control);
+  text-align: left;
 }
 .drawer__avatar {
-  width: 28px;
-  height: 28px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--color-primary-light);
   color: var(--color-primary);
-  font-size: var(--font-caption);
-  line-height: var(--font-caption-lh);
+  font-size: var(--font-body-l);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.drawer__email {
-  color: var(--text-secondary);
+.drawer__account-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.drawer__account-primary {
+  font-size: var(--font-body-m);
+  line-height: var(--font-body-m-lh);
+  color: var(--text-primary);
+}
+.drawer__account-secondary {
   font-size: var(--font-caption);
   line-height: var(--font-caption-lh);
-  min-width: 0;
+  color: var(--text-secondary);
+}
+.drawer__gear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
 }
 .drawer__logout {
   min-height: 44px;

@@ -3,10 +3,21 @@ import { config } from './config';
 import { logger } from './common/logger';
 import { closePool } from './db/pool';
 import { runMigrations } from './db/migrate';
+import { ensureWorkCalendarLoaded } from './modules/event/workday/workday.service';
 
 async function bootstrap(): Promise<void> {
   if (config.dbAutoMigrate) {
     await runMigrations();
+  }
+
+  // v0.4.0：法定工作日历整表载入进程内存（数据量极小），
+  // 使循环引擎的逐日判定为同步纯内存操作；失败时降级为默认周历并告警。
+  try {
+    await ensureWorkCalendarLoaded();
+  } catch (err) {
+    logger.warn('法定工作日历载入失败，将按周一至周五回退', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   if (!config.deepseek.apiKey) {

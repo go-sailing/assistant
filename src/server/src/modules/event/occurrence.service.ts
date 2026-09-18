@@ -17,6 +17,8 @@ import {
   validateRule,
 } from './recurrence/engine';
 import { summarizeRecurrence } from './recurrence/summary';
+import { ensureWorkCalendarLoaded } from './workday/workday.service';
+import { solarToLunar } from './lunar/lunar.service';
 import {
   OVERRIDE_PATCH_FIELDS,
   type ConflictDateGroup,
@@ -57,6 +59,10 @@ export function normalizeRule(input: RecurrenceRule): RecurrenceRule {
   if (input.freq === 'weekly' && input.by_week_days?.length) {
     rule.by_week_days = [...new Set(input.by_week_days)].sort((a, b) => a - b);
   }
+  // v0.4.0：weekly 的法定工作日模式（与 by_week_days 互斥，校验已在 validateRule 完成）
+  if (input.freq === 'weekly' && input.week_mode === 'workdays_cn') {
+    rule.week_mode = 'workdays_cn';
+  }
   if (input.freq === 'monthly' && input.month_rule) {
     const mr = input.month_rule;
     rule.month_rule =
@@ -67,6 +73,13 @@ export function normalizeRule(input: RecurrenceRule): RecurrenceRule {
   // v0.3.0：yearly 指定月日（仅保留 month/day 两个字段）
   if (input.freq === 'yearly' && input.by_month_day) {
     rule.by_month_day = { month: input.by_month_day.month, day: input.by_month_day.day };
+  }
+  // v0.4.0：yearly 指定农历月日（与 by_month_day 互斥，校验已在 validateRule 完成）
+  if (input.freq === 'yearly' && input.by_lunar_month_day) {
+    rule.by_lunar_month_day = {
+      month: input.by_lunar_month_day.month,
+      day: input.by_lunar_month_day.day,
+    };
   }
   if (rule.end_type === 'count') rule.count = input.count;
   if (rule.end_type === 'until') rule.until = input.until;
@@ -122,6 +135,9 @@ function buildOccurrence(
     start_at: startAt.toISOString(),
     end_at: endAt.toISOString(),
     status: state === 'cancelled' ? 'cancelled' : 'scheduled',
+    // v0.4.0：农历必须按**实例自身**的开始日计算——
+    // toEventDTO 取的是系列主记录（anchor）的日期，跨年实例会显示错误的农历
+    lunar: solarToLunar(localDateString(startAt, tz)),
     conflicts: [],
     conflict_level: 'none',
   };
@@ -251,6 +267,8 @@ export async function listSeriesInstances(
   tz: string,
   opts: { includeCancelled?: boolean; seriesId?: number } = {}
 ): Promise<OccurrenceDTO[]> {
+  // v0.4.0：法定工作日模式依赖进程内已载入的法定日历表（幂等，首次调用载入）
+  await ensureWorkCalendarLoaded();
   let rows = await loadSeriesRowsForWindow(userId, windowStart, windowEnd, tz);
   if (opts.seriesId) rows = rows.filter((r) => r.id === opts.seriesId);
   if (rows.length === 0) return [];
@@ -339,6 +357,8 @@ export async function scanSeriesConflicts(
   tz: string,
   excludeSeriesId?: number
 ): Promise<SeriesConflictResult> {
+  // v0.4.0：法定工作日模式依赖进程内已载入的法定日历表（幂等，首次调用载入）
+  await ensureWorkCalendarLoaded();
   const empty: SeriesConflictResult = {
     conflict_level: 'none',
     conflict_dates: [],

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/AppButton.vue'
 import AppInput from '@/components/AppInput.vue'
 import { errorText } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
 import {
   passwordStrength,
   strengthText,
@@ -13,8 +14,10 @@ import {
   validatePassword,
 } from '@/utils/validate'
 
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const settings = useSettingsStore()
 
 const email = ref('')
 const password = ref('')
@@ -38,6 +41,14 @@ const allFilled = computed(
   () => email.value.trim() !== '' && password.value !== '' && confirm.value !== ''
 )
 
+/** 注册成功落地：与登录一致——redirect 优先，否则落默认启动页（PRD 10.3） */
+async function landingPath(): Promise<string> {
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  if (redirect.startsWith('/') && !redirect.startsWith('//')) return redirect
+  await settings.load(true)
+  return settings.homeRoute
+}
+
 async function onSubmit(): Promise<void> {
   if (loading.value) return
   emailError.value = validateEmail(email.value)
@@ -49,8 +60,7 @@ async function onSubmit(): Promise<void> {
   try {
     // MVP 无验证码、无邮箱激活：注册成功即登录
     await auth.register(email.value.trim(), password.value)
-    // v0.3.0：默认落地日程主页（与登录一致）
-    router.replace('/calendar')
+    router.replace(await landingPath())
   } catch (e) {
     formError.value = errorText(e)
   } finally {

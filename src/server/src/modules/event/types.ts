@@ -1,7 +1,8 @@
 import type { Priority, TaskStatus } from '../task/types';
 import { config } from '../../config';
-import { summarizeRecurrence } from './recurrence/summary';
-import { firstOccurrenceAfter, firstOccurrenceAt, countOccurrences } from './recurrence/engine';
+import { summarizeRecurrence, recurrenceNote } from './recurrence/summary';
+import { firstOccurrenceAfter, firstOccurrenceAt, countOccurrences, localDateString } from './recurrence/engine';
+import { solarToLunar } from './lunar/lunar.service';
 import type { OverrideState, RecurrenceRule } from './recurrence/types';
 
 export type EventType = 'normal' | 'task';
@@ -90,6 +91,11 @@ export interface EventDTO {
   missing?: boolean;
   /** v0.2.0：占位原因（deleted 已删除 / not_occurring 该次安排已不再发生） */
   missing_reason?: 'deleted' | 'not_occurring';
+  /**
+   * v0.4.0：开始日所在公历日的农历信息（PRD 5.1：详情/表单/卡片展示）。
+   * 仅按需填充（列表与详情填，冲突简报不填）。
+   */
+  lunar?: import('./lunar/lunar.service').LunarDayInfo | null;
 }
 
 /** 展开实例读模型（系统设计文档 5.4）：复用 EventDTO 形状 + 实例身份 */
@@ -112,6 +118,11 @@ export interface SeriesDTO extends EventDTO {
   first_occurrence_at: string | null;
   /** 规则推算的实例总数（count 精确，其余为上限内估算） */
   total_count: number;
+  /**
+   * v0.4.0：规则补充说明行（PRD 4.4/5.6.5），如法定工作日"公布前按周一至周五计算"、
+   * 农历"公历日期逐年不同"；无补充说明时为 null。
+   */
+  recurrence_note: string | null;
 }
 
 /** 冲突提示用的精简结构（避免嵌套 conflicts 递归） */
@@ -201,6 +212,13 @@ export interface MonthDayCount {
   task: number;
   /** v0.2.0：其中循环实例数（含已调整，不含已取消） */
   recurring: number;
+  /**
+   * v0.4.0：当日农历信息（月历副字、标题条、详情与对话卡片共用同一份）。
+   * 农历超出支持范围（1900-01-31~2100-12-31）时为 null。
+   */
+  lunar: import('./lunar/lunar.service').LunarDayInfo | null;
+  /** v0.4.0：当日法定状态（holiday 放假 / makeup 补班 / null 非特殊日） */
+  calendar_day: import('./workday/workday.service').SpecialDay | null;
 }
 
 const TITLE_MAX = 100;
@@ -220,6 +238,8 @@ export function eventDurationMs(row: { start_at: Date; end_at: Date }): number {
 export function toEventDTO(row: EventRow, tz: string = config.event.defaultTz): EventDTO {
   const isTask = row.event_type === 'task';
   const recurrence = (row.recurrence ?? null) as RecurrenceRule | null;
+  // v0.4.0：开始日所在公历日的农历信息（超出支持范围时为 null，界面按"无副字"处理）
+  const lunar = solarToLunar(localDateString(row.start_at, tz));
   return {
     id: row.id,
     event_type: isTask ? 'task' : 'normal',
@@ -240,6 +260,7 @@ export function toEventDTO(row: EventRow, tz: string = config.event.defaultTz): 
       ? summarizeRecurrence(recurrence, row.start_at, row.all_day, tz)
       : null,
     derived_from_event_id: row.derived_from_event_id ?? null,
+    lunar,
     task:
       isTask && row.task_id !== null && row.task_title !== null
         ? {
@@ -270,6 +291,7 @@ export function toSeriesDTO(row: EventRow, tz: string, now = new Date()): Series
     next_occurrence: next ? next.start_at.toISOString() : null,
     first_occurrence_at: first ? first.start_at.toISOString() : null,
     total_count: countOccurrences(rule, row.start_at, durationMs, tz),
+    recurrence_note: recurrenceNote(rule, row.start_at, tz),
   };
 }
 

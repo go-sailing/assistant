@@ -6,6 +6,7 @@ import type {
   ConfirmBlock,
   EventScope,
   Occurrence,
+  ProposalBlock,
   ScopeBlock,
   Task,
 } from '@/types'
@@ -30,6 +31,8 @@ const emit = defineEmits<{
   (e: 'conflict-force'): void
   (e: 'confirm', block: ConfirmBlock): void
   (e: 'cancel', block: ConfirmBlock): void
+  (e: 'proposal-adopt', block: ProposalBlock): void
+  (e: 'proposal-adjust', block: ProposalBlock): void
   (e: 'retry', message: ChatMessage): void
 }>()
 
@@ -89,6 +92,8 @@ function onSheetSelect(v: string): void {
           @conflict-force="emit('conflict-force')"
           @confirm="emit('confirm', $event)"
           @cancel="emit('cancel', $event)"
+          @proposal-adopt="emit('proposal-adopt', $event)"
+          @proposal-adjust="emit('proposal-adjust', $event)"
           @retry="emit('retry', message)"
         />
         <LoadingDots v-if="message.thinking" />

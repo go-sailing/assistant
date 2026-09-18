@@ -14,7 +14,6 @@ import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
 import TaskListItem from '@/components/TaskListItem.vue'
-import SubtaskTree from '@/components/tasks/SubtaskTree.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
 
@@ -42,13 +41,7 @@ const actionTask = ref<Task | null>(null)
 const deleteSheetVisible = ref(false)
 const cascadeDeleteVisible = ref(false)
 
-/* v0.2.0 根任务树：展开态 + 首次展开懒加载的下一级节点（会话内缓存） */
-const expandedRoots = ref<Set<string>>(new Set())
-const treeData = ref<Record<string, Task[]>>({})
-const treeLoading = ref<Record<string, boolean>>({})
-const treeError = ref<Record<string, string>>({})
-/** 筛选条件指纹：变化时重置树（组件 key 同步更换） */
-const filterKey = computed(() => `${listId.value}|${status.value}|${sort.value}`)
+/* v0.4.0 根任务扁平列表：不再有树展开、行内添加，层级管理全部在详情页 */
 
 /** 级联完成确认（父任务带未完成子任务） */
 const cascade = ref<{ task: Task; count: number } | null>(null)
@@ -97,7 +90,7 @@ async function loadLists(): Promise<void> {
 async function loadTasks(): Promise<void> {
   error.value = ''
   try {
-    // 任务首页只以根任务为排序单位（子任务随父卡展开出现）
+    // v0.4.0：首页只列根任务（每行一条扁平行，子任务仅在详情页管理）
     const res = await taskApi.fetchTasks({
       list_id: listId.value === ALL ? undefined : listId.value,
       status: status.value === 'all' ? undefined : status.value,
@@ -126,16 +119,8 @@ async function refresh(): Promise<void> {
   refreshing.value = false
 }
 
-/** 切换清单/排序/搜索后重置树展开态与缓存 */
-function resetTree(): void {
-  expandedRoots.value = new Set<string>()
-  treeData.value = {}
-  treeLoading.value = {}
-  treeError.value = {}
-}
-
-function reloadWithTreeReset(): void {
-  resetTree()
+/** 切换清单/排序/状态后重新拉取列表 */
+function reloadTasks(): void {
   loading.value = true
   void loadTasks().finally(() => {
     loading.value = false
@@ -154,19 +139,19 @@ function onListSelect(v: string): void {
   }
   if (v === listId.value) return
   listId.value = v
-  reloadWithTreeReset()
+  reloadTasks()
 }
 
 function onSortSelect(v: string): void {
   sortSheetVisible.value = false
   if (v === sort.value) return
   sort.value = v as TaskSort
-  reloadWithTreeReset()
+  reloadTasks()
 }
 
 function onStatusChange(v: string): void {
   status.value = v as TaskStatus | 'all'
-  reloadWithTreeReset()
+  reloadTasks()
 }
 
 function goDetail(task: Task): void {
@@ -177,52 +162,9 @@ function goCreate(): void {
   router.push('/tasks/new')
 }
 
-function isRootExpanded(task: Task): boolean {
-  return expandedRoots.value.has(String(task.id))
-}
-
-/** 展开根任务：首次展开懒加载下一级（根 + 直接子级） */
-async function toggleRoot(task: Task): Promise<void> {
-  const id = String(task.id)
-  if (expandedRoots.value.has(id)) {
-    expandedRoots.value.delete(id)
-    return
-  }
-  expandedRoots.value.add(id)
-  if (treeData.value[id]) return
-  await loadLevel1(task)
-}
-
-async function loadLevel1(task: Task): Promise<void> {
-  const id = String(task.id)
-  treeLoading.value[id] = true
-  treeError.value[id] = ''
-  try {
-    treeData.value[id] = await taskApi.fetchSubtree(task.id, 1)
-  } catch (e) {
-    treeError.value[id] = errorText(e)
-  } finally {
-    treeLoading.value[id] = false
-  }
-}
-
 function replaceRoot(task: Task): void {
   const i = tasks.value.findIndex((t) => String(t.id) === String(task.id))
   if (i >= 0) tasks.value[i] = task
-}
-
-/** 树下发生变更：重取第一级并同步根卡进度（进度为直接子任务口径） */
-async function onTreeChanged(task: Task): Promise<void> {
-  await loadLevel1(task)
-  const nodes = treeData.value[String(task.id)] || []
-  const direct = nodes.filter((n) => n.parent_id !== null && String(n.parent_id) === String(task.id))
-  const i = tasks.value.findIndex((t) => String(t.id) === String(task.id))
-  if (i < 0) return
-  tasks.value[i] = {
-    ...tasks.value[i],
-    subtask_total: direct.length,
-    subtask_completed: direct.filter((d) => d.status === 'completed').length,
-  }
 }
 
 function incompleteCount(e: unknown): number {
@@ -254,7 +196,6 @@ async function onToggle(task: Task): Promise<void> {
       tasks.value = tasks.value.filter((t) => String(t.id) !== String(original.id))
     }
     taskSync.markDirty()
-    void refreshTreeAfterStatus(updated)
   } catch (e) {
     replaceRoot(original)
     if (!completed && e instanceof ApiError && e.code === 4010) {
@@ -275,20 +216,8 @@ async function confirmCascade(): Promise<void> {
     replaceRoot(updated)
     taskSync.markDirty()
     toast.show('已标记完成')
-    await refreshTreeAfterStatus(updated)
   } catch (e) {
     toast.show(errorText(e))
-  }
-}
-
-/** 状态变化后若树已加载，刷新第一级让勾选态与进度同步 */
-async function refreshTreeAfterStatus(task: Task): Promise<void> {
-  const id = String(task.id)
-  if (!treeData.value[id]) return
-  try {
-    treeData.value[id] = await taskApi.fetchSubtree(task.id, 1)
-  } catch {
-    // 刷新失败保留原树，不阻断主流程
   }
 }
 
@@ -309,9 +238,6 @@ async function confirmDelete(): Promise<void> {
   try {
     const res = await taskApi.deleteTask(task.id)
     tasks.value = tasks.value.filter((t) => String(t.id) !== String(task.id))
-    treeData.value = Object.fromEntries(
-      Object.entries(treeData.value).filter(([key]) => key !== String(task.id))
-    )
     // 级联计数来自服务端响应：任务数含自身，子任务数需减 1
     const subTasks = Math.max(0, (res.deleted_task_count ?? 1) - 1)
     const events = res.deleted_event_count ?? 0
@@ -425,55 +351,16 @@ onMounted(async () => {
       />
 
       <ul v-else class="home__list">
+        <!-- 每行一条根任务：进度摘要在行内只读展示，点击唯一语义是进详情 -->
         <TaskListItem
           v-for="t in tasks"
           :key="String(t.id)"
           :task="t"
           :highlight="String(t.id) === highlightId"
-          :subtask-display="isRootExpanded(t) ? 'bar' : 'count'"
           @detail="goDetail"
           @toggle="onToggle"
           @remove="askDelete"
-        >
-          <!-- 树展开箭头：仅展开/折叠，不进入详情 -->
-          <template #leading>
-            <button
-              v-if="t.subtask_total > 0"
-              class="home__chevron pressable"
-              type="button"
-              :aria-expanded="isRootExpanded(t)"
-              :aria-label="isRootExpanded(t) ? `收起「${t.title}」的子任务` : `展开「${t.title}」的子任务`"
-              @click.stop="toggleRoot(t)"
-            >
-              <AppIcon
-                name="chevron-right"
-                :size="12"
-                :class="['home__arrow', { 'home__arrow--open': isRootExpanded(t) }]"
-                color="#6B7080"
-              />
-            </button>
-            <span v-else class="home__chevron home__chevron--empty" aria-hidden="true" />
-          </template>
-
-          <template #subtree>
-            <div v-show="isRootExpanded(t)">
-              <p v-if="treeLoading[String(t.id)]" class="home__tree-hint">加载中…</p>
-              <p v-else-if="treeError[String(t.id)]" class="home__tree-hint home__tree-hint--error">
-                {{ treeError[String(t.id)] }}
-                <button class="home__tree-retry pressable" type="button" @click="loadLevel1(t)">重试</button>
-              </p>
-              <!-- 展开子树：更深层级由树内部继续懒加载；v0.3.0 仅根任务可加直接子任务 -->
-              <SubtaskTree
-                v-if="treeData[String(t.id)]"
-                :key="filterKey"
-                :nodes="treeData[String(t.id)]"
-                :root-id="t.id"
-                allow-add
-                @changed="onTreeChanged(t)"
-              />
-            </div>
-          </template>
-        </TaskListItem>
+        />
       </ul>
     </div>
 
@@ -577,38 +464,5 @@ onMounted(async () => {
 .home__list {
   background: var(--bg-card);
   padding-bottom: calc(var(--safe-bottom) + 96px);
-}
-/* 树展开箭头热区 44pt；负外边距保证与复选框热区不重叠 */
-.home__chevron {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  margin-left: -12px;
-  flex-shrink: 0;
-}
-.home__chevron--empty {
-  pointer-events: none;
-}
-.home__arrow {
-  transition: transform 150ms ease;
-}
-.home__arrow--open {
-  transform: rotate(90deg);
-}
-.home__tree-hint {
-  padding: var(--sp-1) var(--sp-4);
-  font-size: var(--font-caption);
-  color: var(--text-secondary);
-}
-.home__tree-hint--error {
-  color: var(--color-danger);
-}
-.home__tree-retry {
-  min-height: 32px;
-  padding: 0 var(--sp-1);
-  font-size: var(--font-caption);
-  color: var(--color-primary);
 }
 </style>

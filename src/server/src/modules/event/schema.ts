@@ -62,6 +62,22 @@ const byMonthDaySchema = z.object({
 });
 
 /**
+ * v0.4.0：yearly 指定的每年农历月日。
+ * 只支持正常月（1..12，无闰月语义）；日 1..30，遇农历小月由换算层回落到廿九。
+ */
+const byLunarMonthDaySchema = z.object({
+  month: z.number().int().min(1).max(12),
+  day: z.number().int().min(1).max(30),
+});
+
+/**
+ * v0.4.0：weekly 的星期模式。
+ * workdays_cn = 法定工作日（避开放假、含调休补班），与 by_week_days 互斥
+ * （互斥与 interval=1 的语义约束由 Service validateRule 抛 4011）。
+ */
+const weekModeSchema = z.enum(['workdays_cn']);
+
+/**
  * 结束条件字段在所有分支均可出现，交由 Service 的 validateRule 做「矛盾组合」校验
  * （如 end_type=never 却带 until/count），避免被 zod 静默剥离（TC-SEC-025c）。
  */
@@ -74,8 +90,10 @@ const recurrenceBase = {
   freq: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
   interval: z.coerce.number().int().min(1).max(config.event.recurIntervalMax).default(1),
   by_week_days: weekdayArray.optional(),
+  week_mode: weekModeSchema.optional(),
   month_rule: monthRuleSchema.optional(),
   by_month_day: byMonthDaySchema.optional(),
+  by_lunar_month_day: byLunarMonthDaySchema.optional(),
   ...endFields,
 };
 

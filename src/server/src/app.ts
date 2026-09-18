@@ -6,6 +6,7 @@ import { listRoutes } from './modules/list/list.routes';
 import { taskRoutes } from './modules/task/task.routes';
 import { eventRoutes } from './modules/event/event.routes';
 import { chatRoutes } from './modules/chat/chat.routes';
+import { settingsRoutes } from './modules/settings/settings.routes';
 import { asyncHandler, ok } from './common/response';
 import { query } from './db/pool';
 import { config } from './config';
@@ -36,10 +37,14 @@ export function createApp() {
   app.use('/api/v1/tasks', authMiddleware);
   app.use('/api/v1/events', authMiddleware);
   app.use('/api/v1/conversations', authMiddleware);
+  // v0.4.0：个人信息与设置
+  app.use('/api/v1/me', authMiddleware);
+  app.use('/api/v1/settings', authMiddleware);
   app.use('/api/v1', listRoutes);
   app.use('/api/v1', taskRoutes);
   app.use('/api/v1', eventRoutes);
   app.use('/api/v1', chatRoutes);
+  app.use('/api/v1', settingsRoutes);
 
   app.use((_req, res) => {
     res.status(404).json({ code: 1004, message: '接口不存在', details: null });

@@ -7,6 +7,7 @@ import type {
   ConfirmBlock,
   EventScope,
   Occurrence,
+  ProposalBlock,
   ScopeBlock as ScopeBlockType,
   SeriesDetail,
   SubtaskGroup,
@@ -16,6 +17,8 @@ import TaskCard from '../TaskCard.vue'
 import ConfirmBar from './ConfirmBar.vue'
 import ConflictBlock from './ConflictBlock.vue'
 import EventCard from './EventCard.vue'
+import MarkdownText from './MarkdownText.vue'
+import ProposalCard from './ProposalCard.vue'
 import ScopeBlock from './ScopeBlock.vue'
 import SubtaskGroupCard from './SubtaskGroupCard.vue'
 
@@ -35,6 +38,8 @@ const emit = defineEmits<{
   (e: 'conflict-force'): void
   (e: 'confirm', block: ConfirmBlock): void
   (e: 'cancel', block: ConfirmBlock): void
+  (e: 'proposal-adopt', block: ProposalBlock): void
+  (e: 'proposal-adjust', block: ProposalBlock): void
   (e: 'retry'): void
 }>()
 
@@ -99,57 +104,26 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
   const s = props.message.pendingState?.[block.pending_action_id]
   return s || 'pending'
 }
-
-/* ---- 极简 Markdown（仅加粗与列表，禁止原始 HTML） ---- */
-interface Segment {
-  text: string
-  bold: boolean
-}
-interface Line {
-  type: 'p' | 'li'
-  segments: Segment[]
-}
-
-function inline(text: string): Segment[] {
-  const parts: Segment[] = []
-  const re = /\*\*(.+?)\*\*/g
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) parts.push({ text: text.slice(last, m.index), bold: false })
-    parts.push({ text: m[1], bold: true })
-    last = m.index + m[0].length
-  }
-  if (last < text.length) parts.push({ text: text.slice(last), bold: false })
-  return parts.length ? parts : [{ text, bold: false }]
-}
-
-function lines(text: string): Line[] {
-  return text
-    .split('\n')
-    .filter((l) => l.trim() !== '')
-    .map((l) => {
-      const t = l.trim()
-      const isLi = /^([-*]|\d+\.)\s+/.test(t)
-      return { type: isLi ? 'li' : 'p', segments: inline(isLi ? t.replace(/^([-*]|\d+\.)\s+/, '') : t) }
-    })
-}
 </script>
 
 <template>
   <div class="blocks">
     <template v-for="(block, bi) in message.blocks" :key="bi">
-      <!-- 文本（支持流式逐字追加） -->
+      <!-- 文本：助手消息按白名单 Markdown 渲染（流式增量到达即重渲染当前气泡） -->
       <div v-if="block.type === 'text'" class="blocks__text">
-        <p v-for="(line, li) in lines(block.text)" :key="li" :class="{ 'blocks__li': line.type === 'li' }">
-          <span v-if="line.type === 'li'" class="blocks__bullet">•</span>
-          <span v-for="(seg, si) in line.segments" :key="si">
-            <strong v-if="seg.bold">{{ seg.text }}</strong>
-            <template v-else>{{ seg.text }}</template>
-          </span>
-          <span v-if="message.streaming && bi === message.blocks.length - 1 && li === lines(block.text).length - 1" class="blocks__caret" />
-        </p>
+        <MarkdownText
+          :text="block.text"
+          :streaming="!!message.streaming && bi === message.blocks.length - 1"
+        />
       </div>
+
+      <!-- 方案卡：对话层确认（前端本地状态机），卡内文本不解析 Markdown -->
+      <ProposalCard
+        v-else-if="block.type === 'proposal'"
+        :block="(block as ProposalBlock)"
+        @adopt="emit('proposal-adopt', $event)"
+        @adjust="emit('proposal-adjust', $event)"
+      />
 
       <!-- 任务卡片组 + 日程卡片组 + 循环系列/实例卡片 + 子任务组（可同时出现） -->
       <div v-else-if="block.type === 'cards'" class="blocks__cards">
@@ -275,32 +249,10 @@ function lines(text: string): Line[] {
   gap: var(--sp-2);
 }
 .blocks__text {
-  font-size: var(--font-body-l);
-  line-height: var(--font-body-l-lh);
+  font-size: var(--font-body-m);
+  line-height: var(--font-body-m-lh);
   color: var(--text-primary);
   word-break: break-word;
-}
-.blocks__li {
-  display: flex;
-  gap: 6px;
-  padding-left: 2px;
-}
-.blocks__bullet {
-  color: var(--text-secondary);
-}
-.blocks__caret {
-  display: inline-block;
-  width: 2px;
-  height: 15px;
-  margin-left: 2px;
-  vertical-align: -2px;
-  background: var(--color-primary);
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
 }
 .blocks__cards {
   display: flex;

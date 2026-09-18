@@ -25,6 +25,13 @@ export const config = {
   jwt: {
     secret: required('JWT_SECRET'),
     expiresIn: process.env.JWT_EXPIRES_IN || '2h',
+    /** v0.4.0：时钟容忍（秒），消除服务间小偏差导致的伪 401 */
+    clockToleranceSec: num('ACCESS_CLOCK_TOLERANCE_SEC', 30),
+  },
+  /** v0.4.0 登录态续期（PRD 11.2） */
+  refresh: {
+    /** refresh 令牌有效期（天，滑动：每次轮转续期） */
+    ttlDays: num('REFRESH_TOKEN_TTL_DAYS', 30),
   },
   deepseek: {
     apiKey: process.env.DEEPSEEK_API_KEY || '',
@@ -66,9 +73,16 @@ export const config = {
     /** 子树查询节点上限 */
     treeMaxNodes: num('TASK_TREE_MAX_NODES', 200),
   },
+  /** v0.4.0 法定工作日历 */
+  workCalendar: {
+    /** 国家/地区（本版仅 CN） */
+    country: process.env.WORK_CALENDAR_COUNTRY || 'CN',
+  },
   rateLimit: {
     authPerMin: num('RATE_LIMIT_AUTH_PER_MIN', 20),
     chatPerMin: num('RATE_LIMIT_CHAT_PER_MIN', 20),
+    /** v0.4.0：/auth/refresh 每 IP 每分钟 */
+    refreshPerMin: num('RATE_LIMIT_REFRESH_PER_MIN', 10),
   },
 };
 

@@ -38,6 +38,23 @@
   --color-allday-bg: #eff1f5;
   --color-timeline: #d8dce6;
 
+  /* v0.4.0 农历与法定日历（对应 UXUI 6.1）
+     休/班沿用全国通行心智：放假绿、补班橙红；节日与节气弱于法定 */
+  --color-holiday: #1a9e5c;
+  --color-makeup: #e05a2b;
+  --color-festival: #d1345b;
+  --color-term: #b5762f;
+  /* 农历副字（无节日/节气时的月名或日序） */
+  --color-lunar-text: #8a8f9c;
+
+  /* v0.4.0 助手消息 Markdown 代码块 */
+  --color-code-bg: #1e2127;
+  --color-code-text: #e6e6e6;
+
+  /* v0.4.0 登录过期提示条 */
+  --color-notice-bg: #fff6e0;
+  --color-notice-text: #8a5a00;
+
   /* 字号 / 行高 */
   --font-heading-l: 22px;
   --font-heading-l-lh: 30px;
@@ -82,6 +99,11 @@
   /* 动效 */
   --dur-fast: 120ms;
   --dur-page: 250ms;
+
+  /* v0.4.0 主页三段式布局：展开态月历 6 行、折叠态 1 行；列表区最小高度占比 */
+  --calendar-list-min-height: 38dvh;
+  /* 展开态空间不足时月格高度压缩下限（375pt 基准约 36pt） */
+  --grid-cell-min: 36px;
 }
 
 /* 尊重系统「减弱动态效果」设置：位移动画降级为淡入淡出 */

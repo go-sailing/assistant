@@ -1,13 +1,17 @@
 /**
- * RecurrenceEngine：RRULE 受控子集的纯函数展开（对应系统设计文档 4.1）。
+ * RecurrenceEngine：RRULE 受控子集的展开（对应系统设计文档 4.1）。
  *
- * 无 DB / IO 依赖，输入规则 + 首次时间 + 窗口 + 时区，输出窗口内的原始实例。
+ * 无 DB 依赖：规则求值本身是纯计算；法定工作日与农历换算分别由
+ * workday.service（进程内整表载入）与 lunar.service（纯计算）提供只读查询。
+ *
  * 规则在用户时区（IANA）的「本地墙钟时间」上推进，最后再折算为 UTC 瞬时，
  * 避免夏令时切换导致实例时间漂移。
  */
 import { config } from '../../../config';
 import { AppError } from '../../../common/errors';
 import { logger } from '../../../common/logger';
+import { tryLunarToSolar } from '../lunar/lunar.service';
+import { isWorkdayCN } from '../workday/workday.service';
 import type { OccurrenceSeed, RecurrenceRule } from './types';
 
 const MS_PER_DAY = 86_400_000;
@@ -205,6 +209,43 @@ export function validateRule(rule: RecurrenceRule, firstStart: Date, tz: string)
     }
   }
 
+  // ---------- v0.4.0：法定工作日模式（PRD 4.2 / SDD 4.3） ----------
+  if (rule.week_mode !== undefined) {
+    if (rule.week_mode !== 'workdays_cn') {
+      throw AppError.recurrenceInvalid('不支持的星期模式');
+    }
+    if (rule.freq !== 'weekly') {
+      throw AppError.recurrenceInvalid('只有「每周」重复才能选择法定工作日');
+    }
+    if (rule.by_week_days !== undefined) {
+      throw AppError.recurrenceInvalid('「工作日（法定）」不能同时指定星期');
+    }
+    if (rule.interval !== 1) {
+      throw AppError.recurrenceInvalid('法定工作日暂不支持隔周重复');
+    }
+  }
+
+  // ---------- v0.4.0：农历年度月日（PRD 5.6.3 / SDD 4.3） ----------
+  if (rule.by_lunar_month_day !== undefined) {
+    if (rule.freq !== 'yearly') {
+      throw AppError.recurrenceInvalid('只有「每年」重复才能指定农历月日');
+    }
+    if (rule.by_month_day !== undefined) {
+      throw AppError.recurrenceInvalid('公历月日与农历月日不能同时指定');
+    }
+    const { month, day } = rule.by_lunar_month_day;
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      throw AppError.recurrenceInvalid('农历月份取值需在 1~12 之间（不支持闰月）');
+    }
+    if (!Number.isInteger(day) || day < 1 || day > 30) {
+      throw AppError.recurrenceInvalid('农历日期取值需在 1~30 之间');
+    }
+    // 候选年份必须落在农历表支持范围内（1900~2100）
+    if (first.y < 1900 || first.y > 2100) {
+      throw AppError.recurrenceInvalid('农历重复仅支持 1900~2100 年');
+    }
+  }
+
   const firstDateMs = Date.UTC(first.y, first.m - 1, first.d);
 
   // 结束条件必须自洽：never 不接受 count/until，count 与 until 互斥（TC-SEC-025c）
@@ -308,6 +349,15 @@ function cycleCandidates(
 
     case 'yearly': {
       const y = anchor.y + k * rule.interval;
+      // v0.4.0：农历月日优先——逐年把农历月日换算为公历日期（大小月回落由换算层处理）
+      if (rule.by_lunar_month_day) {
+        const { month, day } = rule.by_lunar_month_day;
+        const resolved = tryLunarToSolar(y, month, day);
+        // 候选年超出农历表范围或换算失败时不产生实例
+        if (!resolved) return [];
+        const [gy, gm, gd] = resolved.date.split('-').map(Number);
+        return [at(gy, gm, gd)];
+      }
       // v0.3.0：优先使用显式指定的月日，缺省回退首次实例的月日（与 v0.2.0 等价）
       const m = rule.by_month_day?.month ?? anchor.m;
       const d = rule.by_month_day?.day ?? anchor.d;
@@ -354,6 +404,92 @@ function cycleIndexForWindow(
 }
 
 /**
+ * v0.4.0：法定工作日模式的展开（PRD 4.2）。
+ *
+ * 该模式不是「周内取星期」，而是按自然日逐日步进 + 逐日判定是否为法定工作日，
+ * 因此不走 cycleCandidates；时刻/时长仍取系列主记录。
+ *
+ * - count 必须从系列起点累计，故从 anchor 起逐日步进；
+ * - until/never 可从窗口前一日开始（无需累计历史次数），避免长历史系列白跑；
+ * - 判定为纯内存（workday.service 已整表载入），无 IO。
+ */
+function expandWorkdaysCn(
+  rule: RecurrenceRule,
+  firstStart: Date,
+  durationMs: number,
+  windowStart: Date,
+  windowEnd: Date,
+  tz: string
+): OccurrenceSeed[] {
+  const maxSeeds = config.event.seriesMaxCount;
+  const anchorNaive = toZonedNaive(firstStart, tz);
+  const delta = Math.max(0, durationMs);
+  const windowStartNaive = toZonedNaive(windowStart, tz);
+  const windowEndNaive = toZonedNaive(windowEnd, tz) + MS_PER_DAY;
+
+  // 时刻/时长取系列主记录：逐日游标只承载"日期"，实例时刻固定为 anchor 的 hh:mm:ss.ms
+  const anchorParts = partsOfNaive(anchorNaive);
+  const timeOfDayMs =
+    Date.UTC(1970, 0, 1, anchorParts.hh, anchorParts.mi, anchorParts.ss, anchorParts.ms) -
+    Date.UTC(1970, 0, 1);
+
+  const untilBoundNaive =
+    rule.end_type === 'until' && rule.until ? naiveEndOfDate(rule.until) : Number.POSITIVE_INFINITY;
+  const countBound = rule.end_type === 'count' ? Math.min(rule.count ?? maxSeeds, maxSeeds) : maxSeeds;
+
+  const results: OccurrenceSeed[] = [];
+  let produced = 0;
+  // 日期游标一律从"本地午夜"起算，避免把窗口边界的时间分量带进实例时刻。
+  // count 必须从系列起点累计，故从 anchor 当天起；其余可从窗口前一天起（无需累计历史次数）。
+  let cursor =
+    rule.end_type === 'count'
+      ? naiveOfDate(naiveDateString(anchorNaive))
+      : Math.max(
+          naiveOfDate(naiveDateString(anchorNaive)),
+          naiveOfDate(naiveDateString(windowStartNaive)) - MS_PER_DAY
+        );
+
+  // 步进上限保护：工作日之间最长间隔为春节等连续假期（≤10 天），
+  // 故 maxSeeds×4 天足以覆盖，同时避免规则异常时空转。
+  const maxSteps = maxSeeds * 4 + 400;
+  let steps = 0;
+
+  while (produced < maxSeeds && results.length < maxSeeds && steps < maxSteps) {
+    steps += 1;
+    if (cursor > windowEndNaive) break;
+
+    const dateStr = naiveDateString(cursor);
+    const instNaive = cursor + timeOfDayMs;
+    // 实例开始时间已越过窗口右界时，后续只会更晚
+    if (fromZonedNaive(instNaive, tz).getTime() >= windowEnd.getTime()) break;
+    if (instNaive > untilBoundNaive) break;
+
+    if (isWorkdayCN(dateStr)) {
+      if (produced >= countBound) break;
+      produced += 1;
+      const startAt = fromZonedNaive(instNaive, tz);
+      const endAt = fromZonedNaive(instNaive + delta, tz);
+      if (startAt.getTime() < windowEnd.getTime() && endAt.getTime() > windowStart.getTime()) {
+        results.push({
+          index: produced - 1,
+          occurrence_key: startAt.toISOString(),
+          start_at: startAt,
+          end_at: endAt,
+          all_day: false,
+          local_date: dateStr,
+        });
+      }
+    }
+    cursor += MS_PER_DAY;
+  }
+
+  if (produced >= maxSeeds) {
+    logger.warn('occurrence_expand_truncated', { freq: rule.freq, max: maxSeeds });
+  }
+  return results;
+}
+
+/**
  * 展开窗口内的原始实例（未应用 override），按开始时间升序。
  * 左闭右开：保留与 [windowStart, windowEnd) 相交的实例。
  *
@@ -367,6 +503,11 @@ export function expand(
   windowEnd: Date,
   tz: string
 ): OccurrenceSeed[] {
+  // v0.4.0：法定工作日走独立的逐日候选流
+  if (rule.freq === 'weekly' && rule.week_mode === 'workdays_cn') {
+    return expandWorkdaysCn(rule, firstStart, durationMs, windowStart, windowEnd, tz);
+  }
+
   const maxSeeds = config.event.seriesMaxCount;
   const anchorNaive = toZonedNaive(firstStart, tz);
   const anchor = partsOfNaive(anchorNaive);

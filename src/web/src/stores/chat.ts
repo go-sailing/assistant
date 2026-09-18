@@ -13,6 +13,7 @@ import type {
   EventScope,
   MessageBlock,
   Occurrence,
+  ProposalBlock,
   RawMessage,
   ScopeBlock,
   SeriesDetail,
@@ -75,6 +76,14 @@ export const useChatStore = defineStore('chat', () => {
   const errorByConv = ref<Record<string, string>>({})
   const streamingByConv = ref<Record<string, boolean>>({})
   const scrollTopByConv = ref<Record<string, number>>({})
+  /**
+   * v0.4.0：从聊天页内跳详情的时间戳（纯内存，不持久化）。
+   * 仅用于区分「页内跳详情再返回」（恢复阅读位置）与冷启动/F5/抽屉进入（锚定最新）。
+   */
+  const detailNavByConv = ref<Record<string, number>>({})
+
+  /** 阅读位置恢复有效期：5 分钟 */
+  const DETAIL_RETURN_WINDOW = 5 * 60 * 1000
 
   const keyOf = (id: string | number): string => String(id)
 
@@ -98,6 +107,58 @@ export const useChatStore = defineStore('chat', () => {
 
   function scrollTopOf(convId: string | number): number {
     return scrollTopByConv.value[keyOf(convId)] || 0
+  }
+
+  /** 记录「从聊天页跳详情」：返回时据此恢复阅读位置 */
+  function markDetailNavigation(convId: string | number): void {
+    detailNavByConv.value = { ...detailNavByConv.value, [keyOf(convId)]: Date.now() }
+  }
+
+  /**
+   * 消费一次「页内跳详情」标记：命中且未超时才恢复 scrollTop，
+   * 否则（冷启动/刷新/抽屉/FAB 进入）返回 false 由页面锚定最新消息。
+   */
+  function consumeDetailReturn(convId: string | number): boolean {
+    const k = keyOf(convId)
+    const at = detailNavByConv.value[k]
+    if (!at) return false
+    const next = { ...detailNavByConv.value }
+    delete next[k]
+    detailNavByConv.value = next
+    return Date.now() - at <= DETAIL_RETURN_WINDOW
+  }
+
+  /* ---------------- v0.4.0 方案卡（对话层确认，状态仅存前端） ---------------- */
+
+  /** 同一会话中仍在 pending 的旧方案卡：新方案出现即置为「已更新方案」 */
+  function supersedePendingProposals(convId: string | number): void {
+    const list = messagesByConv.value[keyOf(convId)] || []
+    list.forEach((m) => {
+      m.blocks.forEach((b) => {
+        if (b.type === 'proposal' && b.status === 'pending') b.status = 'superseded'
+      })
+    })
+  }
+
+  /** 本轮结束（done）：仍在执行中的方案卡置为已完成（折叠摘要） */
+  function settleExecutingProposals(convId: string | number): void {
+    const list = messagesByConv.value[keyOf(convId)] || []
+    list.forEach((m) => {
+      m.blocks.forEach((b) => {
+        if (b.type === 'proposal' && b.status === 'executing') b.status = 'done'
+      })
+    })
+  }
+
+  /**
+   * 「就这么办」：本地置执行中，随后发送一条普通用户消息（文本固定），
+   * 由模型在下一轮按方案参数调用真实工具（不发送 proposal_id 等结构化字段）。
+   */
+  function adoptProposal(convId: string | number, block: ProposalBlock): void {
+    if (streamingByConv.value[keyOf(convId)]) return
+    if (block.status !== 'pending') return
+    block.status = 'executing'
+    void send(convId, '就这么办')
   }
 
   /** 拉取历史消息；失败展示错误态，不使用任何缓存数据 */
@@ -236,6 +297,29 @@ export const useChatStore = defineStore('chat', () => {
             eventSync.markDirty()
             break
           }
+          case 'proposal': {
+            // v0.4.0 方案卡：参数由服务端结构化下发；状态仅前端本地维护
+            msg.thinking = false
+            // 新方案出现即把同会话中仍在 pending 的旧卡置为「已更新方案」
+            supersedePendingProposals(convId)
+            const params = (Array.isArray(data.params) ? data.params : [])
+              .filter((p): p is { label?: unknown; value?: unknown; defaulted?: unknown } => !!p && typeof p === 'object')
+              .map((p) => ({
+                label: String(p.label ?? ''),
+                value: String(p.value ?? ''),
+                defaulted: p.defaulted === true,
+              }))
+            const block: ProposalBlock = {
+              type: 'proposal',
+              proposal_id: String(data.proposal_id ?? ''),
+              title: typeof data.title === 'string' ? data.title : '',
+              params,
+              note: typeof data.note === 'string' && data.note ? data.note : undefined,
+              status: 'pending',
+            }
+            msg.blocks.push(block)
+            break
+          }
           case 'clarify': {
             msg.thinking = false
             const candidates = Array.isArray(data.candidates) ? (data.candidates as Task[]) : []
@@ -334,6 +418,8 @@ export const useChatStore = defineStore('chat', () => {
           case 'done': {
             msg.streaming = false
             msg.thinking = false
+            // 结果卡片已接续（或本轮已结束）：执行中的方案卡置为已完成
+            settleExecutingProposals(convId)
             break
           }
           default:
@@ -491,6 +577,9 @@ export const useChatStore = defineStore('chat', () => {
     delete loadingByConv.value[k]
     delete errorByConv.value[k]
     delete scrollTopByConv.value[k]
+    const next = { ...detailNavByConv.value }
+    delete next[k]
+    detailNavByConv.value = next
   }
 
   return {
@@ -511,9 +600,12 @@ export const useChatStore = defineStore('chat', () => {
     pickScope,
     conflictForce,
     conflictChange,
+    adoptProposal,
     clearHistory,
     saveScrollTop,
     scrollTopOf,
+    markDetailNavigation,
+    consumeDetailReturn,
     appendMessage,
   }
 })

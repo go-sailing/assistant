@@ -18,11 +18,36 @@ export interface Paged<T> {
 export interface User {
   id: number | string
   email: string
+  /** v0.4.0：昵称（可空，空时界面回落展示邮箱） */
+  nickname?: string | null
 }
 
 export interface AuthResult {
   token: string
+  /** v0.4.0：刷新令牌（旧客户端可能没有该字段） */
+  refresh_token?: string
   user: User
+}
+
+/** v0.4.0 个人信息（GET /me） */
+export interface UserProfile {
+  id: number
+  email: string
+  nickname: string | null
+  /** 头像文字：昵称首字，无昵称取邮箱首字母大写 */
+  avatar_initial: string
+  /** 注册日期 YYYY-MM-DD */
+  created_at: string
+}
+
+/** v0.4.0 偏好设置（GET/PUT /settings） */
+export interface UserSettings {
+  /** 显示农历（关闭后全站农历文案隐藏，法定「休/班」角标不受影响） */
+  lunar_enabled: boolean
+  /** 二十四节气（仅在 lunar_enabled 时可为 true） */
+  solar_terms_enabled: boolean
+  /** 默认启动页 */
+  home_route: '/calendar' | '/tasks'
 }
 
 /** 清单 */
@@ -109,16 +134,31 @@ export interface ByMonthDay {
   day: number
 }
 
+/** v0.4.0：yearly 指定每年重复的农历月日（正常月，不含闰月） */
+export interface ByLunarMonthDay {
+  /** 农历月 1..12（1=正月 … 12=腊月） */
+  month: number
+  /** 农历日 1..30；该月为小月时落到当月最后一天 */
+  day: number
+}
+
 export interface RecurrenceRule {
   freq: RecurFreq
   /** 1..99，默认 1 */
   interval: number
   /** 仅 weekly：0..6（0=周日） */
   by_week_days?: number[]
+  /**
+   * v0.4.0 仅 weekly：'workdays_cn' = 法定工作日（避开放假、含调休补班）。
+   * 与 by_week_days 互斥；缺省按 by_week_days 解释（存量语义不变）。
+   */
+  week_mode?: 'workdays_cn'
   /** 仅 monthly */
   month_rule?: MonthRule
-  /** 仅 yearly：指定月日；缺省取首次开始日期的月日 */
+  /** 仅 yearly：指定公历月日；缺省取首次开始日期的月日 */
   by_month_day?: ByMonthDay
+  /** v0.4.0 仅 yearly：指定农历月日（与 by_month_day 互斥），公历日期逐年浮动 */
+  by_lunar_month_day?: ByLunarMonthDay
   end_type: RecurEndType
   /** end_type=count：1..730 */
   count?: number
@@ -177,6 +217,13 @@ export interface CalendarEvent {
   missing?: boolean
   /** 占位原因（deleted 已删除 / not_occurring 该次安排已不再发生） */
   missing_reason?: 'deleted' | 'not_occurring'
+  /** v0.4.0：开始日的农历信息（详情/卡片/表单展示用；服务端下发） */
+  lunar?: LunarDayInfo | null
+  /**
+   * v0.4.0：规则补充说明行（法定工作日"公布前按周一至周五计算"、
+   * 农历"公历日期逐年不同"）；无补充说明时为 null。
+   */
+  recurrence_note?: string | null
 }
 
 /** 展开实例读模型：id = 系列 id，occurrence_key 为实例身份键（原始开始时间 UTC） */
@@ -219,6 +266,43 @@ export interface MonthDayCount {
   task: number
   /** v0.2.0：其中循环实例数（含已调整，不含已取消） */
   recurring: number
+  /** v0.4.0：当日农历信息（超出农历表范围时为 null，界面按"无副字"处理） */
+  lunar: LunarDayInfo | null
+  /** v0.4.0：当日法定状态（holiday 放假 / makeup 补班 / null 非特殊日） */
+  calendar_day: CalendarDayInfo | null
+}
+
+/** v0.4.0：农历展示信息（服务端换算下发，前端不内置历法数据） */
+export interface LunarDayInfo {
+  /** 农历月名：正月…腊月 */
+  month_label: string
+  /** 农历日名：初一…三十 */
+  day_label: string
+  /** 传统节日名（白名单内），无则 null */
+  festival: string | null
+  /** 二十四节气名，无则 null */
+  term: string | null
+}
+
+/** v0.4.0：法定日历状态 */
+export interface CalendarDayInfo {
+  type: 'holiday' | 'makeup'
+  /** 节假日名称（makeup 时为 null） */
+  name: string | null
+}
+
+/** v0.4.0：农历 → 公历换算结果（GET /events/lunar/resolve） */
+export interface LunarResolved {
+  lunar_year: number
+  gregorian_date: string
+  /** 0=周日 … 6=周六 */
+  weekday: number
+  /** 该农历月为小月、请求的日期已回落到当月最后一天 */
+  clamped: boolean
+  month_label: string
+  day_label: string
+  festival: string | null
+  term: string | null
 }
 
 export interface EventPayload {
@@ -375,6 +459,25 @@ export interface ErrorBlock {
   retryable: boolean
 }
 
+/**
+ * v0.4.0：助手方案卡（PRD 8.3）。
+ *
+ * 方案是对话层概念：服务端不持久化状态机，`status` 由前端本地维护
+ * （pending → executing → done / superseded）；历史回看一律按只读摘要渲染。
+ */
+export interface ProposalBlock {
+  type: 'proposal'
+  proposal_id: string
+  /** 动作名，如「创建日程」 */
+  title: string
+  /** 参数行；defaulted=true 表示助手替用户补的默认值 */
+  params: Array<{ label: string; value: string; defaulted?: boolean }>
+  /** 默认项集中说明 */
+  note?: string
+  /** 仅前端维护的本地状态 */
+  status?: 'pending' | 'executing' | 'superseded' | 'done'
+}
+
 export type MessageBlock =
   | TextBlock
   | CardsBlock
@@ -383,6 +486,7 @@ export type MessageBlock =
   | ScopeBlock
   | ConfirmBlock
   | ErrorBlock
+  | ProposalBlock
 
 export interface MessagePayload {
   blocks: MessageBlock[]

@@ -6,11 +6,26 @@ import AppFAB from '@/components/AppFAB.vue'
 import AppToast from '@/components/AppToast.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDrawerStore } from '@/stores/drawer'
+import { useSettingsStore } from '@/stores/settings'
 
 const route = useRoute()
 const router = useRouter()
 const drawer = useDrawerStore()
 const auth = useAuthStore()
+const settings = useSettingsStore()
+
+/**
+ * v0.4.0 偏好 bootstrap（PRD 10.3）：登录后拉一次用户设置；
+ * 退出登录时清空，避免下一个账号继承上一个账号的偏好（含 401 被动退出）。
+ */
+watch(
+  () => auth.isLoggedIn,
+  (logged) => {
+    if (logged) void settings.load()
+    else settings.reset()
+  },
+  { immediate: true }
+)
 
 /** 抽屉仅在登录后的一级页面可用（登录/注册/引导页禁用） */
 const drawerEnabled = computed(() => route.meta.requiresAuth === true)

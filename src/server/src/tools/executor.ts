@@ -147,6 +147,12 @@ const restoreOccurrenceArgs = z.object({
   event_id: z.number().int().positive(),
   occurrence_key: z.string().min(1),
 });
+/** v0.4.0：农历换算入参 */
+const resolveLunarArgs = z.object({
+  lunar_year: z.number().int().min(1900).max(2100),
+  month: z.number().int().min(1).max(12),
+  day: z.number().int().min(1).max(30),
+});
 const batchEventsArgs = batchEventsSchema;
 
 export interface ToolResult {
@@ -929,6 +935,35 @@ export const toolExecutor = {
               }`
             : `没有找到与「${parsed.keyword}」相关的日程`,
         };
+      }
+
+      case 'resolve_lunar_date': {
+        // v0.4.0：农历 → 公历换算（只读，供"单次农历日期"创建前查证公历日期）
+        const parsed = safeParseArgs(resolveLunarArgs, args, toolName);
+        try {
+          const { results } = await eventService.resolveLunar({
+            lunarYear: parsed.lunar_year,
+            month: parsed.month,
+            day: parsed.day,
+            n: 1,
+          });
+          const hit = results[0];
+          return {
+            ok: true,
+            tool: toolName,
+            data: hit,
+            summary:
+              `农历${hit.month_label}${hit.day_label}` +
+              `对应公历 ${hit.gregorian_date}${hit.festival ? `（${hit.festival}）` : ''}` +
+              (hit.clamped ? '，该农历月为小月，已落到当月最后一天' : ''),
+          };
+        } catch (err) {
+          return {
+            ok: false,
+            tool: toolName,
+            summary: err instanceof AppError ? err.message : '农历日期换算失败',
+          };
+        }
       }
 
       case 'restore_occurrence': {
