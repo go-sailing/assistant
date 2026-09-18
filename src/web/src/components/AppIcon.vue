@@ -49,6 +49,10 @@ const ICONS: Record<string, string> = {
   // v0.2.0 循环日程图标
   repeat: `<g ${STROKE}><path d="M4 9.5A4.5 4.5 0 0 1 8.5 5h8.2"/><path d="M14.5 2.5 17.5 5l-3 2.5"/><path d="M20 14.5A4.5 4.5 0 0 1 15.5 19H7.3"/><path d="M9.5 21.5 6.5 19l3-2.5"/></g>`,
   undo: `<g ${STROKE}><path d="M4 9.5h9.5a5.5 5.5 0 1 1 0 11H8"/><path d="M7.5 5.5 4 9.5l3.5 4"/></g>`,
+  // v0.5.0：归档与长期记忆
+  archive: `<g ${STROKE}><rect x="3.5" y="4.5" width="17" height="4" rx="1.2"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M9.8 12.5h4.4"/></g>`,
+  brain: `<g ${STROKE}><path d="M12 5.2a3 3 0 0 0-5.6 1.4A2.8 2.8 0 0 0 4.6 12a2.8 2.8 0 0 0 1.9 4.2A3 3 0 0 0 12 18.8z"/><path d="M12 5.2a3 3 0 0 1 5.6 1.4A2.8 2.8 0 0 1 19.4 12a2.8 2.8 0 0 1-1.9 4.2A3 3 0 0 1 12 18.8z"/></g>`,
+  'chevron-up': `<g ${STROKE}><path d="M5 14.5 12 7.5 19 14.5"/></g>`,
 }
 
 const inner = computed(() => ICONS[props.name] || '')

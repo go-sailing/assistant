@@ -8,7 +8,12 @@ import type { OverrideState, RecurrenceRule } from './recurrence/types';
 export type EventType = 'normal' | 'task';
 export type EventSource = 'manual' | 'chat';
 export type EventStatus = 'scheduled' | 'cancelled';
-/** 冲突等级：none 无冲突 / overlap 时段重叠 / all_day 全天安排（弱化提示） */
+/**
+ * 冲突等级：none 无冲突 / overlap 时段重叠。
+ *
+ * v0.5.0（EVT-01）：全天日程退出冲突判定，'all_day' 不再被产出；
+ * 该枚举值为兼容旧客户端解析而保留，新代码不应依赖它（SDD 12.2）。
+ */
 export type ConflictLevel = 'none' | 'overlap' | 'all_day';
 
 /**

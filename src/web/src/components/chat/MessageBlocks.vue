@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import type {
   CalendarEvent,
   ChatMessage,
@@ -14,6 +13,7 @@ import type {
   Task,
 } from '@/types'
 import TaskCard from '../TaskCard.vue'
+import CardsCollapse from './CardsCollapse.vue'
 import ConfirmBar from './ConfirmBar.vue'
 import ConflictBlock from './ConflictBlock.vue'
 import EventCard from './EventCard.vue'
@@ -21,6 +21,7 @@ import MarkdownText from './MarkdownText.vue'
 import ProposalCard from './ProposalCard.vue'
 import ScopeBlock from './ScopeBlock.vue'
 import SubtaskGroupCard from './SubtaskGroupCard.vue'
+import { CARD_COLLAPSE_THRESHOLD } from '@/utils/constants'
 
 const props = defineProps<{ message: ChatMessage }>()
 
@@ -43,35 +44,11 @@ const emit = defineEmits<{
   (e: 'retry'): void
 }>()
 
-/** >10 张卡片默认折叠 */
-const CARD_FOLD = 10
-const expanded = ref<Record<number, boolean>>({})
-
-/** 各类卡片共用同一折叠开关 */
-function fold<T>(blockIndex: number, list: T[]): T[] {
-  return expanded.value[blockIndex] ? list : list.slice(0, CARD_FOLD)
-}
-
-function cardsOf(blockIndex: number, tasks: Task[]): Task[] {
-  return fold(blockIndex, tasks)
-}
-
-/** 日程卡片与任务卡片共用折叠开关 */
-function eventsOf(blockIndex: number, events: CalendarEvent[]): CalendarEvent[] {
-  return fold(blockIndex, events)
-}
-
-function seriesOf(blockIndex: number, series: SeriesDetail[]): SeriesDetail[] {
-  return fold(blockIndex, series)
-}
-
-function occurrencesOf(blockIndex: number, occurrences: Occurrence[]): Occurrence[] {
-  return fold(blockIndex, occurrences)
-}
-
-function groupsOf(blockIndex: number, groups: SubtaskGroup[]): SubtaskGroup[] {
-  return fold(blockIndex, groups)
-}
+/**
+ * v0.5.0：cards 块按对象总数决定是否套 CardsCollapse（>10 默认折叠，≤10 与 v0.4.0 完全一致）。
+ * 折叠态由 CardsCollapse 内部 v-if 决定是否挂载卡片节点，本组件始终渲染全量数据。
+ */
+const COLLAPSE_THRESHOLD = CARD_COLLAPSE_THRESHOLD
 
 interface CardsLike {
   tasks?: Task[]
@@ -91,8 +68,15 @@ function totalCards(block: CardsLike): number {
   )
 }
 
-function expand(blockIndex: number): void {
-  expanded.value = { ...expanded.value, [blockIndex]: true }
+/** 折叠容器与普通容器的动态绑定（避免卡片渲染块重复书写） */
+function cardsContainerProps(block: CardsLike): Record<string, unknown> {
+  return totalCards(block) > COLLAPSE_THRESHOLD
+    ? { total: totalCards(block) }
+    : { class: 'blocks__cards' }
+}
+
+function cardsContainerIs(block: CardsLike): unknown {
+  return totalCards(block) > COLLAPSE_THRESHOLD ? CardsCollapse : 'div'
 }
 
 /** 作用域块已选结果：点选后折叠为「已选择：仅本次」 */
@@ -125,17 +109,22 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
         @adjust="emit('proposal-adjust', $event)"
       />
 
-      <!-- 任务卡片组 + 日程卡片组 + 循环系列/实例卡片 + 子任务组（可同时出现） -->
-      <div v-else-if="block.type === 'cards'" class="blocks__cards">
+      <!-- 任务卡片组 + 日程卡片组 + 循环系列/实例卡片 + 子任务组（可同时出现）
+           v0.5.0：>10 项时由 CardsCollapse 包裹并默认折叠，折叠态不挂载卡片节点 -->
+      <component
+        :is="cardsContainerIs(block as CardsLike)"
+        v-else-if="block.type === 'cards'"
+        v-bind="cardsContainerProps(block as CardsLike)"
+      >
         <TaskCard
-          v-for="t in cardsOf(bi, block.tasks)"
+          v-for="t in block.tasks"
           :key="String(t.id)"
           :task="t"
           @detail="emit('detail', $event)"
           @toggle="emit('toggle', $event)"
         />
         <EventCard
-          v-for="ev in eventsOf(bi, block.events || [])"
+          v-for="ev in block.events || []"
           :key="`e-${String(ev.id)}`"
           :event="ev"
           @detail="emit('event-detail', $event)"
@@ -144,33 +133,26 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
         />
         <!-- 循环系列卡片：整卡点击 → 系列详情 -->
         <EventCard
-          v-for="s in seriesOf(bi, block.series || [])"
+          v-for="s in block.series || []"
           :key="`s-${String(s.id)}`"
           :event="s"
           :series="s"
         />
         <!-- 循环实例卡片：整卡点击 → 实例详情（带 occurrence_key） -->
         <EventCard
-          v-for="o in occurrencesOf(bi, block.occurrences || [])"
+          v-for="o in block.occurrences || []"
           :key="`o-${o.series_id}-${o.occurrence_key}`"
           :event="o"
           :occurrence="o"
           @occurrence-restore="emit('occurrence-restore', $event)"
         />
         <SubtaskGroupCard
-          v-for="g in groupsOf(bi, block.subtask_groups || [])"
+          v-for="g in block.subtask_groups || []"
           :key="`g-${g.root_task_id}`"
           :group="g"
           @task="emit('detail', $event)"
         />
-        <button
-          v-if="!expanded[bi] && totalCards(block) > CARD_FOLD"
-          class="blocks__more pressable"
-          @click="expand(bi)"
-        >
-          查看全部 {{ totalCards(block) }} 项
-        </button>
-      </div>
+      </component>
 
       <!-- 作用域澄清块：点选后折叠为「已选择：xxx」并作为结构化消息回传 -->
       <ScopeBlock
@@ -270,12 +252,6 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
   background: var(--bg-page);
   border-radius: var(--radius-card);
   padding: var(--sp-3);
-}
-.blocks__more {
-  align-self: flex-start;
-  font-size: var(--font-caption);
-  color: var(--color-primary);
-  min-height: 32px;
 }
 .blocks__pick {
   min-height: 32px;

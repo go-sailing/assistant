@@ -313,7 +313,20 @@ function occurrenceBrief(o: OccurrenceDTO): EventConflictBrief {
   };
 }
 
-/** 收集某窗口内的候选（单次日程 + 其他系列实例，已取消的不参与） */
+/**
+ * v0.5.0 埋点（SDD 9.2）：全天抑制计数，一次扫描一行，不带标题。
+ * 抽样口径 = 按扫描聚合（而非逐条），避免高频日程下日志放大。
+ */
+function logAlldaySuppressed(userId: number, scene: string, count: number): void {
+  if (count <= 0) return;
+  logger.info('conflict_allday_suppressed', { user_id: userId, scene, count });
+}
+
+/**
+ * 收集某窗口内的候选（单次日程 + 其他系列实例，已取消的不参与）。
+ * v0.5.0（EVT-01）：全天日程/全天系列实例不参与冲突比对（候选层剔除，
+ * SQL 层已排除全天单日，此处对循环实例再显式过滤）。
+ */
 async function collectCandidates(
   userId: number,
   windowStart: Date,
@@ -322,8 +335,13 @@ async function collectCandidates(
   excludeSeriesId?: number
 ): Promise<CandidateItem[]> {
   const items: CandidateItem[] = [];
+  let suppressed = 0;
   const single = await findSingleConflicts(userId, windowStart, windowEnd, false, excludeSeriesId);
   for (const row of single.conflicts) {
+    if (row.all_day) {
+      suppressed += 1;
+      continue;
+    }
     items.push({
       brief: toConflictBrief(row),
       startMs: row.start_at.getTime(),
@@ -334,6 +352,10 @@ async function collectCandidates(
   const instances = await listSeriesInstances(userId, windowStart, windowEnd, tz, { seriesId: undefined });
   for (const inst of instances) {
     if (excludeSeriesId && inst.series_id === excludeSeriesId) continue;
+    if (inst.all_day) {
+      suppressed += 1;
+      continue;
+    }
     items.push({
       brief: occurrenceBrief(inst),
       startMs: new Date(inst.start_at).getTime(),
@@ -341,12 +363,16 @@ async function collectCandidates(
       allDay: inst.all_day,
     });
   }
+  logAlldaySuppressed(userId, 'candidate_all_day', suppressed);
   return items;
 }
 
 /**
  * 创建 / 整条改期的 90 天循环冲突扫描（系统设计文档 4.6）：
  * 目标实例与候选集合在内存中两两相交，按日期分组汇总，不阻断保存。
+ *
+ * v0.5.0（EVT-01）：目标为全天系列直接返回空——全天安排不产生冲突提示；
+ * 冲突等级不再有 all_day 分级（候选已全部为定时）。
  */
 export async function scanSeriesConflicts(
   userId: number,
@@ -357,14 +383,20 @@ export async function scanSeriesConflicts(
   tz: string,
   excludeSeriesId?: number
 ): Promise<SeriesConflictResult> {
-  // v0.4.0：法定工作日模式依赖进程内已载入的法定日历表（幂等，首次调用载入）
-  await ensureWorkCalendarLoaded();
   const empty: SeriesConflictResult = {
     conflict_level: 'none',
     conflict_dates: [],
     conflict_dates_total: 0,
     conflict_total: 0,
   };
+  // 全天系列：不扫描、不提示
+  if (allDay) {
+    logAlldaySuppressed(userId, 'target_all_day', 1);
+    return empty;
+  }
+
+  // v0.4.0：法定工作日模式依赖进程内已载入的法定日历表（幂等，首次调用载入）
+  await ensureWorkCalendarLoaded();
   const windowStart = firstStart;
   const windowEnd = new Date(
     firstStart.getTime() + config.event.recurrenceConflictWindowDays * MS_PER_DAY
@@ -375,18 +407,15 @@ export async function scanSeriesConflicts(
   const candidates = await collectCandidates(userId, windowStart, windowEnd, tz, excludeSeriesId);
   if (candidates.length === 0) return empty;
 
-  let level: ConflictLevel = 'none';
   let total = 0;
   const groups: ConflictDateGroup[] = [];
 
   for (const seed of seeds) {
     const hits = candidates.filter(
-      (c) => seed.start_at.getTime() < c.endMs && seed.end_at.getTime() > c.startMs
+      (c) => !c.allDay && seed.start_at.getTime() < c.endMs && seed.end_at.getTime() > c.startMs
     );
     if (hits.length === 0) continue;
     total += hits.length;
-    if (level === 'none') level = 'overlap';
-    if (allDay || hits.some((h) => h.allDay)) level = 'all_day';
     groups.push({
       date: seed.local_date,
       target_start: seed.start_at.toISOString(),
@@ -402,7 +431,7 @@ export async function scanSeriesConflicts(
     total,
   });
   return {
-    conflict_level: level,
+    conflict_level: 'overlap',
     // 只回传前 5 个日期分组，其余以计数呈现（UX 6.7）
     conflict_dates: groups.slice(0, 5),
     conflict_dates_total: groups.length,
@@ -410,7 +439,10 @@ export async function scanSeriesConflicts(
   };
 }
 
-/** 单次实例改期（scope=this）的冲突检测：排除本系列自身实例 */
+/**
+ * 单次实例改期（scope=this）的冲突检测：排除本系列自身实例。
+ * v0.5.0（EVT-01）：目标为全天直接返回空；候选中的全天实例不参与比对。
+ */
 export async function scanOccurrenceConflicts(
   userId: number,
   startAt: Date,
@@ -419,19 +451,37 @@ export async function scanOccurrenceConflicts(
   excludeSeriesId: number,
   tz: string
 ): Promise<{ conflicts: EventConflictBrief[]; conflict_level: ConflictLevel }> {
+  // 全天实例改期：不提示冲突
+  if (allDay) {
+    logAlldaySuppressed(userId, 'target_all_day', 1);
+    return { conflicts: [], conflict_level: 'none' };
+  }
+
   const single = await findSingleConflicts(userId, startAt, endAt, allDay, excludeSeriesId);
-  const candidates: CandidateItem[] = single.conflicts.map((row) => ({
-    brief: toConflictBrief(row),
-    startMs: row.start_at.getTime(),
-    endMs: row.end_at.getTime(),
-    allDay: row.all_day,
-  }));
+  let suppressed = 0;
+  const candidates: CandidateItem[] = [];
+  for (const row of single.conflicts) {
+    if (row.all_day) {
+      suppressed += 1;
+      continue;
+    }
+    candidates.push({
+      brief: toConflictBrief(row),
+      startMs: row.start_at.getTime(),
+      endMs: row.end_at.getTime(),
+      allDay: row.all_day,
+    });
+  }
 
   const windowStart = new Date(startAt.getTime() - MS_PER_DAY);
   const windowEnd = new Date(endAt.getTime() + MS_PER_DAY);
   const instances = await listSeriesInstances(userId, windowStart, windowEnd, tz);
   for (const inst of instances) {
     if (inst.series_id === excludeSeriesId) continue;
+    if (inst.all_day) {
+      suppressed += 1;
+      continue;
+    }
     candidates.push({
       brief: occurrenceBrief(inst),
       startMs: new Date(inst.start_at).getTime(),
@@ -439,13 +489,13 @@ export async function scanOccurrenceConflicts(
       allDay: inst.all_day,
     });
   }
+  logAlldaySuppressed(userId, 'candidate_all_day', suppressed);
 
   const hits = candidates.filter((c) => startAt.getTime() < c.endMs && endAt.getTime() > c.startMs);
   if (hits.length === 0) return { conflicts: [], conflict_level: 'none' };
-  const hasAllDay = allDay || hits.some((h) => h.allDay);
   return {
     conflicts: hits.slice(0, config.event.conflictScanLimit).map((h) => h.brief),
-    conflict_level: hasAllDay ? 'all_day' : 'overlap',
+    conflict_level: 'overlap',
   };
 }
 

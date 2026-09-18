@@ -48,11 +48,17 @@ export class DeepSeekProvider {
     };
   }
 
-  private body(messages: LlmMessage[], tools: LlmTool[], stream: boolean): string {
+  private body(
+    messages: LlmMessage[],
+    tools: LlmTool[],
+    stream: boolean,
+    extra?: Record<string, unknown>
+  ): string {
     const payload: Record<string, unknown> = {
       model: config.deepseek.model,
       messages,
       stream,
+      ...(extra ?? {}),
     };
     if (tools.length > 0) {
       payload.tools = tools;
@@ -201,15 +207,28 @@ export class DeepSeekProvider {
     }
   }
 
-  /** 非流式调用，用于确认执行后生成总结文本 */
-  async complete(messages: LlmMessage[], tools: LlmTool[] = []): Promise<LlmCompletionResult> {
+  /**
+   * 非流式调用：确认执行后生成总结文本 / 压缩摘要 / 记忆提取与合并等机械转换。
+   *
+   * `disableThinking` 用于纯转换型任务（如压缩摘要）：这类任务不需要推理，
+   * 开启思考会额外生成上千 reasoning token，使 P95 从 <1s 涨到 4~8s
+   * （PRD 435 要求「压缩 LLM 调用 P95 ≤ 3s」）。
+   */
+  async complete(
+    messages: LlmMessage[],
+    tools: LlmTool[] = [],
+    options?: { disableThinking?: boolean; maxTokens?: number }
+  ): Promise<LlmCompletionResult> {
+    const extra: Record<string, unknown> = {};
+    if (options?.disableThinking) extra.thinking = { type: 'disabled' };
+    if (options?.maxTokens != null) extra.max_tokens = options.maxTokens;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.deepseek.timeoutMs);
     try {
       const response = await fetch(this.url, {
         method: 'POST',
         headers: this.headers(),
-        body: this.body(messages, tools, false),
+        body: this.body(messages, tools, false, extra),
         signal: controller.signal,
       });
       if (!response.ok) {

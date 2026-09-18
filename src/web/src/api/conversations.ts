@@ -1,6 +1,6 @@
 import { BASE_URL, authHeaders, request } from './client'
 import { localTimezone } from './events'
-import type { Conversation, Paged, RawMessage } from '@/types'
+import type { ArchiveResult, Conversation, Paged, RawMessage } from '@/types'
 
 /**
  * v0.3.0：每用户唯一会话的幂等获取（存在即返回，不存在则创建）。
@@ -16,6 +16,21 @@ export function clearConversation(
 ): Promise<{ id: number; deleted_messages: number }> {
   return request<{ id: number; deleted_messages: number }>(`/conversations/${id}/clear`, {
     method: 'POST',
+  })
+}
+
+/**
+ * v0.5.0：归档聊天记录（MEM-01）。
+ * 非 SSE 的请求-响应模式；force_clear=true 表示「没提炼到内容但仍要清空」的二次确认。
+ * 任何失败都不清空消息，错误文案直接透传服务端（SDD 7.2）。
+ */
+export function archiveConversation(
+  id: string | number,
+  forceClear = false
+): Promise<ArchiveResult> {
+  return request<ArchiveResult>(`/conversations/${id}/archive`, {
+    method: 'POST',
+    body: { force_clear: forceClear },
   })
 }
 

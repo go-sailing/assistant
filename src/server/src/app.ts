@@ -6,6 +6,7 @@ import { listRoutes } from './modules/list/list.routes';
 import { taskRoutes } from './modules/task/task.routes';
 import { eventRoutes } from './modules/event/event.routes';
 import { chatRoutes } from './modules/chat/chat.routes';
+import { memoryRoutes } from './modules/memory/memory.routes';
 import { settingsRoutes } from './modules/settings/settings.routes';
 import { asyncHandler, ok } from './common/response';
 import { query } from './db/pool';
@@ -40,10 +41,13 @@ export function createApp() {
   // v0.4.0：个人信息与设置
   app.use('/api/v1/me', authMiddleware);
   app.use('/api/v1/settings', authMiddleware);
+  // v0.5.0：长期记忆
+  app.use('/api/v1/memories', authMiddleware);
   app.use('/api/v1', listRoutes);
   app.use('/api/v1', taskRoutes);
   app.use('/api/v1', eventRoutes);
   app.use('/api/v1', chatRoutes);
+  app.use('/api/v1', memoryRoutes);
   app.use('/api/v1', settingsRoutes);
 
   app.use((_req, res) => {

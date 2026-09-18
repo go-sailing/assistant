@@ -17,7 +17,6 @@ const route = useRoute()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'navigate', to: string): void
-  (e: 'logout'): void
 }>()
 
 const panelRef = ref<HTMLElement | null>(null)
@@ -126,7 +125,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </button>
       </nav>
       <div class="drawer__foot">
-        <!-- 账号区：整块进个人信息；齿轮为独立 44pt 热区进设置；退出行与整块分离防误触 -->
+        <!-- 账号区：整块进个人信息；齿轮为独立 44pt 热区进设置。
+             v0.5.0（UI-03）：底部独立「退出」按钮已移除，退出登录保留在 /me、/settings 危险区 -->
         <div class="drawer__account">
           <button
             class="drawer__account-main pressable"
@@ -149,7 +149,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <AppIcon name="gear" :size="20" />
           </button>
         </div>
-        <button class="drawer__logout pressable" @click="emit('logout')">退出</button>
       </div>
     </aside>
   </Transition>
@@ -266,14 +265,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   height: 44px;
   flex-shrink: 0;
   color: var(--text-secondary);
-}
-.drawer__logout {
-  min-height: 44px;
-  text-align: left;
-  padding: 0 var(--sp-1);
-  color: var(--color-danger);
-  font-size: var(--font-body-m);
-  line-height: var(--font-body-m-lh);
 }
 .drawer-mask-enter-active,
 .drawer-mask-leave-active {

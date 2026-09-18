@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import * as convApi from '@/api/conversations'
 import { getProfile, updateNickname } from '@/api/settings'
 import { errorText } from '@/api/client'
 import type { UserProfile } from '@/types'
@@ -11,8 +10,6 @@ import AppModal from '@/components/AppModal.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
 import StateError from '@/components/StateError.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useChatStore } from '@/stores/chat'
-import { useConversationStore } from '@/stores/conversation'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
 
@@ -22,12 +19,11 @@ import { useToastStore } from '@/stores/toast'
  * - 资料以 GET /me 为权威，进入即拉取；加载中先用 auth store 兜底渲染头像/文案，
  *   失败给错误占位 + 重试（不展示陈旧数据）；
  * - 昵称编辑弹层沿用 ListFormSheet 的视觉规范（标题 / 全宽输入 / 纵向按钮 / 失败内联报错不丢输入）；
- * - 「清除聊天记录」与助手页同一能力、同一确认文案。
+ * - v0.5.0（UI-01）：「清除聊天记录」入口已移除（保留在 /chat 菜单与 /settings），
+ *   「修改密码」成为唯一改密入口。
  */
 const router = useRouter()
 const auth = useAuthStore()
-const chat = useChatStore()
-const conversation = useConversationStore()
 const settings = useSettingsStore()
 const toast = useToastStore()
 
@@ -105,27 +101,8 @@ async function submitNickname(): Promise<void> {
 
 /* ---------------- 危险区 ---------------- */
 
-const clearOpen = ref(false)
-const clearing = ref(false)
 const destroyOpen = ref(false)
 const destroying = ref(false)
-
-/** 清除聊天记录：与助手页同一接口与同一确认文案（会话保留，只删消息） */
-async function confirmClear(): Promise<void> {
-  if (clearing.value) return
-  clearing.value = true
-  try {
-    const id = conversation.conversationId ?? (await conversation.ensureConversationId())
-    await convApi.clearConversation(id)
-    chat.clearHistory(id)
-    clearOpen.value = false
-    toast.show('聊天记录已清除')
-  } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    clearing.value = false
-  }
-}
 
 async function doLogout(): Promise<void> {
   await auth.logout()
@@ -197,14 +174,7 @@ async function doDestroy(): Promise<void> {
             </li>
           </ul>
 
-          <ul class="me__group">
-            <li>
-              <button class="me__row pressable" @click="clearOpen = true">
-                <span class="me__row-label">清除聊天记录</span>
-                <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
-              </button>
-            </li>
-          </ul>
+          <!-- v0.5.0（UI-01）：原「清除聊天记录」组已移除，能力保留在 /chat 菜单与 /settings -->
 
           <ul class="me__group me__group--danger">
             <li>
@@ -267,17 +237,6 @@ async function doDestroy(): Promise<void> {
         </div>
       </div>
     </Transition>
-
-    <AppModal
-      :visible="clearOpen"
-      title="清除聊天记录？"
-      text="将永久清除与助手的全部聊天记录，且不可恢复。任务与日程数据不会被删除。"
-      confirm-text="清除"
-      danger
-      :loading="clearing"
-      @confirm="confirmClear"
-      @cancel="clearOpen = false"
-    />
 
     <AppModal
       :visible="destroyOpen"

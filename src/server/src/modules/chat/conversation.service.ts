@@ -9,13 +9,11 @@ import { toSeriesDTO, type EventDTO, type EventRow, type OccurrenceDTO, type Ser
 import { eventService } from '../event/event.service';
 import { occurrenceService } from '../event/occurrence.service';
 import type { EventOverrideRow } from '../event/recurrence/types';
-import type { LlmMessage } from '../../llm/types';
 import {
   toConversationDTO,
   toMessageDTO,
   type ConversationDTO,
   type ConversationRow,
-  type MessageBlock,
   type MessageDTO,
   type MessagePayload,
   type MessageRow,
@@ -218,7 +216,8 @@ export const conversationService = {
   /**
    * v0.3.0：清除聊天记录（会话本身保留）。
    * 单事务删除该会话全部消息与待确认动作，并重置标题；
-   * 不触碰任何任务 / 日程 / 清单数据。
+   * v0.5.0：同时重置压缩摘要与水位（消息已清空，无旧内容可概括）；
+   * 不触碰任何任务 / 日程 / 清单 / 长期记忆数据。
    */
   async clearHistory(
     userId: number,
@@ -233,7 +232,10 @@ export const conversationService = {
         conversationId,
       ]);
       await client.query(
-        `UPDATE conversations SET title = '新对话', updated_at = now() WHERE id = $1`,
+        `UPDATE conversations
+         SET title = '新对话', updated_at = now(),
+             context_summary = NULL, compacted_until_id = NULL
+         WHERE id = $1`,
         [conversationId]
       );
       return msg.rowCount ?? 0;
@@ -244,6 +246,27 @@ export const conversationService = {
       deleted_messages: deleted,
     });
     return { id: conversationId, deleted_messages: deleted };
+  },
+
+  /** 会话消息总数（归档空会话判定用） */
+  async countMessages(conversationId: number): Promise<number> {
+    const res = await query<{ total: string }>(
+      `SELECT COUNT(*)::int AS total FROM messages WHERE conversation_id = $1`,
+      [conversationId]
+    );
+    return Number(res.rows[0]?.total ?? 0);
+  },
+
+  /**
+   * 最近 limit 条消息（ASC 返回），供归档转录使用。
+   * 超长会话只取最近 N 条：更早内容已无长期价值，同时防止提取 token 失控。
+   */
+  async listRecentMessages(conversationId: number, limit: number): Promise<MessageRow[]> {
+    const res = await query<MessageRow>(
+      `SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT $2`,
+      [conversationId, limit]
+    );
+    return res.rows.reverse();
   },
 
   async touch(conversationId: number): Promise<void> {
@@ -326,117 +349,6 @@ export const conversationService = {
     const list = res.rows.reverse().map(toMessageDTO);
     await refreshBlocksWithLatest(userId, list);
     return { list, total, page, page_size: size };
-  },
-
-  /**
-   * 组装发给模型的对话历史。
-   * 不回放历史工具调用（避免与当前数据状态不一致），但会把历史消息中涉及的任务 ID
-   * 以紧凑文本附在助手消息后，使「把它改成高优先级」这类指代能在多轮中解析到真实 ID。
-   */
-  async buildHistory(conversationId: number): Promise<LlmMessage[]> {
-    const res = await query<MessageRow>(
-      `SELECT * FROM messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT $2`,
-      [conversationId, config.chat.historyLimit]
-    );
-    const rows = res.rows.reverse();
-    const messages: LlmMessage[] = [];
-    for (const row of rows) {
-      if (row.role === 'user') {
-        messages.push({ role: 'user', content: row.content ?? '' });
-        continue;
-      }
-      if (row.role !== 'assistant') continue;
-
-      const blocks = row.payload?.blocks ?? [];
-      const text = blocks
-        .filter((b): b is Extract<MessageBlock, { type: 'text' }> => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
-
-      const referenced: TaskDTO[] = [];
-      const referencedEvents: EventDTO[] = [];
-      const referencedSeries: SeriesDTO[] = [];
-      const referencedOccurrences: OccurrenceDTO[] = [];
-      const referencedScopes: Array<{ tool: string; seriesId: number; occurrenceKey: string | null }> = [];
-      for (const block of blocks) {
-        if (block.type === 'cards') {
-          referenced.push(...block.tasks);
-          referencedEvents.push(...(block.events ?? []));
-          referencedSeries.push(...(block.series ?? []));
-          referencedOccurrences.push(...(block.occurrences ?? []));
-          for (const group of block.subtask_groups ?? []) referenced.push(...group.nodes);
-        } else if (block.type === 'clarify') {
-          referenced.push(...block.candidates);
-          referencedEvents.push(...(block.events ?? []));
-        } else if (block.type === 'confirm') {
-          referenced.push(...block.affected);
-          referencedEvents.push(...(block.affected_events ?? []));
-        } else if (block.type === 'scope') {
-          // 作用域澄清未选择时，下一轮必须还能定位到同一系列/实例（TC-CHAT-108）
-          referencedScopes.push({
-            tool: block.tool,
-            seriesId: block.ref.series_id,
-            occurrenceKey: block.ref.occurrence_key ?? null,
-          });
-        }
-      }
-      const taskHint = referenced.length
-        ? `\n[本轮涉及的任务] ${referenced
-            .map(
-              (t) =>
-                `#${t.id} ${t.title}（${t.status === 'completed' ? '已完成' : '待办'}${
-                  t.parent_id ? `，父任务 #${t.parent_id}` : ''
-                }）`
-            )
-            .join('；')}`
-        : '';
-      // 把日程 ID 一并喂给模型，使「把它改到下午4点」这类指代能在多轮中解析到真实 event_id
-      const eventHint = referencedEvents.length
-        ? `\n[本轮涉及的日程] ${referencedEvents
-            .map(
-              (e) =>
-                `#${e.id} ${e.title}（${e.event_type === 'task' ? '任务日程' : '普通日程'} ${e.start_at}~${e.end_at}）`
-            )
-            .join('；')}`
-        : '';
-      // v0.2.0：系列与实例身份必须回灌，否则模型无法正确传 occurrence_key
-      const seriesHint = referencedSeries.length
-        ? `\n[本轮涉及的循环日程] ${referencedSeries
-            .map(
-              (s) =>
-                `series#${s.id} ${s.title}（${s.recurrence_summary}，下一次 ${s.next_occurrence ?? '已无'}，共 ${s.total_count} 次）`
-            )
-            .join('；')}`
-        : '';
-      const occurrenceHint = referencedOccurrences.length
-        ? `\n[本轮涉及的循环实例] ${referencedOccurrences
-            .map(
-              (o) =>
-                `series#${o.series_id} occurrence_key=${o.occurrence_key} ${o.title}（${o.start_at}~${o.end_at}${
-                  o.override_state === 'modified'
-                    ? '，已调整'
-                    : o.override_state === 'cancelled'
-                      ? '，已取消'
-                      : ''
-                }）`
-            )
-            .join('；')}`
-        : '';
-
-      const scopeHint = referencedScopes.length
-        ? `\n[待用户确认的作用域] ${referencedScopes
-            .map(
-              (s) =>
-                `${s.tool} series#${s.seriesId}${s.occurrenceKey ? ` occurrence_key=${s.occurrenceKey}` : ''}（用户还没选作用域，继续沿用这条上下文，不要换成别的日程）`
-            )
-            .join('；')}`
-        : '';
-
-      const content = `${text}${taskHint}${eventHint}${seriesHint}${occurrenceHint}${scopeHint}`.trim();
-      if (content) messages.push({ role: 'assistant', content });
-    }
-    return messages;
   },
 };
 

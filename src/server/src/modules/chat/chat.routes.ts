@@ -8,6 +8,7 @@ import { config } from '../../config';
 import { logger } from '../../common/logger';
 import { conversationService } from './conversation.service';
 import { chatOrchestrator, type SseEmitter } from './chat.orchestrator';
+import { memoryService } from '../memory/memory.service';
 import type { AuthedRequest } from '../../middleware/auth';
 
 const chatBodySchema = z.object({
@@ -26,11 +27,22 @@ const chatBodySchema = z.object({
 
 const createConversationSchema = z.object({ title: z.string().max(100).optional() });
 
+/** v0.5.0：归档入参（force_clear 表示「提取不到内容但仍要清空」） */
+const archiveBodySchema = z.object({ force_clear: z.boolean().optional() });
+
 const chatLimiter = rateLimit({
   windowMs: 60_000,
   max: config.rateLimit.chatPerMin,
   keyOf: (req: AuthedRequest) => String((req as AuthedRequest).user?.id ?? 'anonymous'),
   message: '对话请求过于频繁，请稍后再试',
+});
+
+/** v0.5.0：归档单独限流（LLM 双调用成本高，每用户 1 次/分钟） */
+const archiveLimiter = rateLimit({
+  windowMs: 60_000,
+  max: config.rateLimit.archivePerMin,
+  keyOf: (req: AuthedRequest) => String((req as AuthedRequest).user?.id ?? 'anonymous'),
+  message: '操作过于频繁，请稍后再试',
 });
 
 export const chatRoutes = Router();
@@ -71,6 +83,22 @@ chatRoutes.post(
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '会话 ID');
     ok(res, await conversationService.clearHistory(user.id, id));
+  })
+);
+
+/**
+ * v0.5.0：归档聊天记录（MEM-01，系统设计文档 7.1/7.2）。
+ * 请求-响应模式（非 SSE）：提取长期记忆 → 落库成功后才清空消息；
+ * 任何一步 LLM/落库失败都返回 500 且消息零变化。
+ */
+chatRoutes.post(
+  '/conversations/:id/archive',
+  archiveLimiter,
+  asyncHandler(async (req, res) => {
+    const user = getUser(req);
+    const id = parse(idParam, req.params.id, '会话 ID');
+    const body = parse(archiveBodySchema, req.body ?? {}, '归档参数');
+    ok(res, await memoryService.archiveConversation(user.id, id, body.force_clear === true));
   })
 );
 

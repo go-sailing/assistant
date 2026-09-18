@@ -19,6 +19,8 @@ import AppModal from '@/components/AppModal.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import StateError from '@/components/StateError.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import CompactionStatusBar from '@/components/chat/CompactionStatusBar.vue'
+import HistoryDivider from '@/components/chat/HistoryDivider.vue'
 import MessageItem from '@/components/chat/MessageItem.vue'
 import { useChatStore } from '@/stores/chat'
 import { useConversationStore } from '@/stores/conversation'
@@ -26,6 +28,7 @@ import { useDrawerStore } from '@/stores/drawer'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
+import { ARCHIVE_TOAST_DURATION } from '@/utils/constants'
 import { formatDaySeparator } from '@/utils/time'
 
 const router = useRouter()
@@ -57,6 +60,12 @@ const inputRef = ref<InstanceType<typeof ChatInput> | null>(null)
 const moreVisible = ref(false)
 const clearVisible = ref(false)
 const clearing = ref(false)
+/* ----- v0.5.0：归档 ----- */
+const archiveVisible = ref(false)
+const archiving = ref(false)
+/** 「没提炼到内容，仍然清空吗」二次询问 */
+const askStillClear = ref(false)
+const compacting = computed(() => !!convId.value && chat.isCompacting(convId.value))
 
 const ADJUST_HINT = '把要改的地方告诉我，如：改成 16 点、要每周重复'
 
@@ -64,7 +73,23 @@ const ADJUST_HINT = '把要改的地方告诉我，如：改成 16 点、要每�
 let anchorObserver: ResizeObserver | null = null
 let anchorTimer = 0
 
-const moreItems = [{ label: '清除聊天记录', value: 'clear', danger: true }]
+/**
+ * v0.5.0：更多菜单两项——归档（普通样式，信息整理动作）在上、清除（危险红）在下。
+ * 流式中两项均禁用；无消息时归档项禁用（无内容可归档）。
+ */
+const moreItems = computed(() => [
+  {
+    label: '归档聊天记录',
+    value: 'archive',
+    disabled: streaming.value || messages.value.length === 0,
+  },
+  {
+    label: '清除聊天记录',
+    value: 'clear',
+    danger: true,
+    disabled: streaming.value,
+  },
+])
 
 function sameDay(a: string, b: string): boolean {
   const d1 = new Date(a)
@@ -76,13 +101,35 @@ function sameDay(a: string, b: string): boolean {
   )
 }
 
-/** 跨天插入时间分隔条 */
-const rendered = computed(() =>
-  messages.value.map((m, i) => ({
+/** 消息的服务端自增 id（本地乐观消息返回 null） */
+function dbIdOf(message: (typeof messages.value)[number]): number | null {
+  const matched = /^m-(\d+)$/.exec(String(message.id))
+  return matched ? Number(matched[1]) : null
+}
+
+/**
+ * v0.5.0：跨天分隔条 + 摘要历史分界条（渲染层，不入库、不占分页）。
+ * 分界条插在「最近原文窗最早一条消息」之上，且仅当列表里确实存在更早（已摘要）消息时出现，
+ * 整个会话至多一条。
+ */
+const rendered = computed(() => {
+  const list = messages.value
+  const waterline = conversation.compactedUntilId
+  let dividerIndex = -1
+  if (waterline != null) {
+    dividerIndex = list.findIndex((m) => {
+      const id = dbIdOf(m)
+      return id != null && id > waterline
+    })
+    // -1：本页全部在水位之内（原文窗尚未加载）；0：没有更早消息 → 均不显示
+    if (dividerIndex <= 0) dividerIndex = -1
+  }
+  return list.map((m, i) => ({
     msg: m,
-    showDay: i === 0 || !sameDay(m.created_at, messages.value[i - 1].created_at),
+    showDay: i === 0 || !sameDay(m.created_at, list[i - 1].created_at),
+    showDivider: i === dividerIndex,
   }))
-)
+})
 
 function atBottom(): boolean {
   const el = scroller.value
@@ -141,6 +188,24 @@ function anchorGuide(): void {
     if (scroller.value) scroller.value.scrollTop = 0
   })
 }
+
+/**
+ * v0.5.0：本轮发生过压缩 → 流结束后刷新一次会话摘要水位，
+ * 让历史分界条不必等重新进入页面就出现在原文窗之上（失败静默，仅影响分界条）。
+ */
+let sawCompaction = false
+watch(compacting, (v) => {
+  if (v) sawCompaction = true
+})
+watch(streaming, async (v) => {
+  if (v || !sawCompaction) return
+  sawCompaction = false
+  try {
+    await conversation.ensureConversationId()
+  } catch {
+    /* 静默 */
+  }
+})
 
 /** 用户上翻后点胶囊：平滑滚到底并隐藏 */
 function jumpToLatest(): void {
@@ -415,6 +480,62 @@ function openMore(): void {
 function onMoreSelect(v: string): void {
   moreVisible.value = false
   if (v === 'clear') clearVisible.value = true
+  if (v === 'archive') {
+    askStillClear.value = false
+    archiveVisible.value = true
+  }
+}
+
+/** 归档进行中禁止关闭弹层（防中途离开造成认知歧义；服务端限流为第二道保险） */
+function closeArchive(): void {
+  if (archiving.value) return
+  askStillClear.value = false
+  archiveVisible.value = false
+}
+
+/**
+ * v0.5.0 归档（MEM-01）：提炼长期记忆 → 落库成功后才清空当前聊天记录。
+ * 四态分支见 UXUI 4.2 / SDD 7.2；任何失败都不清空消息。
+ */
+async function confirmArchive(force = false): Promise<void> {
+  const id = convId.value
+  if (!id || archiving.value) return
+  archiving.value = true
+  try {
+    const res = await convApi.archiveConversation(id, force)
+    if (res.status === 'empty') {
+      toast.show('暂无可归档的内容')
+      return
+    }
+    if (res.status === 'no_memory') {
+      // 不默认清空：弹层内二次询问，由用户明确选择
+      askStillClear.value = true
+      return
+    }
+    // archived / cleared：会话已清空，本地状态与水位一并重置
+    chat.clearHistory(id)
+    conversation.resetWaterline()
+    askStillClear.value = false
+    archiveVisible.value = false
+    adjustHint.value = ''
+    anchorGuide()
+    const saved = res.saved_count ?? 0
+    if (res.status === 'cleared') {
+      toast.show('聊天记录已清空')
+    } else {
+      toast.show(`已归档，保存了 ${saved} 条长期记忆`, ARCHIVE_TOAST_DURATION, {
+        label: '查看',
+        handler: () => router.push('/me/memories'),
+      })
+    }
+  } catch (e) {
+    // 失败：关闭弹层并提示；聊天记录原样保留
+    askStillClear.value = false
+    archiveVisible.value = false
+    toast.show(errorText(e))
+  } finally {
+    archiving.value = false
+  }
 }
 
 /** 清除聊天记录：会话保留，只删消息与待确认动作；输入框草稿保留 */
@@ -425,6 +546,7 @@ async function confirmClear(): Promise<void> {
   try {
     await convApi.clearConversation(id)
     chat.clearHistory(id)
+    conversation.resetWaterline()
     clearVisible.value = false
     adjustHint.value = ''
     // 清除后锚定空态引导位
@@ -478,7 +600,10 @@ async function confirmClear(): Promise<void> {
         </div>
 
         <div v-else ref="flow" class="chat__flow">
+          <!-- v0.5.0：压缩临时状态条（仅本轮真的发生压缩时出现，不入消息历史） -->
+          <CompactionStatusBar :visible="compacting" />
           <template v-for="(item, i) in rendered" :key="i">
+            <HistoryDivider v-if="item.showDivider" />
             <p v-if="item.showDay" class="chat__day">{{ formatDaySeparator(item.msg.created_at) }}</p>
             <MessageItem
               :message="item.msg"
@@ -539,6 +664,21 @@ async function confirmClear(): Promise<void> {
       :loading="clearing"
       @confirm="confirmClear"
       @cancel="clearVisible = false"
+    />
+
+    <!-- v0.5.0 归档确认：主按钮为普通 primary（信息整理动作），与危险的「清除」明确分级 -->
+    <AppModal
+      :visible="archiveVisible"
+      title="归档聊天记录？"
+      :text="
+        askStillClear
+          ? '本次没有提炼到需要长期保留的内容，仍然清空吗？'
+          : '系统会从当前对话中提炼长期记忆并保存，之后与助手的新对话可以使用这些记忆。提炼完成后，当前聊天记录将被清空且不可恢复。任务与日程数据不会被删除。'
+      "
+      :confirm-text="askStillClear ? '仍然清空' : '归档并清空'"
+      :loading="archiving"
+      @confirm="askStillClear ? confirmArchive(true) : confirmArchive(false)"
+      @cancel="closeArchive"
     />
   </div>
 </template>

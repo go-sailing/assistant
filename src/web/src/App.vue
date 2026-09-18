@@ -115,13 +115,6 @@ function navigateFromDrawer(to: string): void {
   else router.push(to)
 }
 
-async function logoutFromDrawer(): Promise<void> {
-  pushedForDrawer = false
-  drawer.closeDrawer()
-  await auth.logout()
-  router.replace('/login')
-}
-
 watch(
   () => drawer.open,
   (open) => {
@@ -149,7 +142,7 @@ onBeforeUnmount(() => {
       </router-view>
     </div>
     <AppFAB v-if="drawerEnabled" :mode="fabMode" @click="onFabClick" />
-    <AppDrawer @close="closeDrawer" @navigate="navigateFromDrawer" @logout="logoutFromDrawer" />
+    <AppDrawer @close="closeDrawer" @navigate="navigateFromDrawer" />
     <AppToast />
   </div>
 </template>

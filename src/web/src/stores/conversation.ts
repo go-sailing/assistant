@@ -29,19 +29,32 @@ function saveCachedId(id: number): void {
 
 export const useConversationStore = defineStore('conversation', () => {
   const conversationId = ref<number | null>(loadCachedId())
+  /**
+   * v0.5.0：摘要水位（已压缩段的最大消息 id）。
+   * 仅用于渲染历史分界条；归档/清除成功后置 null（摘要随会话重置）。
+   */
+  const compactedUntilId = ref<number | null>(null)
 
   /** 幂等获取唯一会话 id（服务端有则返回、无则创建） */
   async function ensureConversationId(): Promise<number> {
     const conv = await createConversation()
     const id = Number(conv.id)
     conversationId.value = id
+    compactedUntilId.value =
+      conv.compacted_until_id != null ? Number(conv.compacted_until_id) : null
     saveCachedId(id)
     return id
+  }
+
+  /** 会话被清空（清除/归档）：水位与本地消息一并失效 */
+  function resetWaterline(): void {
+    compactedUntilId.value = null
   }
 
   /** 本地缓存失效（消息拉取 404）时清缓存，下次进入重新自举 */
   function invalidate(): void {
     conversationId.value = null
+    compactedUntilId.value = null
     try {
       localStorage.removeItem(STORAGE_KEY)
     } catch {
@@ -49,5 +62,5 @@ export const useConversationStore = defineStore('conversation', () => {
     }
   }
 
-  return { conversationId, ensureConversationId, invalidate }
+  return { conversationId, compactedUntilId, ensureConversationId, resetWaterline, invalidate }
 })

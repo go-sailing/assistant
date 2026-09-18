@@ -372,8 +372,41 @@ export interface TaskPayload {
 export interface Conversation {
   id: number | string
   title: string
+  /** v0.5.0：摘要水位（历史分界条依据；摘要正文不下发端上） */
+  compacted_until_id?: number | null
   created_at: string
   updated_at: string
+}
+
+/* ---------------- v0.5.0 长期记忆 ---------------- */
+
+/** 记忆类别（与服务端枚举一一对应；中文映射见 utils/constants.ts） */
+export type MemoryCategory =
+  | 'profile'
+  | 'preference'
+  | 'routine'
+  | 'objects'
+  | 'context'
+  | 'other'
+
+export interface Memory {
+  id: number
+  content: string
+  category: MemoryCategory
+  created_at: string
+  updated_at: string
+}
+
+/** 归档四态（与服务端 SDD 7.2 一致） */
+export type ArchiveStatus = 'empty' | 'no_memory' | 'cleared' | 'archived'
+
+export interface ArchiveResult {
+  status: ArchiveStatus
+  saved_count?: number
+  created?: number
+  updated?: number
+  dropped?: number
+  deleted_messages?: number
 }
 
 /* ---------------- 消息与 blocks ---------------- */

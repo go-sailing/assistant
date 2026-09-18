@@ -14,6 +14,8 @@ import {
   conversationService,
   pendingActionService,
 } from './conversation.service';
+import { compactionService } from './compaction.service';
+import { memoryService } from '../memory/memory.service';
 import type { MessageBlock } from './chat.types';
 import { query } from '../../db/pool';
 
@@ -25,6 +27,23 @@ export type SseEmitter = (event: string, data: unknown) => void;
  * 轮数只有在模型请求工具时才会消耗。
  */
 const MAX_TOOL_ROUNDS = 5;
+
+/**
+ * v0.5.0：只读工具集合（系统设计文档 6.4）。
+ * 未列入者一律视为写工具（新增工具默认保守=写），present_proposal 单独排除：
+ * 它是呈现型工具、无副作用，不应因它丢弃同轮的查询卡。
+ */
+const READ_TOOL_NAMES = new Set([
+  'list_events',
+  'search_events',
+  'get_event',
+  'list_tasks',
+  'search_tasks',
+  'get_task',
+  'get_subtree',
+  'list_lists',
+  'resolve_lunar_date',
+]);
 
 export interface ChatContext {
   userId: number;
@@ -225,16 +244,33 @@ export const chatOrchestrator = {
     const toolFailures: string[] = [];
 
     try {
-      const history = await conversationService.buildHistory(conversationId);
-      const llmMessages: LlmMessage[] = [
-        {
-          role: 'system',
-          content: buildSystemPrompt(new Date(), ctx.timezoneOffsetMinutes, ctx.timezone),
-        },
-        ...history,
-      ];
+      const systemPrompt = buildSystemPrompt(new Date(), ctx.timezoneOffsetMinutes, ctx.timezone);
+      // v0.5.0：长期记忆以独立 system 分区注入（第 [1] 段，见 SDD 4.3）
+      const memorySection = await memoryService.sectionForPrompt(userId);
+
+      // v0.5.0：超水位时先做一次 best-effort 压缩（失败静默降级，不阻断本轮）
+      await compactionService.maybeCompact({
+        userId,
+        conversationId,
+        systemPrompt,
+        memorySection,
+        onStatus: () => emit('status', { stage: 'compacting' }),
+      });
+
+      const llmMessages: LlmMessage[] = await compactionService.composeContext({
+        conversationId,
+        systemPrompt,
+        memorySection,
+      });
 
       let finalText = '';
+      /**
+       * v0.5.0 CHAT-01：本轮是否发生过写操作；只读工具的结果卡先缓冲、轮末裁决——
+       * 有写操作则全部丢弃（过程查询不落地为用户可见卡片），纯查询轮再统一展示。
+       * 模型侧的 tool result 始终照常 append（模型取数能力不受影响）。
+       */
+      let writeToolCalled = false;
+      const pendingReadCards: Array<Extract<MessageBlock, { type: 'cards' }>> = [];
 
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         let roundText = '';
@@ -294,6 +330,10 @@ export const chatOrchestrator = {
             });
             continue;
           }
+
+          // v0.5.0：读写分类。present_proposal 无副作用，不计入写操作
+          const isReadTool = READ_TOOL_NAMES.has(toolName);
+          if (!isReadTool && toolName !== 'present_proposal') writeToolCalled = true;
 
           emit('tool_call', { tool: toolName, arguments: parsedArgs.value });
 
@@ -533,8 +573,14 @@ export const chatOrchestrator = {
               occurrences: toolResult.occurrences ?? [],
               subtask_groups: toolResult.subtask_groups ?? [],
             };
-            blocks.push(cardsBlock);
-            emit('cards', cardsBlock);
+            if (isReadTool) {
+              // 只读结果先缓冲：不 emit、不进 payload，由轮末裁决决定是否展示
+              pendingReadCards.push(cardsBlock);
+            } else {
+              // 写工具结果卡：仅含本次实际受影响对象（executor 已保证），即时展示
+              blocks.push(cardsBlock);
+              emit('cards', cardsBlock);
+            }
           }
 
           // 冲突未确认：以结构化冲突块呈现，由用户决定「仍要安排 / 换个时间」（UX 5.7）
@@ -550,9 +596,7 @@ export const chatOrchestrator = {
               message:
                 groups.length > 0
                   ? `未来 90 天内有 ${toolResult.data.conflict_dates_total ?? groups.length} 个日期与已有安排冲突`
-                  : String(toolResult.data.conflict_level) === 'all_day'
-                    ? '该日期已有全天安排'
-                    : '这个时段已有安排',
+                  : '这个时段已有安排',
               conflict_dates: groups,
               conflict_dates_total: Number(toolResult.data.conflict_dates_total ?? groups.length),
               conflict_total: Number(toolResult.data.conflict_total ?? 0),
@@ -580,6 +624,32 @@ export const chatOrchestrator = {
           emit('done', { finish_reason: 'clarify' });
           return;
         }
+      }
+
+      /* v0.5.0 轮末裁决：本轮无写操作 → 只读卡按原顺序补发；有写操作 → 全部丢弃 */
+      if (!writeToolCalled) {
+        for (const buffered of pendingReadCards) {
+          blocks.push(buffered);
+          emit('cards', buffered);
+        }
+      } else if (pendingReadCards.length > 0) {
+        const hiddenItems = pendingReadCards.reduce(
+          (sum, b) =>
+            sum +
+            b.tasks.length +
+            (b.events?.length ?? 0) +
+            (b.series?.length ?? 0) +
+            (b.occurrences?.length ?? 0) +
+            (b.subtask_groups?.length ?? 0),
+          0
+        );
+        // 埋点：只记卡数与项数，不记正文
+        logger.info('chat_tool_cards_hidden', {
+          user_id: userId,
+          conversation_id: conversationId,
+          blocks: pendingReadCards.length,
+          items: hiddenItems,
+        });
       }
 
       if (blocks.length === 0) {

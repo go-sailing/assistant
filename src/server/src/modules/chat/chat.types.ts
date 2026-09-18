@@ -103,6 +103,10 @@ export interface ConversationRow {
   id: number;
   user_id: number;
   title: string;
+  /** v0.5.0：滚动摘要全文（仅服务端使用，不下发端上） */
+  context_summary: string | null;
+  /** v0.5.0：已压缩段的最大消息 id（水位指针） */
+  compacted_until_id: string | number | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -110,6 +114,8 @@ export interface ConversationRow {
 export interface ConversationDTO {
   id: number;
   title: string;
+  /** v0.5.0：摘要水位（前端据此渲染历史分界条；摘要正文不外泄） */
+  compacted_until_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -141,6 +147,8 @@ export function toConversationDTO(row: ConversationRow): ConversationDTO {
   return {
     id: row.id,
     title: row.title,
+    // 水位是 bigint：pg 以字符串返回，统一转 number（摘要正文绝不下发）
+    compacted_until_id: row.compacted_until_id != null ? Number(row.compacted_until_id) : null,
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
   };

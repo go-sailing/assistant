@@ -77,6 +77,11 @@ export const useChatStore = defineStore('chat', () => {
   const streamingByConv = ref<Record<string, boolean>>({})
   const scrollTopByConv = ref<Record<string, number>>({})
   /**
+   * v0.5.0：本轮是否正在自动压缩（SSE 瞬态 status 事件）。
+   * 仅内存态：不持久化、断线重连与刷新后不补显（服务端同样不持久化）。
+   */
+  const compactingByConv = ref<Record<string, boolean>>({})
+  /**
    * v0.4.0：从聊天页内跳详情的时间戳（纯内存，不持久化）。
    * 仅用于区分「页内跳详情再返回」（恢复阅读位置）与冷启动/F5/抽屉进入（锚定最新）。
    */
@@ -99,6 +104,15 @@ export const useChatStore = defineStore('chat', () => {
 
   function isStreaming(convId: string | number): boolean {
     return !!streamingByConv.value[keyOf(convId)]
+  }
+
+  /** v0.5.0：本轮是否正处于「回顾之前的对话」压缩态 */
+  function isCompacting(convId: string | number): boolean {
+    return !!compactingByConv.value[keyOf(convId)]
+  }
+
+  function setCompacting(convId: string | number, value: boolean): void {
+    compactingByConv.value = { ...compactingByConv.value, [keyOf(convId)]: value }
   }
 
   function saveScrollTop(convId: string | number, top: number): void {
@@ -243,11 +257,18 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await streamChat(convId, text, cid, (event, data) => {
         const msg = ensureAssistant()
+        // v0.5.0：首个内容类事件（文本/卡片/交互块）到达即收起压缩状态条
+        if (event !== 'meta' && event !== 'status') setCompacting(convId, false)
         switch (event) {
           case 'meta': {
             if (data.message_id !== undefined && data.message_id !== null) {
               msg.id = `m-${String(data.message_id)}`
             }
+            break
+          }
+          case 'status': {
+            // v0.5.0：压缩临时状态（仅本轮有效，随首个内容事件淡出）
+            if (data.stage === 'compacting') setCompacting(convId, true)
             break
           }
           case 'text_delta': {
@@ -437,6 +458,7 @@ export const useChatStore = defineStore('chat', () => {
       void e
     } finally {
       streamingByConv.value[k] = false
+      setCompacting(convId, false)
       if (assistant) {
         const m: ChatMessage = assistant
         m.streaming = false
@@ -577,6 +599,7 @@ export const useChatStore = defineStore('chat', () => {
     delete loadingByConv.value[k]
     delete errorByConv.value[k]
     delete scrollTopByConv.value[k]
+    setCompacting(convId, false)
     const next = { ...detailNavByConv.value }
     delete next[k]
     detailNavByConv.value = next
@@ -589,6 +612,7 @@ export const useChatStore = defineStore('chat', () => {
     streamingByConv,
     messagesOf,
     isStreaming,
+    isCompacting,
     loadHistory,
     reloadHistory,
     send,

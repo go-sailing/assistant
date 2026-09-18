@@ -3,6 +3,8 @@ export interface ActionSheetItem {
   label: string
   value: string
   danger?: boolean
+  /** v0.5.0：不可选项（如助手回复中禁止归档/清除） */
+  disabled?: boolean
 }
 
 defineProps<{
@@ -12,6 +14,11 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{ (e: 'select', value: string): void; (e: 'cancel'): void }>()
+
+function pick(item: ActionSheetItem): void {
+  if (item.disabled) return
+  emit('select', item.value)
+}
 </script>
 
 <template>
@@ -24,8 +31,10 @@ const emit = defineEmits<{ (e: 'select', value: string): void; (e: 'cancel'): vo
           <li v-for="item in items" :key="item.value">
             <button
               class="sheet-root__item"
-              :class="{ 'sheet-root__item--danger': item.danger }"
-              @click="emit('select', item.value)"
+              :class="{ 'sheet-root__item--danger': item.danger, 'sheet-root__item--disabled': item.disabled }"
+              :disabled="item.disabled"
+              :aria-disabled="item.disabled"
+              @click="pick(item)"
             >
               {{ item.label }}
             </button>
@@ -81,6 +90,10 @@ const emit = defineEmits<{ (e: 'select', value: string): void; (e: 'cancel'): vo
 }
 .sheet-root__item--danger {
   color: var(--color-danger);
+}
+.sheet-root__item--disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
 }
 .sheet-root__cancel {
   font-weight: 500;

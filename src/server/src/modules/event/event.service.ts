@@ -119,32 +119,37 @@ function intersect(a: { start_at: string; end_at: string }, b: { start_at: strin
 /**
  * 列表场景的冲突标注：直接在已取回的结果集内两两比对，避免 N+1 查询。
  * 合并集（单次日程 + 循环实例）在内存中统一比对，跨类型冲突也能命中。
+ *
+ * v0.5.0（EVT-01）：任一方为全天日程即跳过标注（全天安排不排斥当天再排定时日程）；
+ * 只保留定时 × 定时的重叠标注，等级不再有 all_day 分级。
  */
 function attachConflicts(dtos: EventDTO[]): void {
   for (let i = 0; i < dtos.length; i += 1) {
     const self = dtos[i];
     const hits: EventConflictBrief[] = [];
-    for (let j = 0; j < dtos.length; j += 1) {
-      if (i === j) continue;
-      const other = dtos[j];
-      if (!intersect(self, other)) continue;
-      hits.push({
-        id: Number(other.id),
-        event_type: other.event_type,
-        title: other.title,
-        start_at: other.start_at,
-        end_at: other.end_at,
-        all_day: other.all_day,
-        location: other.location,
-        series_id:
-          'series_id' in other ? ((other as OccurrenceDTO).series_id as number) : (other.id as number),
-        occurrence_key:
-          'occurrence_key' in other ? ((other as OccurrenceDTO).occurrence_key as string) : null,
-      });
+    if (!self.all_day) {
+      for (let j = 0; j < dtos.length; j += 1) {
+        if (i === j) continue;
+        const other = dtos[j];
+        if (other.all_day) continue;
+        if (!intersect(self, other)) continue;
+        hits.push({
+          id: Number(other.id),
+          event_type: other.event_type,
+          title: other.title,
+          start_at: other.start_at,
+          end_at: other.end_at,
+          all_day: other.all_day,
+          location: other.location,
+          series_id:
+            'series_id' in other ? ((other as OccurrenceDTO).series_id as number) : (other.id as number),
+          occurrence_key:
+            'occurrence_key' in other ? ((other as OccurrenceDTO).occurrence_key as string) : null,
+        });
+      }
     }
     dtos[i].conflicts = hits;
-    dtos[i].conflict_level =
-      hits.length === 0 ? 'none' : self.all_day || hits.some((h) => h.all_day) ? 'all_day' : 'overlap';
+    dtos[i].conflict_level = hits.length === 0 ? 'none' : 'overlap';
   }
 }
 

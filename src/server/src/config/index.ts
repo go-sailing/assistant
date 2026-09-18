@@ -41,7 +41,32 @@ export const config = {
     maxRetry: num('DEEPSEEK_MAX_RETRY', 2),
   },
   chat: {
+    /** 无摘要时的取数上限（沿用 v0.4.0） */
     historyLimit: num('CHAT_HISTORY_LIMIT', 20),
+    /* ----- v0.5.0 上下文自动压缩（系统设计文档 4.3 / 7.3） ----- */
+    /** 模型上下文窗口（token），用于水位估算 */
+    modelContextTokens: num('CHAT_MODEL_CONTEXT_TOKENS', 64000),
+    /** 压缩触发水位（占窗口比例） */
+    compactThresholdRatio: num('CHAT_COMPACT_THRESHOLD_RATIO', 0.8),
+    /** 最近保留原文的消息条数 */
+    recentKeep: num('CHAT_RECENT_KEEP', 10),
+    /** 连续压缩时保留窗下限（floor 约束优先） */
+    compactMinKeep: num('CHAT_COMPACT_MIN_KEEP', 6),
+    /** 单份摘要 token 上限 */
+    summaryMaxTokens: num('CHAT_SUMMARY_MAX_TOKENS', 1000),
+  },
+  /** v0.5.0 长期记忆（系统设计文档 5.3~5.5 / 7.3） */
+  memory: {
+    /** 单次归档的候选条数上限 */
+    archiveBatchLimit: num('MEMORY_ARCHIVE_BATCH_LIMIT', 30),
+    /** 每用户记忆总条数上限 */
+    maxTotal: num('MEMORY_MAX_TOTAL', 100),
+    /** 注入上下文的记忆 token 预算 */
+    injectTokenBudget: num('MEMORY_INJECT_TOKEN_BUDGET', 800),
+    /** 单次归档参与提取的最近消息条数上限 */
+    archiveMaxMessages: num('MEMORY_ARCHIVE_MAX_MESSAGES', 400),
+    /** 注入装配缓存 TTL（毫秒） */
+    injectCacheTtlMs: num('MEMORY_INJECT_CACHE_TTL_MS', 60_000),
   },
   pendingActionTtlSeconds: num('PENDING_ACTION_TTL_SECONDS', 300),
   /** v0.1.0 日程领域配置 */
@@ -83,6 +108,8 @@ export const config = {
     chatPerMin: num('RATE_LIMIT_CHAT_PER_MIN', 20),
     /** v0.4.0：/auth/refresh 每 IP 每分钟 */
     refreshPerMin: num('RATE_LIMIT_REFRESH_PER_MIN', 10),
+    /** v0.5.0：归档聊天记录每用户每分钟（PRD 5.6 / SDD 7.2） */
+    archivePerMin: num('RATE_LIMIT_ARCHIVE_PER_MIN', 1),
   },
 };
 

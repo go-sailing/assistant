@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as convApi from '@/api/conversations'
+import { listMemories } from '@/api/memories'
 import { errorText } from '@/api/client'
 import type { UserSettings } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
@@ -41,6 +42,8 @@ const clearOpen = ref(false)
 const clearing = ref(false)
 const destroyOpen = ref(false)
 const destroying = ref(false)
+/** v0.5.0：长期记忆条数（0 条也照常显示，与记忆页同源） */
+const memoryCount = ref(0)
 
 const homeLabel = computed(() => (settingsStore.homeRoute === '/tasks' ? '任务' : '日程'))
 const termsLabel = computed(() =>
@@ -51,8 +54,24 @@ const homeItems = [
   { label: '任务', value: '/tasks' },
 ]
 
+/** 记忆条数：失败静默（不改动其余设置区呈现），下次进入再拉 */
+async function loadMemoryCount(): Promise<void> {
+  try {
+    const res = await listMemories()
+    memoryCount.value = res.total ?? (res.list || []).length
+  } catch {
+    /* 静默：条数属辅助信息，不因它影响设置页可用性 */
+  }
+}
+
 onMounted(() => {
   void settingsStore.load(true)
+  void loadMemoryCount()
+})
+
+/** 从记忆页返回（keep-alive 命中时）重新拉取，保证条数即时一致 */
+onActivated(() => {
+  void loadMemoryCount()
 })
 
 /**
@@ -111,6 +130,7 @@ async function confirmClear(): Promise<void> {
     const id = conversation.conversationId ?? (await conversation.ensureConversationId())
     await convApi.clearConversation(id)
     chat.clearHistory(id)
+    conversation.resetWaterline()
     clearOpen.value = false
     toast.show('聊天记录已清除')
   } catch (e) {
@@ -205,6 +225,14 @@ async function doDestroy(): Promise<void> {
       <section class="settings__group">
         <h2 class="settings__group-title">对话</h2>
         <ul class="settings__list">
+          <!-- v0.5.0：长期记忆（右侧显示条数；从记忆页返回时重新拉取，保证同源一致） -->
+          <li>
+            <button class="settings__row pressable" @click="router.push('/me/memories')">
+              <span class="settings__label">长期记忆</span>
+              <span class="settings__value settings__value--num">{{ memoryCount }} 条</span>
+              <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
+            </button>
+          </li>
           <li>
             <button class="settings__row pressable" @click="clearOpen = true">
               <span class="settings__label">清除聊天记录</span>
@@ -214,18 +242,7 @@ async function doDestroy(): Promise<void> {
         </ul>
       </section>
 
-      <!-- 账号安全 -->
-      <section class="settings__group">
-        <h2 class="settings__group-title">账号安全</h2>
-        <ul class="settings__list">
-          <li>
-            <button class="settings__row pressable" @click="router.push('/me/password')">
-              <span class="settings__label">修改密码</span>
-              <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
-            </button>
-          </li>
-        </ul>
-      </section>
+      <!-- v0.5.0（UI-02）：账号安全分组已移除（改密唯一入口在个人信息页） -->
 
       <!-- 关于：只读详情 -->
       <section class="settings__group">
@@ -234,7 +251,7 @@ async function doDestroy(): Promise<void> {
           <li>
             <button class="settings__row pressable" @click="aboutOpen = true">
               <span class="settings__label">关于</span>
-              <span class="settings__value">v0.4.0</span>
+              <span class="settings__value">v0.5.0</span>
               <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
             </button>
           </li>
@@ -277,7 +294,7 @@ async function doDestroy(): Promise<void> {
     >
       <div class="about">
         <p class="about__row"><span>应用名称</span><span>个人助手</span></p>
-        <p class="about__row"><span>版本</span><span>v0.4.0</span></p>
+        <p class="about__row"><span>版本</span><span>v0.5.0</span></p>
         <p class="about__tip">日历、任务与助手一体化；长期未使用（30 天）需重新登录。</p>
       </div>
     </AppModal>
@@ -347,6 +364,9 @@ async function doDestroy(): Promise<void> {
 .settings__value {
   font-size: var(--font-body-m);
   color: var(--text-secondary);
+}
+.settings__value--num {
+  font-variant-numeric: tabular-nums;
 }
 .settings__row--danger {
   color: var(--color-danger);

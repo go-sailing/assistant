@@ -130,6 +130,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/me/ChangePasswordView.vue'),
     meta: { requiresAuth: true },
   },
+  /* v0.5.0：长期记忆管理页（设置页「长期记忆」行与归档 toast 直达） */
+  {
+    path: '/me/memories',
+    name: 'me-memories',
+    component: () => import('@/views/me/MemoriesView.vue'),
+    meta: { requiresAuth: true },
+  },
   {
     path: '/settings',
     name: 'settings',

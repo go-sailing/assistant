@@ -6,6 +6,7 @@
  */
 import { query } from '../../db/pool';
 import { config } from '../../config';
+import { logger } from '../../common/logger';
 import type { ConflictLevel, EventRow } from './types';
 
 /**
@@ -34,6 +35,9 @@ export function intersect(a: { start_at: Date; end_at: Date }, b: { start_at: Da
 /**
  * 单次日程（recurrence IS NULL）与目标时段相交的冲突查询。
  * 循环实例是虚拟展开的，不参与此查询（由 OccurrenceService 展开比对）。
+ *
+ * v0.5.0（EVT-01）：全天日程退出冲突判定——目标为全天直接短路；
+ * 目标为定时时时，冲突列表中不再包含全天日程（SQL 谓词 e.all_day = false）。
  */
 export async function findSingleConflicts(
   userId: number,
@@ -42,10 +46,22 @@ export async function findSingleConflicts(
   targetAllDay: boolean,
   excludeId?: number
 ): Promise<{ conflicts: EventRow[]; conflict_level: ConflictLevel }> {
+  // 目标为全天：不与任何日程做时间冲突提醒
+  if (targetAllDay) {
+    // v0.5.0 埋点（SDD 9.2）：全天短路计数，一次扫描一行，不带标题
+    logger.info('conflict_allday_suppressed', {
+      user_id: userId,
+      scene: 'target_all_day',
+      count: 1,
+    });
+    return { conflicts: [], conflict_level: 'none' };
+  }
+
   const res = await query<EventRow>(
     `${EVENT_SELECT}
      WHERE e.user_id = $1
        AND e.recurrence IS NULL
+       AND e.all_day = false
        AND e.start_at < $2::timestamptz
        AND e.end_at   > $3::timestamptz
        AND ($4::int IS NULL OR e.id <> $4::int)
@@ -54,13 +70,16 @@ export async function findSingleConflicts(
     [userId, endAt, startAt, excludeId ?? null, config.event.conflictScanLimit]
   );
   if (res.rowCount === 0) return { conflicts: [], conflict_level: 'none' };
-  const hasAllDay = targetAllDay || res.rows.some((r) => r.all_day);
-  return { conflicts: res.rows, conflict_level: hasAllDay ? 'all_day' : 'overlap' };
+  // 只可能是定时 × 定时：all_day 等级不再产出（枚举保留以兼容旧客户端）
+  return { conflicts: res.rows, conflict_level: 'overlap' };
 }
 
-/** 冲突等级：任一全天即为 all_day（弱化提示） */
+/**
+ * 冲突等级合并。
+ * v0.5.0：全天已退出判定，'all_day' 不再被产出；枚举保留仅为类型兼容。
+ */
 export function mergeLevel(a: ConflictLevel, b: ConflictLevel): ConflictLevel {
-  if (a === 'all_day' || b === 'all_day') return 'all_day';
-  if (a === 'overlap' || b === 'overlap') return 'overlap';
-  return 'none';
+  if (a === 'none') return b;
+  if (b === 'none') return a;
+  return 'overlap';
 }
