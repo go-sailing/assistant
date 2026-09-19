@@ -46,23 +46,66 @@ export interface UserSettings {
   lunar_enabled: boolean
   /** 二十四节气（仅在 lunar_enabled 时可为 true） */
   solar_terms_enabled: boolean
-  /** 默认启动页 */
-  home_route: '/calendar' | '/tasks'
-}
-
-/** 清单 */
-export interface TaskList {
-  id: number | string
-  name: string
-  is_default: boolean
-  created_at: string
-  updated_at: string
+  /** 默认启动页（v0.7.0 增加「项目」） */
+  home_route: '/calendar' | '/tasks' | '/projects'
 }
 
 export type TaskStatus = 'todo' | 'completed'
 export type TaskPriority = 'none' | 'low' | 'medium' | 'high'
 /** v0.6.0：任务类型（普通任务 / 项目任务） */
 export type TaskType = 'normal' | 'project'
+
+/* ---------------- v0.7.0 智能体代理 ---------------- */
+
+export type AgentKind = 'claude_code' | 'opencode' | 'pi_agent' | 'custom'
+export type AgentStatus = 'enabled' | 'disabled'
+/** 派生连接状态：未连接 / 已连接（活跃窗口内）/ 离线 */
+export type AgentConnection = 'never' | 'online' | 'offline'
+/** 任务的代理执行状态（与任务完成状态正交） */
+export type AgentState = 'none' | 'pending' | 'running' | 'succeeded' | 'failed'
+export type AgentLogAction =
+  | 'assigned'
+  | 'unassigned'
+  | 'claimed'
+  | 'progress'
+  | 'succeeded'
+  | 'failed'
+  | 'retried'
+
+export interface Agent {
+  id: number
+  name: string
+  kind: AgentKind
+  kind_label: string
+  description: string | null
+  status: AgentStatus
+  token_prefix: string
+  connection: AgentConnection
+  last_seen_at: string | null
+  running_count: number
+  pending_count: number
+  created_at: string
+  updated_at: string
+}
+
+/** 创建/重置凭据响应：明文仅此一次 */
+export interface AgentWithToken {
+  agent: Agent
+  token: string
+  mcp: { endpoint: string; auth_header: string }
+}
+
+export interface AgentLog {
+  id: number
+  action: AgentLogAction
+  agent_id: number | null
+  agent_name: string | null
+  content: string | null
+  created_at: string
+}
+
+/** 代理绑定任务列表的筛选状态（不含 none） */
+export type AgentBoundState = 'pending' | 'running' | 'succeeded' | 'failed'
 
 /** 任务对象 */
 export interface Task {
@@ -72,8 +115,6 @@ export interface Task {
   status: TaskStatus
   priority: TaskPriority
   due_at: string | null
-  list_id: number | string
-  list_name: string
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -98,6 +139,16 @@ export interface Task {
   subtask_completed: number
   /** 写操作响应：被自动恢复为未完成的项目 */
   revived_parent?: { id: number; title: string } | null
+  /* ----- v0.7.0 代理执行维度（与任务完成状态正交） ----- */
+  agent_id: number | null
+  agent_name: string | null
+  agent_state: AgentState
+  agent_queued_at: string | null
+  agent_claimed_at: string | null
+  agent_finished_at: string | null
+  agent_result: string | null
+  /** 派生：代理连接状态（未指派时为 null） */
+  agent_connection: AgentConnection | null
 }
 
 /** v0.6.0：删除前预取的影响范围（项目成员数 / 关联日程数） */
@@ -198,8 +249,6 @@ export interface EventTaskBrief {
   priority: TaskPriority
   due_at: string | null
   completed_at: string | null
-  list_id: number | string
-  list_name: string
 }
 
 export interface CalendarEvent {
@@ -363,7 +412,6 @@ export interface ConflictDetail {
 }
 
 export interface TaskQuery {
-  list_id?: string | number
   status?: TaskStatus
   priority?: TaskPriority
   /** v0.6.0：按任务类型筛选 */
@@ -383,7 +431,6 @@ export interface TaskPayload {
   note?: string | null
   priority?: TaskPriority
   due_at?: string | null
-  list_id?: string | number | null
   status?: TaskStatus
   /** v0.6.0：仅创建时有效；编辑携带会被服务端拒绝 */
   task_type?: TaskType
@@ -484,10 +531,9 @@ export interface ScopeBlock {
   recommended: EventScope
 }
 
-/** 确认条动作类型 */
+/** 确认条动作类型（v0.7.0：delete_list 随清单下线移除） */
 export type ConfirmAction =
   | 'delete_task'
-  | 'delete_list'
   | 'batch_update_tasks'
   | 'delete_event'
   | 'batch_update_events'

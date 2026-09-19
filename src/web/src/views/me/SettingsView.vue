@@ -44,13 +44,20 @@ const clearing = ref(false)
 /** v0.5.0：长期记忆条数（0 条也照常显示，与记忆页同源） */
 const memoryCount = ref(0)
 
-const homeLabel = computed(() => (settingsStore.homeRoute === '/tasks' ? '任务' : '日程'))
+const homeLabel = computed(() => HOME_LABELS[settingsStore.homeRoute])
 const termsLabel = computed(() =>
   settingsStore.lunarEnabled ? '二十四节气' : '二十四节气（需先开启显示农历）'
 )
+/** v0.7.0：默认启动页新增「项目」 */
+const HOME_LABELS: Record<UserSettings['home_route'], string> = {
+  '/calendar': '日程',
+  '/tasks': '任务',
+  '/projects': '项目',
+}
 const homeItems = [
   { label: '日程', value: '/calendar' },
   { label: '任务', value: '/tasks' },
+  { label: '项目', value: '/projects' },
 ]
 
 /** 记忆条数：失败静默（不改动其余设置区呈现），下次进入再拉 */
@@ -103,7 +110,8 @@ async function toggleFlag(flag: BoolFlag): Promise<void> {
 /** 默认启动页：选中即保存（下次登录/冷启动生效） */
 async function pickHome(value: string): Promise<void> {
   homeSheetOpen.value = false
-  const route: UserSettings['home_route'] = value === '/tasks' ? '/tasks' : '/calendar'
+  if (value !== '/calendar' && value !== '/tasks' && value !== '/projects') return
+  const route: UserSettings['home_route'] = value
   if (route === settingsStore.homeRoute || homeSaving.value) return
 
   const before = { ...settingsStore.settings }
@@ -231,7 +239,7 @@ async function confirmClear(): Promise<void> {
           <li>
             <button class="settings__row pressable" @click="aboutOpen = true">
               <span class="settings__label">关于</span>
-              <span class="settings__value">v0.6.0</span>
+              <span class="settings__value">v0.7.0</span>
               <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
             </button>
           </li>
@@ -261,7 +269,7 @@ async function confirmClear(): Promise<void> {
     >
       <div class="about">
         <p class="about__row"><span>应用名称</span><span>个人助手</span></p>
-        <p class="about__row"><span>版本</span><span>v0.6.0</span></p>
+        <p class="about__row"><span>版本</span><span>v0.7.0</span></p>
         <p class="about__tip">日历、任务与助手一体化；长期未使用（30 天）需重新登录。</p>
       </div>
     </AppModal>

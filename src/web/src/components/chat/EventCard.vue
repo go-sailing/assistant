@@ -52,8 +52,6 @@ const taskAsTask = computed<Task | null>(() => {
     status: t.status,
     priority: t.priority,
     due_at: t.due_at,
-    list_id: t.list_id,
-    list_name: t.list_name,
     created_at: '',
     updated_at: '',
     completed_at: t.completed_at,
@@ -64,6 +62,14 @@ const taskAsTask = computed<Task | null>(() => {
     member_completed: 0,
     subtask_total: 0,
     subtask_completed: 0,
+    agent_id: null,
+    agent_name: null,
+    agent_state: 'none',
+    agent_queued_at: null,
+    agent_claimed_at: null,
+    agent_finished_at: null,
+    agent_result: null,
+    agent_connection: null,
   }
 })
 

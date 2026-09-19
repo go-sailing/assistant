@@ -8,11 +8,10 @@ import AppIcon from '@/components/AppIcon.vue'
 
 /**
  * 项目内快速添加成员（v0.6.0）：输入标题即创建（parent_id = 项目 ID）；
- * 「更多字段」跳到任务表单并预填所属项目与清单。
+ * 「更多字段」跳到任务表单并预填所属项目。
  */
 const props = defineProps<{
   projectId: number | string
-  listId: number | string
 }>()
 
 const emit = defineEmits<{
@@ -32,7 +31,6 @@ async function add(): Promise<void> {
   try {
     const created = await taskApi.createTask({
       title: value,
-      list_id: Number(props.listId),
       parent_id: Number(props.projectId),
       task_type: 'normal',
     })
@@ -49,7 +47,7 @@ async function add(): Promise<void> {
 function moreFields(): void {
   router.push({
     path: '/tasks/new',
-    query: { parent_id: String(props.projectId), list_id: String(props.listId) },
+    query: { parent_id: String(props.projectId) },
   })
 }
 </script>

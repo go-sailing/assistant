@@ -119,11 +119,60 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/tasks/SearchView.vue'),
     meta: { requiresAuth: true },
   },
+  /* ----- v0.7.0：项目页（与任务页在页面层分离） ----- */
   {
-    path: '/lists',
-    name: 'list-manage',
-    component: () => import('@/views/tasks/ListManageView.vue'),
+    path: '/projects',
+    name: 'project-home',
+    component: () => import('@/views/projects/ProjectPageView.vue'),
     meta: { requiresAuth: true },
+  },
+  {
+    path: '/projects/new',
+    name: 'project-create',
+    component: () => import('@/views/projects/ProjectFormView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/projects/:id',
+    name: 'project-detail',
+    component: () => import('@/views/tasks/TaskDetailView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/projects/:id/edit',
+    name: 'project-edit',
+    component: () => import('@/views/projects/ProjectFormView.vue'),
+    meta: { requiresAuth: true },
+  },
+  /* ----- v0.7.0：智能体代理 ----- */
+  {
+    path: '/agents',
+    name: 'agent-home',
+    component: () => import('@/views/agents/AgentListView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/agents/new',
+    name: 'agent-create',
+    component: () => import('@/views/agents/AgentFormView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/agents/:id',
+    name: 'agent-detail',
+    component: () => import('@/views/agents/AgentDetailView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/agents/:id/edit',
+    name: 'agent-edit',
+    component: () => import('@/views/agents/AgentFormView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    // v0.7.0：清单能力下线，旧链一律回任务页（无死链、无中间态）
+    path: '/lists',
+    redirect: '/tasks',
   },
   {
     path: '/chat',

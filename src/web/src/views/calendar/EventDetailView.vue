@@ -301,10 +301,6 @@ onMounted(load)
               <!-- 三态不只靠颜色：已调整 / 已取消均为文字胶囊 -->
               <RecurrenceBadge v-if="isModified" kind="modified" />
               <RecurrenceBadge v-if="isCancelled" kind="cancelled" />
-              <span v-if="isTaskEvent && detail.task" class="detail__list">
-                <AppIcon name="folder" :size="14" color="#6B7080" />
-                {{ detail.task.list_name || '默认清单' }}
-              </span>
             </div>
           </div>
         </section>
@@ -512,13 +508,6 @@ onMounted(load)
   gap: var(--sp-2);
   margin-top: var(--sp-2);
   flex-wrap: wrap;
-}
-.detail__list {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--font-caption);
-  color: var(--text-secondary);
 }
 .detail__meta {
   margin-top: var(--sp-2);

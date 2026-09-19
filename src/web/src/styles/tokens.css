@@ -18,6 +18,8 @@
   --color-danger: #d93025;
   --color-warning: #ff8f1f;
   --color-success: #22b573;
+  /* v0.7.0：失败/危险语义的浅底（用于失败状态胶囊、删除代理等；不新增色相） */
+  --color-danger-light: #fdeceb;
 
   /* 优先级 */
   --priority-high: #f5483b;

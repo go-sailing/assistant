@@ -2,7 +2,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ok } from '../../common/response';
 import { getUser } from '../../middleware/auth';
-import { idParam, optionalId, parse, priorityEnum, statusEnum, taskTypeEnum } from '../../common/validate';
+import {
+  idParam,
+  parse,
+  priorityEnum,
+  rejectListParams,
+  statusEnum,
+  taskTypeEnum,
+} from '../../common/validate';
 import { taskService } from './task.service';
 import { eventService } from '../event/event.service';
 
@@ -36,7 +43,6 @@ const createSchema = z.object({
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtSchema.optional(),
-  list_id: optionalId.optional(),
   /** v0.6.0：挂到项目任务下成为成员（父必须是 project）；0/null 表示无父 */
   parent_id: parentIdSchema.optional(),
   /** v0.6.0：任务类型，缺省 normal */
@@ -48,7 +54,6 @@ const updateSchema = z.object({
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtSchema.optional(),
-  list_id: optionalId.optional(),
   /** v0.6.0：移入项目传项目 ID；显式 null/0 = 移出成为独立任务 */
   parent_id: parentIdSchema.optional(),
   /** v0.6.0：不接受变更，携带即由服务层拒绝（保留字段以便给出明确错误） */
@@ -56,7 +61,6 @@ const updateSchema = z.object({
 });
 
 const listQuerySchema = z.object({
-  list_id: z.coerce.number().int().positive().optional(),
   status: statusEnum.optional(),
   priority: priorityEnum.optional(),
   /** v0.6.0：按任务类型筛选（normal / project） */
@@ -83,7 +87,6 @@ const completeSchema = z.object({
 const batchSchema = z.object({
   filter: z
     .object({
-      list_id: z.number().int().positive().optional(),
       status: statusEnum.optional(),
       priority: priorityEnum.optional(),
       due_from: z.string().optional(),
@@ -95,7 +98,6 @@ const batchSchema = z.object({
     priority: priorityEnum.optional(),
     due_at: dueAtSchema.optional(),
     status: statusEnum.optional(),
-    list_id: optionalId.optional(),
   }),
 });
 
@@ -105,6 +107,7 @@ taskRoutes.get(
   '/tasks',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
+    rejectListParams(req.query, '查询参数');
     const filter = parse(listQuerySchema, req.query, '查询参数');
     ok(res, await taskService.list(user.id, filter));
   })
@@ -124,6 +127,7 @@ taskRoutes.post(
   '/tasks',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
+    rejectListParams(req.body, '任务参数');
     const input = parse(createSchema, req.body, '任务参数');
     ok(res, await taskService.create(user.id, input));
   })
@@ -133,6 +137,10 @@ taskRoutes.post(
   '/tasks/batch-update',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
+    const body = (req.body ?? {}) as { filter?: unknown; update?: unknown };
+    rejectListParams(body, '批量更新参数');
+    rejectListParams(body.filter, '批量更新筛选参数');
+    rejectListParams(body.update, '批量更新字段');
     const { filter, update } = parse(batchSchema, req.body, '批量更新参数');
     ok(res, await taskService.batchUpdateByFilter(user.id, filter, update));
   })
@@ -208,6 +216,7 @@ taskRoutes.patch(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
+    rejectListParams(req.body, '任务参数');
     const patch = parse(updateSchema, req.body, '任务参数');
     ok(res, await taskService.update(user.id, id, patch));
   })

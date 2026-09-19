@@ -91,7 +91,9 @@ function clearKeyword(): void {
 }
 
 function goDetail(task: Task): void {
-  router.push(`/tasks/${task.id}`)
+  // v0.7.0：项目与普通任务在页面层分离
+  if (task.task_type === 'project') router.push(`/projects/${task.id}`)
+  else router.push(`/tasks/${task.id}`)
 }
 
 async function onToggle(task: Task): Promise<void> {

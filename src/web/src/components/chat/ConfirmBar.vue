@@ -21,7 +21,6 @@ function totalCountOf(event: unknown): number | null {
 const isDelete = computed(
   () =>
     props.block.action === 'delete_task' ||
-    props.block.action === 'delete_list' ||
     props.block.action === 'delete_event' ||
     props.block.action === 'delete_event_series' ||
     props.block.action === 'batch_update_events'
@@ -44,8 +43,6 @@ const description = computed(() => {
   switch (action) {
     case 'delete_task':
       return count > 1 ? `确认删除这 ${count} 个任务？` : `确认删除「${first || '该任务'}」？`
-    case 'delete_list':
-      return `确认删除该清单？其中 ${count} 个任务将移至默认清单`
     case 'batch_update_tasks':
       return `确认批量修改这 ${count} 个任务？`
     case 'delete_event':
@@ -88,8 +85,6 @@ const resultText = computed(() => {
   switch (action) {
     case 'delete_task':
       return `已删除 ${count} 个任务`
-    case 'delete_list':
-      return `已删除清单，${count} 个任务已移至默认清单`
     case 'batch_update_tasks':
       return `已更新 ${count} 个任务`
     case 'delete_event':

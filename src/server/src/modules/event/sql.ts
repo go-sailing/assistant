@@ -11,7 +11,8 @@ import type { ConflictLevel, EventRow } from './types';
 
 /**
  * 日程查询公共 SELECT：
- * 任务日程的标题/优先级/完成态/清单均实时取自 tasks 与 task_lists，events 不存冗余副本。
+ * 任务日程的标题/优先级/完成态实时取自 tasks，events 不存冗余副本。
+ * v0.7.0：清单维度已下线，不再 JOIN task_lists。
  */
 export const EVENT_SELECT = `
   SELECT e.*,
@@ -19,12 +20,9 @@ export const EVENT_SELECT = `
          t.status       AS task_status,
          t.priority     AS task_priority,
          t.due_at       AS task_due_at,
-         t.completed_at AS task_completed_at,
-         t.list_id      AS task_list_id,
-         l.name         AS task_list_name
+         t.completed_at AS task_completed_at
   FROM events e
-  LEFT JOIN tasks t       ON t.id = e.task_id
-  LEFT JOIN task_lists l  ON l.id = t.list_id
+  LEFT JOIN tasks t ON t.id = e.task_id
 `;
 
 /** 时间段左闭右开相交判定 */

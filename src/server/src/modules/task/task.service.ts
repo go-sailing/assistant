@@ -4,6 +4,7 @@ import { AppError } from '../../common/errors';
 import { config } from '../../config';
 import { logger } from '../../common/logger';
 import { listService } from '../list/list.service';
+import type { AgentState } from '../agent/types';
 import {
   normalizeSort,
   toTaskDTO,
@@ -37,13 +38,15 @@ const MEMBER_PROGRESS_JOIN = `
 `;
 
 const TASK_SELECT = `
-  SELECT t.*, l.name AS list_name,
+  SELECT t.*,
+         a.name AS agent_name,
+         a.last_seen_at AS agent_last_seen_at,
          COALESCE(c.total, 0)::int AS member_total,
          COALESCE(c.done, 0)::int AS member_completed,
          COALESCE(c.total, 0)::int AS subtask_total,
          COALESCE(c.done, 0)::int AS subtask_completed
   FROM tasks t
-  JOIN task_lists l ON l.id = t.list_id
+  LEFT JOIN agents a ON a.id = t.agent_id
   ${MEMBER_PROGRESS_JOIN}
 `;
 
@@ -58,10 +61,6 @@ function buildConditions(userId: number, filter: TaskFilter): Condition {
   const params: unknown[] = [userId];
   let index = 2;
 
-  if (filter.list_id) {
-    clauses.push(`t.list_id = $${index++}`);
-    params.push(filter.list_id);
-  }
   if (filter.status) {
     clauses.push(`t.status = $${index++}`);
     params.push(filter.status);
@@ -73,6 +72,15 @@ function buildConditions(userId: number, filter: TaskFilter): Condition {
   if (filter.task_type) {
     clauses.push(`t.task_type = $${index++}`);
     params.push(filter.task_type);
+  }
+  // v0.7.0：代理维度筛选（代理详情「绑定任务」）
+  if (filter.agent_id) {
+    clauses.push(`t.agent_id = $${index++}`);
+    params.push(filter.agent_id);
+  }
+  if (filter.agent_state) {
+    clauses.push(`t.agent_state = $${index++}`);
+    params.push(filter.agent_state);
   }
   if (filter.due_from) {
     clauses.push(`t.due_at >= $${index++}::timestamptz`);
@@ -153,25 +161,19 @@ export function normalizeTaskType(raw: unknown): TaskType {
  * 任务领域服务：REST 控制器与 LLM 工具执行器共用此服务，
  * 保证「能力对等」与业务规则只实现一次（系统设计文档 6.1）。
  */
-export const taskService = {
-  /** 解析目标清单：优先显式 list_id，其次按名称匹配，都没有则落到默认清单 */
-  async resolveListId(
-    userId: number,
-    listId?: number | null,
-    listName?: string | null
-  ): Promise<number> {
-    if (listId) {
-      const list = await listService.getOwned(userId, listId);
-      return list.id;
-    }
-    if (listName && listName.trim()) {
-      const found = await listService.findByName(userId, listName);
-      if (found) return found.id;
-    }
-    const defaultList = await listService.getDefault(userId);
-    return defaultList.id;
-  },
+/** 默认清单解析缓存（v0.7.0：清单对外下线，任务统一落默认清单） */
+const defaultListCache = new Map<number, { id: number; at: number }>();
+const DEFAULT_LIST_TTL_MS = 60_000;
 
+async function getDefaultListId(userId: number): Promise<number> {
+  const cached = defaultListCache.get(userId);
+  if (cached && Date.now() - cached.at < DEFAULT_LIST_TTL_MS) return cached.id;
+  const id = await listService.getDefaultId(userId);
+  defaultListCache.set(userId, { id, at: Date.now() });
+  return id;
+}
+
+export const taskService = {
   async getOwned(userId: number, taskId: number): Promise<TaskRow> {
     const res = await query<TaskRow>(`${TASK_SELECT} WHERE t.id = $1 AND t.user_id = $2`, [
       taskId,
@@ -256,13 +258,6 @@ export const taskService = {
     const parent = await this.getOwned(userId, parentId);
     if (parent.task_type !== 'project') throw AppError.subtaskNotSupported();
     return parent;
-  },
-
-  /** 4014：成员任务必须与项目同清单 */
-  assertSameList(childListId: number, parentListId: number): void {
-    if (Number(childListId) !== Number(parentListId)) {
-      throw AppError.subtaskListMismatch();
-    }
   },
 
   /** 项目成员规模上限：直接成员数 < TASK_TREE_MAX_NODES（默认 200） */
@@ -362,18 +357,17 @@ export const taskService = {
     return ids.map((id) => map.get(id)).filter((t): t is TaskDTO => !!t);
   },
 
-  /** 可挂载的父任务候选（v0.6.0）：同清单的 project 列表，排除自身 */
+  /** 可挂载的父任务候选（v0.7.0）：全部项目，排除自身（清单维度已下线） */
   async listParentCandidates(userId: number, taskId: number): Promise<TaskDTO[]> {
-    const self = await this.getOwned(userId, taskId);
+    await this.getOwned(userId, taskId);
     const res = await query<TaskRow>(
       `${TASK_SELECT}
        WHERE t.user_id = $1
-         AND t.list_id = $2
          AND t.task_type = 'project'
-         AND t.id <> $3
+         AND t.id <> $2
        ORDER BY (t.due_at IS NULL), t.due_at, t.id
        LIMIT 200`,
-      [userId, self.list_id, taskId]
+      [userId, taskId]
     );
     return res.rows.map(toTaskDTO);
   },
@@ -389,15 +383,14 @@ export const taskService = {
     const title = normalizeTitle(input.title);
     const note = normalizeNote(input.note);
     const dueAt = normalizeDueAt(input.due_at);
-    const listId = await this.resolveListId(userId, input.list_id);
+    const listId = await getDefaultListId(userId);
 
     const parentId = input.parent_id ? Number(input.parent_id) : null;
     // 4017：项目必须为顶层任务
     this.assertProjectRoot(taskType, parentId);
     if (parentId !== null) {
-      // 404 / 4018：父任务必须是项目
-      const parent = await this.assertParentIsProject(userId, parentId);
-      this.assertSameList(listId, parent.list_id); // 4014
+      // 404 / 4018：父任务必须是项目（v0.7.0 起不再有同清单约束）
+      await this.assertParentIsProject(userId, parentId);
       await this.assertMemberCapacity(userId, parentId);
     }
 
@@ -435,8 +428,6 @@ export const taskService = {
     const params: unknown[] = [];
     let index = 1;
     let revived: { id: number; title: string } | null = null;
-    /** 仅改清单的快路径：列表迁移已直接落库，返回前需回读 */
-    let listChanged = false;
 
     // 移动层级：显式 null / 0 = 移出成为独立任务
     if (patch.parent_id !== undefined) {
@@ -447,9 +438,8 @@ export const taskService = {
           throw AppError.projectInvalidState(); // 4017
         }
         if (newParentId !== null) {
-          // 404 / 4018：目标父必须是项目
-          const parent = await this.assertParentIsProject(userId, newParentId);
-          this.assertSameList(existing.list_id, parent.list_id); // 4014
+          // 404 / 4018：目标父必须是项目（v0.7.0 起不再有同清单约束）
+          await this.assertParentIsProject(userId, newParentId);
           await this.assertMemberCapacity(userId, newParentId, taskId);
         }
         sets.push(`parent_id = $${index++}`);
@@ -484,35 +474,8 @@ export const taskService = {
       sets.push(`due_at = $${index++}`);
       params.push(normalizeDueAt(patch.due_at));
     }
-    if (patch.list_id !== undefined && patch.list_id !== null) {
-      const listId = await this.resolveListId(userId, patch.list_id);
-      if (existing.parent_id !== null) {
-        // 成员任务的清单必须与项目一致：先移出成为独立任务再改清单
-        throw AppError.subtaskListMismatch();
-      }
-      if (listId !== existing.list_id) {
-        listChanged = true;
-        if (existing.task_type === 'project') {
-          // 项目改清单：项目自身 + 直接成员一并迁移（仅一层）
-          await query(
-            `UPDATE tasks SET list_id = $3, updated_at = now()
-             WHERE user_id = $2 AND (id = $1 OR parent_id = $1)`,
-            [taskId, userId, listId]
-          );
-        } else {
-          await query(
-            `UPDATE tasks SET list_id = $3, updated_at = now()
-             WHERE user_id = $2 AND id = $1`,
-            [taskId, userId, listId]
-          );
-        }
-      }
-    }
-
     if (sets.length === 0) {
-      // 仅改清单时列表迁移已直接落库，需回读最新值而非返回变更前快照
-      const dto = listChanged ? await this.get(userId, taskId) : toTaskDTO(existing);
-      return { ...dto, revived_parent: revived };
+      return { ...toTaskDTO(existing), revived_parent: revived };
     }
 
     sets.push('updated_at = now()');
@@ -633,7 +596,7 @@ export const taskService = {
   async batchUpdateByIds(
     userId: number,
     ids: number[],
-    patch: { priority?: Priority; due_at?: string | null; status?: TaskStatus; list_id?: number | null }
+    patch: { priority?: Priority; due_at?: string | null; status?: TaskStatus }
   ): Promise<TaskDTO[]> {
     if (ids.length === 0) return [];
 
@@ -648,10 +611,6 @@ export const taskService = {
     if (patch.due_at !== undefined) {
       sets.push(`due_at = $${index++}`);
       params.push(normalizeDueAt(patch.due_at));
-    }
-    if (patch.list_id !== undefined && patch.list_id !== null) {
-      sets.push(`list_id = $${index++}`);
-      params.push(await this.resolveListId(userId, patch.list_id));
     }
     if (patch.status !== undefined) {
       if (patch.status === 'completed') {
@@ -687,7 +646,7 @@ export const taskService = {
   async batchUpdateByFilter(
     userId: number,
     filter: TaskFilter,
-    patch: { priority?: Priority; due_at?: string | null; status?: TaskStatus; list_id?: number | null }
+    patch: { priority?: Priority; due_at?: string | null; status?: TaskStatus }
   ): Promise<TaskDTO[]> {
     const targets = await this.listAll(userId, filter);
     if (targets.length === 0) return [];
@@ -696,6 +655,21 @@ export const taskService = {
       targets.map((t) => t.id),
       patch
     );
+  },
+
+  /** v0.7.0：代理详情「绑定任务」列表（按执行状态筛选，缺省返回全部非未指派态） */
+  async listByAgent(
+    userId: number,
+    agentId: number,
+    filter: { agent_state?: AgentState; page?: number; page_size?: number } = {}
+  ): Promise<{ list: TaskDTO[]; total: number; page: number; page_size: number }> {
+    return this.list(userId, {
+      agent_id: agentId,
+      agent_state: filter.agent_state,
+      page: filter.page,
+      page_size: filter.page_size ?? 20,
+      sort: 'due_at_asc',
+    });
   },
 
   async countByUser(userId: number): Promise<number> {

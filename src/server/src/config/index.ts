@@ -101,6 +101,25 @@ export const config = {
     /** 单个项目的直接成员上限（v0.6.0 起语义由「子树节点上限」过渡而来） */
     treeMaxNodes: num('TASK_TREE_MAX_NODES', 200),
   },
+  /** v0.7.0 智能体代理（系统设计文档 16.3） */
+  agent: {
+    /** 单用户代理数上限 */
+    maxPerUser: num('AGENT_MAX_PER_USER', 20),
+    /** 单代理待执行队列上限 */
+    queueMax: num('AGENT_QUEUE_MAX', 100),
+    /** 代理"在线"判定窗口（分钟） */
+    activeWindowMin: num('AGENT_ACTIVE_WINDOW_MIN', 5),
+    /** wait_agent_task 长轮询服务端硬上限（毫秒） */
+    waitTimeoutMs: num('AGENT_WAIT_TIMEOUT_MS', 25000),
+    /** 长轮询兜底轮询间隔（毫秒，覆盖多实例与事件丢失） */
+    waitFallbackPollMs: num('AGENT_WAIT_FALLBACK_POLL_MS', 2000),
+    /** 长轮询并发等待者上限（超出快速返回，不排队） */
+    waitMaxConcurrency: num('AGENT_WAIT_MAX_CONCURRENCY', 200),
+    /** 每任务执行记录保留条数 */
+    logKeep: num('AGENT_LOG_KEEP', 50),
+    /** 代理绑定任务列表默认分页大小 */
+    queuePageSize: num('AGENT_QUEUE_PAGE_SIZE', 20),
+  },
   /** v0.4.0 法定工作日历 */
   workCalendar: {
     /** 国家/地区（本版仅 CN） */
@@ -113,6 +132,8 @@ export const config = {
     refreshPerMin: num('RATE_LIMIT_REFRESH_PER_MIN', 10),
     /** v0.5.0：归档聊天记录每用户每分钟（PRD 5.6 / SDD 7.2） */
     archivePerMin: num('RATE_LIMIT_ARCHIVE_PER_MIN', 1),
+    /** v0.7.0：MCP 接入端点按代理凭据维度每分钟（SDD 5.2） */
+    mcpPerMin: num('RATE_LIMIT_MCP_PER_MIN', 60),
   },
 };
 

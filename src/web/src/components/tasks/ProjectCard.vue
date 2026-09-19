@@ -133,8 +133,6 @@ defineExpose({ close })
           <span class="ellipsis">{{ project.title }}</span>
         </p>
         <p class="project-item__sub">
-          <span class="project-item__list ellipsis">{{ project.list_name || '默认清单' }}</span>
-          <span v-if="project.due_at" class="project-item__dot">·</span>
           <span
             v-if="project.due_at"
             class="project-item__time"
@@ -245,9 +243,6 @@ defineExpose({ close })
   font-size: var(--font-caption);
   line-height: var(--font-caption-lh);
   color: var(--text-secondary);
-}
-.project-item__list {
-  max-width: 45%;
 }
 .project-item__time--danger {
   color: var(--color-danger);

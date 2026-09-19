@@ -1,3 +1,5 @@
+import { deriveConnection, type AgentConnection, type AgentState } from '../agent/types';
+
 export type Priority = 'none' | 'low' | 'medium' | 'high';
 export type TaskStatus = 'todo' | 'completed';
 /** v0.6.0：普通任务（独立单任务）/ 项目任务（可拥有一层成员任务的容器） */
@@ -8,7 +10,6 @@ export interface TaskRow {
   id: number;
   user_id: number;
   list_id: number;
-  list_name: string;
   title: string;
   note: string | null;
   status: string;
@@ -32,6 +33,17 @@ export interface TaskRow {
   subtask_total?: number;
   /** @deprecated v0.6.0：兼容别名，与 member_* 同值 */
   subtask_completed?: number;
+  /* ----- v0.7.0：代理执行维度（LEFT JOIN agents 带出代理名与最近活跃） ----- */
+  agent_id: number | null;
+  agent_state: string;
+  agent_queued_at: Date | null;
+  agent_claimed_at: Date | null;
+  agent_finished_at: Date | null;
+  agent_result: string | null;
+  /** 聚合字段：代理名（代理删除后为 NULL） */
+  agent_name?: string | null;
+  /** 聚合字段：代理最近活跃时间（用于派生连接状态） */
+  agent_last_seen_at?: Date | null;
 }
 
 export interface TaskDTO {
@@ -41,8 +53,6 @@ export interface TaskDTO {
   status: TaskStatus;
   priority: Priority;
   due_at: string | null;
-  list_id: number;
-  list_name: string;
   /** 创建来源：manual（任务页）/ chat（对话） */
   source: 'manual' | 'chat';
   created_at: string;
@@ -61,6 +71,16 @@ export interface TaskDTO {
   subtask_total: number;
   /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
   subtask_completed: number;
+  /* ----- v0.7.0：代理执行维度（与任务完成状态正交） ----- */
+  agent_id: number | null;
+  agent_name: string | null;
+  agent_state: AgentState;
+  agent_queued_at: string | null;
+  agent_claimed_at: string | null;
+  agent_finished_at: string | null;
+  agent_result: string | null;
+  /** 派生：代理连接状态（agent_id 为空时为 null） */
+  agent_connection: AgentConnection | null;
 }
 
 /** 写操作结果：可能顺带恢复了被自动唤醒的父任务（项目） */
@@ -68,25 +88,7 @@ export interface TaskWriteResult extends TaskDTO {
   revived_parent?: { id: number; title: string } | null;
 }
 
-export interface ListRow {
-  id: number;
-  user_id: number;
-  name: string;
-  is_default: boolean;
-  created_at: Date;
-  updated_at: Date;
-}
-
-export interface ListDTO {
-  id: number;
-  name: string;
-  is_default: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface TaskFilter {
-  list_id?: number;
   status?: TaskStatus;
   priority?: Priority;
   due_from?: string;
@@ -101,6 +103,10 @@ export interface TaskFilter {
   parent_id?: number;
   /** v0.6.0：按任务类型筛选（normal / project） */
   task_type?: TaskType;
+  /** v0.7.0：按指派代理筛选（代理详情「绑定任务」） */
+  agent_id?: number;
+  /** v0.7.0：按代理执行状态筛选 */
+  agent_state?: AgentState;
 }
 
 export interface CreateTaskInput {
@@ -108,7 +114,6 @@ export interface CreateTaskInput {
   note?: string | null;
   priority?: Priority;
   due_at?: string | null;
-  list_id?: number | null;
   /** v0.6.0：挂到项目任务下成为成员（父任务必须是 project） */
   parent_id?: number | null;
   /** v0.6.0：任务类型，缺省 normal */
@@ -120,7 +125,6 @@ export interface UpdateTaskInput {
   note?: string | null;
   priority?: Priority;
   due_at?: string | null;
-  list_id?: number | null;
   /** v0.6.0：移入项目传项目 ID；显式 null = 移出成为独立任务 */
   parent_id?: number | null;
   /** v0.6.0：仅用于「携带即报错」判定，非合法更新字段 */
@@ -142,6 +146,7 @@ export interface SubtaskGroup {
 }
 
 export function toTaskDTO(row: TaskRow): TaskDTO {
+  const agentId = row.agent_id ?? null;
   return {
     id: row.id,
     title: row.title,
@@ -149,8 +154,6 @@ export function toTaskDTO(row: TaskRow): TaskDTO {
     status: row.status as TaskStatus,
     priority: row.priority as Priority,
     due_at: row.due_at ? row.due_at.toISOString() : null,
-    list_id: row.list_id,
-    list_name: row.list_name,
     source: row.source === 'chat' ? 'chat' : 'manual',
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
@@ -162,16 +165,14 @@ export function toTaskDTO(row: TaskRow): TaskDTO {
     member_completed: Number(row.member_completed ?? row.subtask_completed ?? 0),
     subtask_total: Number(row.member_total ?? row.subtask_total ?? 0),
     subtask_completed: Number(row.member_completed ?? row.subtask_completed ?? 0),
-  };
-}
-
-export function toListDTO(row: ListRow): ListDTO {
-  return {
-    id: row.id,
-    name: row.name,
-    is_default: row.is_default,
-    created_at: row.created_at.toISOString(),
-    updated_at: row.updated_at.toISOString(),
+    agent_id: agentId,
+    agent_name: row.agent_name ?? null,
+    agent_state: (row.agent_state as AgentState) ?? 'none',
+    agent_queued_at: row.agent_queued_at ? row.agent_queued_at.toISOString() : null,
+    agent_claimed_at: row.agent_claimed_at ? row.agent_claimed_at.toISOString() : null,
+    agent_finished_at: row.agent_finished_at ? row.agent_finished_at.toISOString() : null,
+    agent_result: row.agent_result ?? null,
+    agent_connection: agentId ? deriveConnection(row.agent_last_seen_at ?? null) : null,
   };
 }
 

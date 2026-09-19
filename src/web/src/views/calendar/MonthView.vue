@@ -422,6 +422,12 @@ interface ShapeGesture {
   startY: number
   lock: 'none' | 'vertical' | 'horizontal'
   fired: boolean
+  /**
+   * v0.7.0（CAL-03）：起手快照——本次手势是否从列表顶部开始。
+   * 上滑时原生滚动会先把 scrollTop 推离顶部，若在 touchmove 中实时判定，
+   * 折叠分支将永不可达（v0.6.0 缺陷）；改为以起手时刻为准。
+   */
+  startAtTop: boolean
 }
 let shapeGesture: ShapeGesture | null = null
 
@@ -438,7 +444,14 @@ function onShapeTouchStart(e: TouchEvent): void {
   }
   const t = e.touches[0]
   if (!t) return
-  shapeGesture = { startX: t.clientX, startY: t.clientY, lock: 'none', fired: false }
+  shapeGesture = {
+    startX: t.clientX,
+    startY: t.clientY,
+    lock: 'none',
+    fired: false,
+    // 能进入本分支即代表起手时列表在顶部
+    startAtTop: true,
+  }
 }
 
 function onShapeTouchMove(e: TouchEvent): void {
@@ -454,8 +467,8 @@ function onShapeTouchMove(e: TouchEvent): void {
     g.lock = Math.abs(dy) > DIRECTION_RATIO * Math.abs(dx) ? 'vertical' : 'horizontal'
   }
   if (g.lock !== 'vertical') return
-  const list = listEl.value
-  if (!list || list.scrollTop > LIST_TOP_TOLERANCE) return
+  // v0.7.0：以起手快照判定，不再读取实时 scrollTop（避免被原生滚动取消判定）
+  if (!g.startAtTop) return
 
   if (!collapsed.value && dy <= -SHAPE_THRESHOLD_PX) {
     g.fired = true

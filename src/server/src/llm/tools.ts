@@ -32,11 +32,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             description:
               '截止时间，ISO8601 带时区偏移，例如 2026-09-21T10:00:00+08:00。只有日期时用 00:00:00 表示当天。无法确定时不要传。',
           },
-          list_name: {
-            type: 'string',
-            description: '所属清单名称。用户提到清单名但你不确定是否存在时传名称，系统会自动匹配或落到默认清单。',
-          },
-          list_id: { type: 'number', description: '所属清单ID，仅在明确知道清单ID时使用' },
           parent_id: {
             type: 'number',
             description:
@@ -53,7 +48,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'update_task',
-      description: '修改一个已存在任务的字段（标题/备注/优先级/截止时间/所属清单/所属父任务）。',
+      description: '修改一个已存在任务的字段（标题/备注/优先级/截止时间/所属项目）。',
       parameters: {
         type: 'object',
         properties: {
@@ -62,13 +57,11 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           note: { type: 'string' },
           priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
           due_at: { type: 'string', description: 'ISO8601 带时区偏移；传空字符串表示清除截止时间' },
-          list_name: { type: 'string', description: '目标清单名称' },
-          list_id: { type: 'number', description: '目标清单ID' },
           parent_id: {
             type: 'number',
             description:
               '所属项目（v0.6.0）：传项目任务真实 ID = 移入该项目成为成员；传 0 或 null = 移出成为独立任务。' +
-              '不能挂到普通任务下；project 任务不能移动到任何父任务下。移入须与项目同清单。',
+              '不能挂到普通任务下；project 任务不能移动到任何父任务下。',
           },
         },
         required: ['task_id'],
@@ -129,8 +122,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          list_name: { type: 'string', description: '限定清单名称' },
-          list_id: { type: 'number' },
           status: { type: 'string', enum: ['todo', 'completed'] },
           priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
           due_from: { type: 'string', description: '截止时间下限，ISO8601 带时区' },
@@ -167,38 +158,31 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
   {
     type: 'function',
     function: {
-      name: 'create_list',
-      description: '新建一个清单。',
-      parameters: {
-        type: 'object',
-        properties: { name: { type: 'string' } },
-        required: ['name'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_lists',
+      name: 'list_agents',
       description:
-        '查询用户的所有清单（含 ID 与名称）。需要按名称操作某个清单（重命名/删除/把任务移入）时，先用它拿到真实的清单 ID。',
+        '查询用户的智能体代理（外部工具接入身份，如 Claude Code）。需要把任务交给某个代理执行时，先用它拿到真实的代理 ID 与名称/状态。',
       parameters: { type: 'object', properties: {} },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'rename_list',
+      name: 'assign_task_to_agent',
       description:
-        '重命名一个已存在的自定义清单（默认清单不可重命名）。调用前请先用 list_lists 确认清单存在。list_id 与 list_name 至少提供一个。',
+        '把一个任务指派给智能体代理执行。**指派即自动执行**：指派成功后任务会自动进入该代理的待执行队列并自动下发，代理会自行领取执行，'
+        + '不存在也不需要"通知执行"这一步。agent_id 与 agent_name 至少提供一个（不确定时先调用 list_agents）。',
       parameters: {
         type: 'object',
         properties: {
-          list_id: { type: 'number' },
-          list_name: { type: 'string', description: '要重命名的清单名称，系统会按名称匹配为真实 ID' },
-          name: { type: 'string', description: '新的清单名称' },
+          task_id: { type: 'number', description: '任务 ID，必须来自查询结果的真实 ID' },
+          agent_id: { type: 'number', description: '代理 ID，必须来自 list_agents 的真实 ID' },
+          agent_name: { type: 'string', description: '代理名称，系统会按名称精确匹配' },
+          replace: {
+            type: 'boolean',
+            description: '任务已有代理时是否更换代理（true 表示更换；默认 false 会返回错误）',
+          },
         },
-        required: ['name'],
+        required: ['task_id'],
       },
     },
   },
@@ -221,21 +205,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
   {
     type: 'function',
     function: {
-      name: 'delete_list',
-      description:
-        '删除一个已存在的自定义清单（其中任务会迁移到默认清单，不会被删除）。调用前请先用 list_lists 确认清单存在。这是危险操作，系统会先让用户确认。list_id 与 list_name 至少提供一个。',
-      parameters: {
-        type: 'object',
-        properties: {
-          list_id: { type: 'number' },
-          list_name: { type: 'string', description: '要删除的清单名称，系统会按名称匹配为真实 ID' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'batch_update_tasks',
       description:
         '批量修改符合筛选条件的任务（如「把本周逾期任务都延到明天」）。这是危险操作，系统会先展示影响范围让用户确认。',
@@ -246,8 +215,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             type: 'object',
             description: '筛选条件，至少提供一个条件，不要留空以免影响全部任务',
             properties: {
-              list_name: { type: 'string' },
-              list_id: { type: 'number' },
               status: { type: 'string', enum: ['todo', 'completed'] },
               priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
               due_before: { type: 'string', description: '截止时间早于该时间，ISO8601' },
@@ -262,7 +229,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
               priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
               due_at: { type: 'string', description: '统一设置为该截止时间，ISO8601' },
               status: { type: 'string', enum: ['todo', 'completed'] },
-              list_name: { type: 'string', description: '统一移动到该清单' },
             },
           },
         },
@@ -682,7 +648,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
 /** 需要用户在对话中确认后才会执行的危险工具 */
 export const DANGEROUS_TOOLS = new Set([
   'delete_task',
-  'delete_list',
   'batch_update_tasks',
   'delete_event',
   'batch_update_events',

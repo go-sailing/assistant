@@ -66,12 +66,14 @@ function tasksForModel(tasks?: TaskDTO[]) {
     status: t.status,
     priority: t.priority,
     due_at: t.due_at,
-    list: t.list_name,
     // v0.6.0：任务类型与项目成员关系（数据最小化：不含备注全文）
     task_type: t.task_type,
     parent_id: t.parent_id,
     depth: t.depth,
     member_progress: t.member_total > 0 ? `${t.member_completed}/${t.member_total}` : undefined,
+    // v0.7.0：代理执行维度（模型可回答"那个任务执行得怎么样"）
+    agent_name: t.agent_name ?? undefined,
+    agent_state: t.agent_id ? t.agent_state : undefined,
   }));
 }
 

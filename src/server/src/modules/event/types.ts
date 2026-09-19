@@ -45,8 +45,6 @@ export interface EventRow {
   task_priority: string | null;
   task_due_at: Date | null;
   task_completed_at: Date | null;
-  task_list_id: number | null;
-  task_list_name: string | null;
 }
 
 /** 任务日程内嵌的任务摘要（供卡片与详情展示，实时数据） */
@@ -57,8 +55,6 @@ export interface EventTaskBrief {
   priority: Priority;
   due_at: string | null;
   completed_at: string | null;
-  list_id: number;
-  list_name: string;
 }
 
 export interface EventDTO {
@@ -275,8 +271,6 @@ export function toEventDTO(row: EventRow, tz: string = config.event.defaultTz): 
             priority: (row.task_priority as Priority) ?? 'none',
             due_at: row.task_due_at ? row.task_due_at.toISOString() : null,
             completed_at: row.task_completed_at ? row.task_completed_at.toISOString() : null,
-            list_id: row.task_list_id ?? 0,
-            list_name: row.task_list_name ?? '默认清单',
           }
         : null,
   };

@@ -35,8 +35,6 @@ interface ScheduleTaskRow {
   id: number;
   title: string;
   status: string;
-  list_id: number;
-  list_name: string;
 }
 
 function normalizeDateOnly(value: string | null | undefined, label: string): string | null {
@@ -330,8 +328,8 @@ export const eventService = {
   /** 任务排期前置校验：任务必须存在、属于当前用户且未完成 */
   async requireSchedulableTask(userId: number, taskId: number): Promise<ScheduleTaskRow> {
     const res = await query<ScheduleTaskRow>(
-      `SELECT t.id, t.title, t.status, t.list_id, l.name AS list_name
-       FROM tasks t JOIN task_lists l ON l.id = t.list_id
+      `SELECT t.id, t.title, t.status
+       FROM tasks t
        WHERE t.id = $1 AND t.user_id = $2`,
       [taskId, userId]
     );

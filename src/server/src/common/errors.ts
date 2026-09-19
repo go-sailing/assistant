@@ -29,6 +29,11 @@ export const ErrorCode = {
   // v0.6.0 项目领域
   PROJECT_INVALID_STATE: 4017,
   SUBTASK_NOT_SUPPORTED: 4018,
+  // v0.7.0 智能体代理领域
+  AGENT_UNAUTHORIZED: 4019,
+  AGENT_TASK_CONFLICT: 4020,
+  AGENT_TASK_INVALID_STATE: 4021,
+  AGENT_LIMIT_EXCEEDED: 4022,
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -57,6 +62,11 @@ const HTTP_STATUS: Record<number, number> = {
   [ErrorCode.RECURRENCE_NOT_SUPPORTED]: 409,
   [ErrorCode.PROJECT_INVALID_STATE]: 409,
   [ErrorCode.SUBTASK_NOT_SUPPORTED]: 409,
+  // v0.7.0：代理凭据失败为 401（协议层鉴权），其余为业务冲突
+  [ErrorCode.AGENT_UNAUTHORIZED]: 401,
+  [ErrorCode.AGENT_TASK_CONFLICT]: 409,
+  [ErrorCode.AGENT_TASK_INVALID_STATE]: 409,
+  [ErrorCode.AGENT_LIMIT_EXCEEDED]: 409,
 };
 
 export class AppError extends Error {
@@ -180,5 +190,21 @@ export class AppError extends Error {
   /** 普通任务不支持子任务（v0.6.0）：父任务只能是项目 */
   static subtaskNotSupported(message = '普通任务不支持子任务，仅项目可包含任务') {
     return new AppError(ErrorCode.SUBTASK_NOT_SUPPORTED, message);
+  }
+  /** v0.7.0：代理凭据无效/已重置/代理已停用或已删除 */
+  static agentUnauthorized(message = '代理凭据无效或已失效') {
+    return new AppError(ErrorCode.AGENT_UNAUTHORIZED, message);
+  }
+  /** v0.7.0：领取冲突（已被领取、重复领取、并发未抢到） */
+  static agentTaskConflict(message = '该任务已被其他代理领取') {
+    return new AppError(ErrorCode.AGENT_TASK_CONFLICT, message);
+  }
+  /** v0.7.0：当前状态不允许该代理操作 */
+  static agentTaskInvalidState(message: string, details?: unknown) {
+    return new AppError(ErrorCode.AGENT_TASK_INVALID_STATE, message, details);
+  }
+  /** v0.7.0：代理数或待执行队列超出上限 */
+  static agentLimitExceeded(message: string) {
+    return new AppError(ErrorCode.AGENT_LIMIT_EXCEEDED, message);
   }
 }

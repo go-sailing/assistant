@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { Paged, RemovePreview, Task, TaskPayload, TaskQuery } from '@/types'
+import type { AgentLog, Paged, RemovePreview, Task, TaskPayload, TaskQuery } from '@/types'
 
 /** 把布尔/null 筛选参数转成后端可解析的 query 形态 */
 function toQuery(query: TaskQuery & { root_only?: boolean; parent_id?: string | number }): Record<
@@ -38,7 +38,7 @@ export function fetchAncestors(id: string | number): Promise<Task[]> {
   return request<Task[]>(`/tasks/${id}/ancestors`)
 }
 
-/** v0.6.0：可移入的项目候选（同清单 project） */
+/** v0.6.0：可移入的项目候选（全部项目，排除自身） */
 export function fetchParentCandidates(id: string | number): Promise<Task[]> {
   return request<Task[]>(`/tasks/${id}/parent-candidates`)
 }
@@ -88,4 +88,41 @@ export function batchUpdateTasks(
     method: 'POST',
     body: { filter, update: fields },
   })
+}
+
+/* ---------------- v0.7.0 智能体代理（任务侧） ---------------- */
+
+/**
+ * 指派任务给代理：**指派即自动入队并自动下发**，无需二次通知。
+ * 任务已有代理时需要 replace=true 才会更换代理。
+ */
+export function assignTaskAgent(
+  id: string | number,
+  agentId: number,
+  replace = false
+): Promise<Task> {
+  return request<Task>(`/tasks/${id}/agent`, {
+    method: 'POST',
+    body: { agent_id: agentId, replace },
+  })
+}
+
+/** 取消指派：执行中（running）需 confirm=true 二次确认 */
+export function unassignTaskAgent(id: string | number, confirm = false): Promise<Task> {
+  return request<Task>(`/tasks/${id}/agent${confirm ? '?confirm=true' : ''}`, {
+    method: 'DELETE',
+  })
+}
+
+/** 重新执行：仅 failed 态可用（失败不自动重试） */
+export function retryTaskAgent(id: string | number): Promise<Task> {
+  return request<Task>(`/tasks/${id}/agent/retry`, { method: 'POST' })
+}
+
+/** 执行记录（时间线，倒序分页） */
+export function fetchAgentLogs(
+  id: string | number,
+  query: { page?: number; page_size?: number } = {}
+): Promise<Paged<AgentLog>> {
+  return request<Paged<AgentLog>>(`/tasks/${id}/agent-logs`, { query })
 }

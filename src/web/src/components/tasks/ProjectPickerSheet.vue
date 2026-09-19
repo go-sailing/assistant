@@ -7,8 +7,8 @@ import AppIcon from '../AppIcon.vue'
 
 /**
  * 选择所属项目弹层（v0.6.0，取代旧「父任务」选择）：
- * - 编辑/移动：候选来自 fetchParentCandidates(id)（服务端已限同清单 project、排除自身）
- * - 新建任务：无 id，候选来自同清单 project 列表
+ * - 编辑/移动：候选来自 fetchParentCandidates(id)（服务端已排除自身）
+ * - 新建任务：无 id，候选来自项目列表
  * - 第一项固定为「移出项目」，选择后成为独立任务
  */
 const props = withDefaults(
@@ -17,12 +17,10 @@ const props = withDefaults(
     title?: string
     /** 编辑/移动场景下的任务 id；新建场景传 null */
     taskId?: number | string | null
-    /** 新建场景下的清单过滤 */
-    listId?: number | string | null
     /** 当前所属项目（用于回显选中态） */
     currentProjectId?: number | string | null
   }>(),
-  { title: '选择所属项目', taskId: null, listId: null, currentProjectId: null }
+  { title: '选择所属项目', taskId: null, currentProjectId: null }
 )
 
 const emit = defineEmits<{
@@ -53,10 +51,10 @@ async function load(): Promise<void> {
       candidates.value = await taskApi.fetchParentCandidates(props.taskId)
     } else {
       const res = await taskApi.fetchTasks({
-        list_id: props.listId ?? undefined,
         task_type: 'project',
+        root_only: true,
         page: 1,
-        page_size: 200,
+        page_size: 100,
       })
       candidates.value = res.list || []
     }
@@ -69,7 +67,7 @@ async function load(): Promise<void> {
 }
 
 watch(
-  () => [props.visible, props.taskId, props.listId],
+  () => [props.visible, props.taskId],
   () => {
     if (!props.visible) return
     keyword.value = ''
@@ -116,7 +114,7 @@ function pick(projectId: number | null): void {
           />
         </div>
 
-        <p class="picker__tip">仅同清单的项目可选；普通任务不能作为父级</p>
+        <p class="picker__tip">普通任务不能作为父级</p>
 
         <div class="picker__list">
           <p v-if="loading" class="picker__state">加载中…</p>
@@ -125,7 +123,7 @@ function pick(projectId: number | null): void {
             <button class="picker__retry pressable" type="button" @click="load">重试</button>
           </p>
           <p v-else-if="!filtered.length" class="picker__state">
-            {{ keyword.trim() ? '没有匹配的项目' : '同清单暂无项目，可先新建一个项目' }}
+            {{ keyword.trim() ? '没有匹配的项目' : '暂无项目，可先新建一个项目' }}
           </p>
           <ul v-else class="picker__items">
             <li v-for="t in filtered" :key="String(t.id)">

@@ -53,6 +53,10 @@ const ICONS: Record<string, string> = {
   archive: `<g ${STROKE}><rect x="3.5" y="4.5" width="17" height="4" rx="1.2"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M9.8 12.5h4.4"/></g>`,
   brain: `<g ${STROKE}><path d="M12 5.2a3 3 0 0 0-5.6 1.4A2.8 2.8 0 0 0 4.6 12a2.8 2.8 0 0 0 1.9 4.2A3 3 0 0 0 12 18.8z"/><path d="M12 5.2a3 3 0 0 1 5.6 1.4A2.8 2.8 0 0 1 19.4 12a2.8 2.8 0 0 1-1.9 4.2A3 3 0 0 1 12 18.8z"/></g>`,
   'chevron-up': `<g ${STROKE}><path d="M5 14.5 12 7.5 19 14.5"/></g>`,
+  // v0.7.0：智能体代理 / 凭据 / 复制
+  agent: `<g ${STROKE}><rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 8V5"/><circle cx="12" cy="4" r="1.1" fill="currentColor" stroke="none"/><circle cx="9.2" cy="13.2" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.8" cy="13.2" r="1.2" fill="currentColor" stroke="none"/></g>`,
+  key: `<g ${STROKE}><circle cx="8" cy="12" r="3.4"/><path d="M11.4 12h8.1"/><path d="M17.2 12v3.2M14.6 12v2.2"/></g>`,
+  copy: `<g ${STROKE}><rect x="9" y="9" width="10.5" height="10.5" rx="2.2"/><path d="M15 6.2A2.2 2.2 0 0 0 12.8 4H6.7A2.2 2.2 0 0 0 4.5 6.2v6.1A2.2 2.2 0 0 0 6.7 14.5"/></g>`,
 }
 
 const inner = computed(() => ICONS[props.name] || '')

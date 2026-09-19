@@ -9,9 +9,10 @@ import NormalTaskPanel from '@/components/tasks/NormalTaskPanel.vue'
 import ProjectDetailPanel from '@/components/tasks/ProjectDetailPanel.vue'
 
 /**
- * 任务/项目详情容器（v0.6.0，系统设计文档 3.3）：
- * 不新增独立路由，按 task_type 分流到项目面板或普通任务面板；
- * 加载/错误/骨架由容器统一承担，面板只接收已加载的 Task。
+ * 任务/项目详情容器（v0.7.0，系统设计文档 9.1）：
+ * - `/tasks/:id` 只承载普通任务；命中项目时重定向到 `/projects/:id`（query 透传）；
+ * - `/projects/:id` 承载项目；命中普通任务时反向重定向到 `/tasks/:id`；
+ * - 加载/错误态由容器统一承担，面板只接收已加载的 Task。
  */
 const route = useRoute()
 const router = useRouter()
@@ -22,16 +23,33 @@ const error = ref('')
 
 const taskId = computed(() => String(route.params.id))
 const fromChat = computed(() => route.query.from === 'chat')
+const isProjectRoute = computed(() => route.name === 'project-detail')
 const isProject = computed(() => task.value?.task_type === 'project')
+
+/** 详情编辑入口：项目走项目编辑页，普通任务走任务编辑页 */
+const editPath = computed(() =>
+  isProject.value ? `/projects/${taskId.value}/edit` : `/tasks/${taskId.value}/edit`
+)
 
 /**
  * silent=true：面板内部写操作后的静默刷新（保留已渲染内容，不闪「加载中」）。
+ * 加载完成后按 task_type 与当前路由做一次分流（不渲染错形态的面板）。
  */
 async function load(silent = false): Promise<void> {
   if (!silent) loading.value = true
   error.value = ''
   try {
-    task.value = await taskApi.fetchTask(taskId.value)
+    const data = await taskApi.fetchTask(taskId.value)
+    // 形态与路由不匹配：重定向（透传 query，保留 from=chat 返回语义）
+    if (data.task_type === 'project' && !isProjectRoute.value) {
+      await router.replace({ path: `/projects/${data.id}`, query: route.query })
+      return
+    }
+    if (data.task_type !== 'project' && isProjectRoute.value) {
+      await router.replace({ path: `/tasks/${data.id}`, query: route.query })
+      return
+    }
+    task.value = data
   } catch (e) {
     task.value = null
     error.value = errorText(e)
@@ -54,7 +72,7 @@ onMounted(load)
       <button
         v-if="task"
         class="detail__edit pressable"
-        @click="router.push(`/tasks/${taskId}/edit`)"
+        @click="router.push(editPath)"
       >
         编辑
       </button>

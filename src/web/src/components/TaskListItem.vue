@@ -37,6 +37,17 @@ const completed = computed(() => props.task.status === 'completed')
 const tone = computed(() => dueTone(props.task))
 const timeText = computed(() => formatDue(props.task.due_at))
 
+/** v0.7.0：代理执行状态指示（仅 pending/running/failed 展示，含文字不只靠颜色） */
+const agentHint = computed(() => {
+  if (props.task.agent_id === null || props.task.agent_id === undefined) return null
+  const map: Record<string, { text: string; color: string }> = {
+    pending: { text: '待领取', color: 'var(--text-secondary)' },
+    running: { text: '执行中', color: 'var(--color-primary)' },
+    failed: { text: '失败（代理）', color: 'var(--color-danger)' },
+  }
+  return map[props.task.agent_state] ?? null
+})
+
 /** 关键词高亮分段（避免 v-html，安全） */
 const titleParts = computed(() => {
   const kw = props.keyword.trim()
@@ -144,15 +155,24 @@ defineExpose({ close })
       />
       <div class="task-item__main">
         <p class="task-item__title" :class="{ 'task-item__title--done': completed }">
-          <span v-for="(part, i) in titleParts" :key="i" :class="{ 'task-item__hit': part.hit }">{{
-            part.text
-          }}</span>
+          <span class="task-item__title-text">
+            <span v-for="(part, i) in titleParts" :key="i" :class="{ 'task-item__hit': part.hit }">{{
+              part.text
+            }}</span>
+          </span>
+          <!-- v0.7.0：代理执行状态（圆点 + 文字，颜色非唯一通道） -->
+          <span v-if="agentHint" class="task-item__agent" :style="{ color: agentHint.color }">
+            <span
+              class="task-item__agent-dot"
+              :style="{ background: agentHint.color }"
+              aria-hidden="true"
+            />
+            {{ agentHint.text }}
+          </span>
         </p>
         <p class="task-item__sub">
           <span v-if="path" class="task-item__path ellipsis">{{ path }}</span>
-          <span v-if="path" class="task-item__dot">·</span>
-          <span class="task-item__list ellipsis">{{ task.list_name || '默认清单' }}</span>
-          <span v-if="task.due_at" class="task-item__dot">·</span>
+          <span v-if="path && task.due_at" class="task-item__dot">·</span>
           <span
             v-if="task.due_at"
             class="task-item__time"
@@ -230,10 +250,32 @@ defineExpose({ close })
   gap: 2px;
 }
 .task-item__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: var(--font-body-l);
   line-height: var(--font-body-l-lh);
   color: var(--text-primary);
+}
+.task-item__title-text {
+  flex: 1;
+  min-width: 0;
   word-break: break-word;
+}
+.task-item__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  white-space: nowrap;
+}
+.task-item__agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 .task-item__title--done {
   color: var(--text-disabled);
@@ -254,9 +296,6 @@ defineExpose({ close })
 }
 .task-item__path {
   max-width: 50%;
-}
-.task-item__list {
-  max-width: 40%;
 }
 .task-item__time--danger {
   color: var(--color-danger);

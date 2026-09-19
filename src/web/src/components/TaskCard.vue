@@ -5,6 +5,7 @@ import { dueTone, formatDue } from '@/utils/time'
 import AppCheckbox from './AppCheckbox.vue'
 import AppIcon from './AppIcon.vue'
 import PriorityFlag from './PriorityFlag.vue'
+import AgentStatusTag from './agents/AgentStatusTag.vue'
 import ProgressBar from './tasks/ProgressBar.vue'
 
 const props = withDefaults(
@@ -34,6 +35,9 @@ const total = computed(() => props.task.member_total)
 const doneCount = computed(() => props.task.member_completed)
 const hasMembers = computed(() => isProject.value && total.value > 0)
 const allMembersDone = computed(() => hasMembers.value && doneCount.value >= total.value)
+/** v0.7.0：已指派代理时展示代理形态（代理名 + 执行状态胶囊） */
+const hasAgent = computed(() => props.task.agent_id !== null && props.task.agent_id !== undefined)
+const agentNameText = computed(() => props.task.agent_name || '代理已删除')
 </script>
 
 <template>
@@ -59,8 +63,6 @@ const allMembersDone = computed(() => hasMembers.value && doneCount.value >= tot
           {{ task.title }}
         </p>
         <p class="card__sub">
-          <span class="card__list">{{ task.list_name || '默认清单' }}</span>
-          <span v-if="task.due_at">·</span>
           <span
             v-if="task.due_at"
             :class="{
@@ -70,6 +72,12 @@ const allMembersDone = computed(() => hasMembers.value && doneCount.value >= tot
             >{{ timeText }}</span
           >
           <PriorityFlag :priority="task.priority" />
+        </p>
+
+        <!-- v0.7.0：代理名 + 执行状态胶囊（含文字，不只靠颜色） -->
+        <p v-if="hasAgent" class="card__sub card__agent">
+          <span class="card__agent-name ellipsis">{{ agentNameText }}</span>
+          <AgentStatusTag kind="exec" :state="task.agent_state" />
         </p>
 
         <!-- 项目成员进度：全部完成时进度条转 success 色 -->
@@ -136,6 +144,12 @@ const allMembersDone = computed(() => hasMembers.value && doneCount.value >= tot
 }
 .card__time--warning {
   color: var(--color-warning);
+}
+.card__agent {
+  gap: 6px;
+}
+.card__agent-name {
+  min-width: 0;
 }
 .card__progress {
   display: flex;

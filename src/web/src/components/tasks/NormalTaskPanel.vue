@@ -11,6 +11,7 @@ import AppCheckbox from '@/components/AppCheckbox.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
 import PriorityFlag from '@/components/PriorityFlag.vue'
+import AgentExecutionPanel from '@/components/agents/AgentExecutionPanel.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
@@ -163,10 +164,6 @@ watch(
         <PriorityFlag :priority="task.priority" with-text />
       </li>
       <li class="np__meta-row">
-        <AppIcon name="folder" :size="18" color="#6B7080" />
-        <span>{{ task.list_name || '默认清单' }}</span>
-      </li>
-      <li class="np__meta-row">
         <AppIcon name="clock" :size="18" color="#6B7080" />
         <span :class="{ 'np__overdue': overdue }">{{ formatFull(task.due_at) }}</span>
         <span v-if="overdueText" class="np__overdue-hint">{{ overdueText }}</span>
@@ -184,6 +181,9 @@ watch(
       <h2 class="np__note-title">备注</h2>
       <p class="np__note-text">{{ task.note || '暂无备注' }}</p>
     </section>
+
+    <!-- 智能体执行分区（v0.7.0）：指派 / 状态 / 执行记录 -->
+    <AgentExecutionPanel :task="task" @changed="emit('changed')" />
 
     <!-- 日程安排分区：任务日程作为该任务的执行时段载体，同一任务可有多条 -->
     <section class="np__schedule">

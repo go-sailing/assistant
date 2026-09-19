@@ -181,7 +181,8 @@ async function remove(): Promise<void> {
     if (memberTasks > 0) parts.push(`${memberTasks} 个成员任务`)
     if (events > 0) parts.push(`${events} 条日程安排`)
     toast.show(parts.length ? `已删除项目及其 ${parts.join('、')}` : '已删除项目')
-    router.replace('/tasks')
+    // v0.7.0：项目页与任务页分离，删除后回项目页
+    router.replace('/projects')
   } catch (e) {
     toast.show(errorText(e))
   }
@@ -212,10 +213,6 @@ watch(
           {{ completed ? '已完成' : '进行中' }}
         </span>
         <PriorityFlag :priority="task.priority" />
-        <span class="pp__list">
-          <AppIcon name="folder" :size="14" color="#6B7080" />
-          {{ task.list_name || '默认清单' }}
-        </span>
       </div>
       <p class="pp__meta">
         <AppIcon name="clock" :size="16" color="#6B7080" />
@@ -260,11 +257,7 @@ watch(
         @detail="openMember"
       />
 
-      <MemberComposer
-        :project-id="task.id"
-        :list-id="task.list_id"
-        @created="onMemberCreated"
-      />
+      <MemberComposer :project-id="task.id" @created="onMemberCreated" />
     </section>
 
     <section class="pp__times">
@@ -275,7 +268,7 @@ watch(
     <!-- 操作区 -->
     <div class="pp__actions">
       <AppButton type="primary" :loading="actionLoading" @click="planEvent">安排日程</AppButton>
-      <AppButton :disabled="actionLoading" @click="router.push(`/tasks/${task.id}/edit`)">
+      <AppButton :disabled="actionLoading" @click="router.push(`/projects/${task.id}/edit`)">
         编辑项目
       </AppButton>
       <AppButton :loading="actionLoading" @click="toggleStatus">
@@ -346,13 +339,6 @@ watch(
 }
 .pp__badge--done {
   background: var(--bg-page);
-  color: var(--text-secondary);
-}
-.pp__list {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--font-caption);
   color: var(--text-secondary);
 }
 .pp__meta {

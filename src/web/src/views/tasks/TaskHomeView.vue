@@ -2,9 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as taskApi from '@/api/tasks'
-import * as listApi from '@/api/lists'
 import { ApiError, errorText } from '@/api/client'
-import type { Task, TaskList, TaskSort, TaskStatus, TaskType } from '@/types'
+import type { Task, TaskSort, TaskStatus } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
@@ -14,31 +13,26 @@ import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
 import TaskListItem from '@/components/TaskListItem.vue'
-import ProjectCard from '@/components/tasks/ProjectCard.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
 
+/**
+ * v0.7.0 任务页（UXUI 5.2）：只列普通任务（root_only + task_type=normal）。
+ * 筛选区 = 状态分段（全部/未完成/已完成）+ 排序胶囊；类型与清单能力已下线。
+ */
 const router = useRouter()
 const route = useRoute()
 const toast = useToastStore()
 const taskSync = useTaskSyncStore()
 
-/** 清单筛选：ALL 表示全部清单 */
-const ALL = 'all'
-
 const tasks = ref<Task[]>([])
-const lists = ref<TaskList[]>([])
-const listId = ref<string>(ALL)
 const status = ref<TaskStatus | 'all'>('all')
-/** v0.6.0：任务类型筛选（全部 / 普通任务 / 项目） */
-const taskType = ref<'all' | TaskType>('all')
 const sort = ref<TaskSort>('due_at_asc')
 const loading = ref(true)
 const error = ref('')
 const refreshing = ref(false)
 const highlightId = ref<string>('')
 
-const listSheetVisible = ref(false)
 const sortSheetVisible = ref(false)
 const actionTask = ref<Task | null>(null)
 const deleteSheetVisible = ref(false)
@@ -55,16 +49,6 @@ const statusOptions = [
   { label: '已完成', value: 'completed' },
 ]
 
-/** v0.6.0：类型筛选（与清单/状态正交可叠加） */
-const typeOptions = [
-  { label: '全部', value: 'all' },
-  { label: '普通任务', value: 'normal' },
-  { label: '项目', value: 'project' },
-]
-
-/** 仅看项目时，空态给出「新建项目」动作 */
-const projectOnly = computed(() => taskType.value === 'project')
-
 const sortLabel = computed(() => (sort.value === 'created_at_desc' ? '按创建时间' : '按截止时间'))
 
 const sortItems = [
@@ -72,45 +56,17 @@ const sortItems = [
   { label: '按创建时间', value: 'created_at_desc' },
 ]
 
-const currentListName = computed(() => {
-  if (listId.value === ALL) return '全部清单'
-  const found = lists.value.find((l) => String(l.id) === String(listId.value))
-  return found ? found.name : '全部清单'
-})
-
-/** 默认清单置顶 */
-const orderedLists = computed(() =>
-  [...lists.value].sort((a, b) => Number(b.is_default) - Number(a.is_default))
-)
-
-const listItems = computed(() => [
-  { label: '全部清单', value: ALL },
-  ...orderedLists.value.map((l) => ({ label: l.name, value: String(l.id) })),
-  { label: '管理清单…', value: '__manage__' },
-])
-
 /** 是否处于筛选态（用于区分首次空态与筛选空态） */
-const filtered = computed(
-  () => listId.value !== ALL || status.value !== 'all' || taskType.value !== 'all'
-)
-
-async function loadLists(): Promise<void> {
-  try {
-    lists.value = await listApi.fetchLists()
-  } catch {
-    lists.value = []
-  }
-}
+const filtered = computed(() => status.value !== 'all')
 
 async function loadTasks(): Promise<void> {
   error.value = ''
   try {
     // v0.4.0：首页只列根任务（每行一条扁平行，项目成员仅在项目详情管理）
-    // v0.6.0：类型筛选与清单/状态正交叠加
+    // v0.7.0：任务页固定只列普通任务，类型与清单筛选已下线
     const res = await taskApi.fetchTasks({
-      list_id: listId.value === ALL ? undefined : listId.value,
       status: status.value === 'all' ? undefined : status.value,
-      task_type: taskType.value === 'all' ? undefined : taskType.value,
+      task_type: 'normal',
       sort: sort.value,
       root_only: true,
       page: 1,
@@ -126,37 +82,22 @@ async function loadTasks(): Promise<void> {
 
 async function loadAll(): Promise<void> {
   loading.value = true
-  await Promise.all([loadLists(), loadTasks()])
+  await loadTasks()
   loading.value = false
 }
 
 async function refresh(): Promise<void> {
   refreshing.value = true
-  await Promise.all([loadLists(), loadTasks()])
+  await loadTasks()
   refreshing.value = false
 }
 
-/** 切换清单/排序/状态后重新拉取列表 */
+/** 切换排序/状态后重新拉取列表 */
 function reloadTasks(): void {
   loading.value = true
   void loadTasks().finally(() => {
     loading.value = false
   })
-}
-
-function openListSheet(): void {
-  listSheetVisible.value = true
-}
-
-function onListSelect(v: string): void {
-  listSheetVisible.value = false
-  if (v === '__manage__') {
-    router.push('/lists')
-    return
-  }
-  if (v === listId.value) return
-  listId.value = v
-  reloadTasks()
 }
 
 function onSortSelect(v: string): void {
@@ -171,19 +112,12 @@ function onStatusChange(v: string): void {
   reloadTasks()
 }
 
-function onTypeChange(v: string): void {
-  taskType.value = v as 'all' | TaskType
-  reloadTasks()
-}
-
 function goDetail(task: Task): void {
   router.push(`/tasks/${task.id}`)
 }
 
-/** ＋ 的语义随类型筛选变化：项目筛选下直接进入新建项目 */
 function goCreate(): void {
-  if (projectOnly.value) router.push({ path: '/tasks/new', query: { task_type: 'project' } })
-  else router.push('/tasks/new')
+  router.push('/tasks/new')
 }
 
 function replaceRoot(task: Task): void {
@@ -333,19 +267,11 @@ onMounted(async () => {
     </AppNavBar>
 
     <div class="home__filter">
-      <button class="home__list-btn pressable" @click="openListSheet">
-        <AppIcon name="folder" :size="18" color="#6B7080" />
-        <span class="home__list-name ellipsis">{{ currentListName }}</span>
-        <AppIcon name="chevron-down" :size="16" color="#B5B9C4" />
-      </button>
       <button class="home__sort-btn pressable" @click="sortSheetVisible = true">
         {{ sortLabel }}
         <AppIcon name="chevron-down" :size="14" color="#B5B9C4" />
       </button>
     </div>
-
-    <!-- v0.6.0：类型筛选（全部 / 普通任务 / 项目），与状态筛选正交 -->
-    <SegmentedControl :model-value="taskType" :options="typeOptions" @update:model-value="onTypeChange" />
 
     <SegmentedControl :model-value="status" :options="statusOptions" @update:model-value="onStatusChange" />
 
@@ -366,17 +292,9 @@ onMounted(async () => {
       <StateError v-else-if="error" :text="error" @retry="loadAll" />
 
       <StateEmpty
-        v-else-if="!tasks.length && projectOnly"
-        title="还没有项目"
-        text="项目可以容纳一组相关任务，进度一目了然"
-        action-text="新建项目"
-        @action="goCreate"
-      />
-
-      <StateEmpty
         v-else-if="!tasks.length && filtered"
         title="当前筛选下没有任务"
-        text="换个清单、状态或类型试试"
+        text="换个状态试试"
       />
 
       <StateEmpty
@@ -388,35 +306,19 @@ onMounted(async () => {
       />
 
       <ul v-else class="home__list">
-        <!-- 项目：项目卡片行（成员进度 + 计数）；普通任务：单任务行，点击唯一语义是进详情 -->
-        <template v-for="t in tasks" :key="String(t.id)">
-          <ProjectCard
-            v-if="t.task_type === 'project'"
-            :project="t"
-            :highlight="String(t.id) === highlightId"
-            @detail="goDetail"
-            @toggle="onToggle"
-            @remove="askDelete"
-          />
-          <TaskListItem
-            v-else
-            :task="t"
-            :highlight="String(t.id) === highlightId"
-            @detail="goDetail"
-            @toggle="onToggle"
-            @remove="askDelete"
-          />
-        </template>
+        <!-- 只列普通任务：单任务行，点击唯一语义是进详情 -->
+        <TaskListItem
+          v-for="t in tasks"
+          :key="String(t.id)"
+          :task="t"
+          :highlight="String(t.id) === highlightId"
+          @detail="goDetail"
+          @toggle="onToggle"
+          @remove="askDelete"
+        />
       </ul>
     </div>
 
-    <AppActionSheet
-      :visible="listSheetVisible"
-      title="切换清单"
-      :items="listItems"
-      @select="onListSelect"
-      @cancel="listSheetVisible = false"
-    />
     <AppActionSheet
       :visible="sortSheetVisible"
       title="排序方式"
@@ -470,24 +372,9 @@ onMounted(async () => {
 .home__filter {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
+  justify-content: flex-end;
   padding: var(--sp-2) var(--sp-4);
   background: var(--bg-card);
-}
-.home__list-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 0 var(--sp-3);
-  background: var(--bg-page);
-  border-radius: 18px;
-  max-width: 60%;
-}
-.home__list-name {
-  font-size: var(--font-body-m);
-  color: var(--text-primary);
 }
 .home__sort-btn {
   display: flex;

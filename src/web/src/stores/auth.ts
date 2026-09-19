@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import * as authApi from '@/api/auth'
 import { setTokensUpdatedHandler } from '@/api/client'
-import type { AuthResult, User } from '@/types'
+import type { AuthResult, User, UserSettings } from '@/types'
 import {
   clearTokens,
   emailFromToken,
@@ -38,8 +38,8 @@ export const useAuthStore = defineStore('auth', () => {
     return (email.value.slice(0, 1) || '?').toUpperCase()
   })
 
-  /** v0.4.0：默认启动页（由设置页维护，登录成功后落地用） */
-  const homeRoute = ref<'/calendar' | '/tasks'>('/calendar')
+  /** v0.4.0：默认启动页（由设置页维护，登录成功后落地用）；v0.7.0 增加「项目」 */
+  const homeRoute = ref<UserSettings['home_route']>('/calendar')
 
   function apply(result: AuthResult): void {
     token.value = result.token
@@ -88,7 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
     else if (value) user.value = { id: 0, email: email.value, nickname: value }
   }
 
-  function setHomeRoute(route: '/calendar' | '/tasks'): void {
+  function setHomeRoute(route: UserSettings['home_route']): void {
     homeRoute.value = route
   }
 
