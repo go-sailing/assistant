@@ -14,7 +14,7 @@ const props = withDefaults(
     clickable?: boolean
     /** 候选卡片等场景隐藏右侧箭头 */
     showArrow?: boolean
-    /** v0.2.0 子任务进度展示：bar 含进度条 / count 仅计数 */
+    /** v0.6.0 项目进度展示：bar 含进度条 / count 仅计数 */
     subtaskDisplay?: 'bar' | 'count'
   }>(),
   { clickable: true, showArrow: true, subtaskDisplay: 'bar' }
@@ -28,14 +28,12 @@ const emit = defineEmits<{
 const completed = computed(() => props.task.status === 'completed')
 const tone = computed(() => dueTone(props.task))
 const timeText = computed(() => formatDue(props.task.due_at))
-const hasSubtasks = computed(() => props.task.subtask_total > 0)
-const allSubtasksDone = computed(
-  () => hasSubtasks.value && props.task.subtask_completed >= props.task.subtask_total
-)
-/** 半选：父任务未完成但已有子任务完成（父状态独立，不全选也不自动打勾） */
-const indeterminate = computed(
-  () => !completed.value && hasSubtasks.value && props.task.subtask_completed > 0 && !allSubtasksDone.value
-)
+/** 仅项目任务有成员进度；普通任务恒为 0 */
+const isProject = computed(() => props.task.task_type === 'project')
+const total = computed(() => props.task.member_total)
+const doneCount = computed(() => props.task.member_completed)
+const hasMembers = computed(() => isProject.value && total.value > 0)
+const allMembersDone = computed(() => hasMembers.value && doneCount.value >= total.value)
 </script>
 
 <template>
@@ -51,13 +49,15 @@ const indeterminate = computed(
     >
       <AppCheckbox
         :checked="completed"
-        :indeterminate="indeterminate"
         :size="20"
         :label="`标记「${task.title}」完成`"
         @toggle="emit('toggle', task)"
       />
       <div class="card__main">
-        <p class="card__title" :class="{ 'card__title--done': completed }">{{ task.title }}</p>
+        <p class="card__title" :class="{ 'card__title--done': completed }">
+          <AppIcon v-if="isProject" name="folder" :size="14" color="var(--color-primary)" />
+          {{ task.title }}
+        </p>
         <p class="card__sub">
           <span class="card__list">{{ task.list_name || '默认清单' }}</span>
           <span v-if="task.due_at">·</span>
@@ -72,17 +72,13 @@ const indeterminate = computed(
           <PriorityFlag :priority="task.priority" />
         </p>
 
-        <!-- 子任务进度：全部完成时进度条转 success 色 -->
-        <p v-if="hasSubtasks" class="card__progress">
+        <!-- 项目成员进度：全部完成时进度条转 success 色 -->
+        <p v-if="hasMembers" class="card__progress">
           <span class="card__progress-text">
-            <template v-if="allSubtasksDone">子任务已全部完成</template>
-            <template v-else>子任务 {{ task.subtask_completed }}/{{ task.subtask_total }}</template>
+            <template v-if="allMembersDone">成员已全部完成</template>
+            <template v-else>成员 {{ doneCount }}/{{ total }}</template>
           </span>
-          <ProgressBar
-            v-if="subtaskDisplay === 'bar'"
-            :total="task.subtask_total"
-            :completed="task.subtask_completed"
-          />
+          <ProgressBar v-if="subtaskDisplay === 'bar'" :total="total" :completed="doneCount" />
         </p>
       </div>
       <AppIcon v-if="showArrow && clickable" name="chevron-right" :size="18" color="#B5B9C4" />

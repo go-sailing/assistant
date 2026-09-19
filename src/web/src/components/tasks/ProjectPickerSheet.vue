@@ -6,9 +6,10 @@ import type { Task } from '@/types'
 import AppIcon from '../AppIcon.vue'
 
 /**
- * 选择父任务弹层：
- * - 编辑/移动：候选来自 fetchParentCandidates(id)（服务端已排除自身与全部后代、限同清单）
- * - 新建任务：无 id，候选来自同清单任务列表
+ * 选择所属项目弹层（v0.6.0，取代旧「父任务」选择）：
+ * - 编辑/移动：候选来自 fetchParentCandidates(id)（服务端已限同清单 project、排除自身）
+ * - 新建任务：无 id，候选来自同清单 project 列表
+ * - 第一项固定为「移出项目」，选择后成为独立任务
  */
 const props = withDefaults(
   defineProps<{
@@ -18,14 +19,14 @@ const props = withDefaults(
     taskId?: number | string | null
     /** 新建场景下的清单过滤 */
     listId?: number | string | null
-    /** 当前父任务（用于回显选中态） */
-    currentParentId?: number | string | null
+    /** 当前所属项目（用于回显选中态） */
+    currentProjectId?: number | string | null
   }>(),
-  { title: '选择父任务', taskId: null, listId: null, currentParentId: null }
+  { title: '选择所属项目', taskId: null, listId: null, currentProjectId: null }
 )
 
 const emit = defineEmits<{
-  (e: 'select', parentId: number | null): void
+  (e: 'select', projectId: number | null): void
   (e: 'cancel'): void
 }>()
 
@@ -34,28 +35,15 @@ const error = ref('')
 const candidates = ref<Task[]>([])
 const keyword = ref('')
 
-const byId = computed(() => new Map(candidates.value.map((t) => [String(t.id), t])))
-
-/** 候选在清单内的层级（用于缩进展示，父链不在候选内则按 0 计） */
-function chainDepth(task: Task): number {
-  let depth = 0
-  let cur: Task | undefined = task
-  while (cur && cur.parent_id !== null && depth < 5) {
-    const parent: Task | undefined = byId.value.get(String(cur.parent_id))
-    if (!parent) break
-    cur = parent
-    depth += 1
-  }
-  return depth
-}
-
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   if (!kw) return candidates.value
   return candidates.value.filter((t) => t.title.toLowerCase().includes(kw))
 })
 
-const rootSelected = computed(() => props.currentParentId === null || props.currentParentId === undefined)
+const detached = computed(
+  () => props.currentProjectId === null || props.currentProjectId === undefined
+)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -66,6 +54,7 @@ async function load(): Promise<void> {
     } else {
       const res = await taskApi.fetchTasks({
         list_id: props.listId ?? undefined,
+        task_type: 'project',
         page: 1,
         page_size: 200,
       })
@@ -89,35 +78,45 @@ watch(
 )
 
 function isCurrent(task: Task): boolean {
-  return props.currentParentId !== null && props.currentParentId !== undefined && String(props.currentParentId) === String(task.id)
+  return (
+    props.currentProjectId !== null &&
+    props.currentProjectId !== undefined &&
+    String(props.currentProjectId) === String(task.id)
+  )
 }
 
-function pick(parentId: number | null): void {
-  emit('select', parentId)
+function pick(projectId: number | null): void {
+  emit('select', projectId)
 }
 </script>
 
 <template>
   <Transition name="sheet">
-    <div v-if="visible" class="picker" role="dialog" aria-modal="true" aria-labelledby="parent-picker-title">
+    <div v-if="visible" class="picker" role="dialog" aria-modal="true" aria-labelledby="project-picker-title">
       <div class="picker__mask" @click="emit('cancel')" />
       <div class="picker__panel sheet-panel">
         <p class="picker__handle" aria-hidden="true" />
-        <h3 id="parent-picker-title" class="picker__title">{{ title }}</h3>
+        <h3 id="project-picker-title" class="picker__title">{{ title }}</h3>
 
-        <!-- 固定置顶：移出为根任务 -->
+        <!-- 固定置顶：移出项目 -->
         <button class="picker__item picker__item--root pressable" type="button" @click="pick(null)">
-          <span class="picker__radio" :class="{ 'picker__radio--on': rootSelected }" aria-hidden="true" />
-          <span class="picker__item-title">移出为根任务</span>
-          <span v-if="rootSelected" class="picker__note">当前</span>
+          <span class="picker__radio" :class="{ 'picker__radio--on': detached }" aria-hidden="true" />
+          <span class="picker__item-title">无（独立任务）</span>
+          <span v-if="detached" class="picker__note">当前</span>
         </button>
 
         <div class="picker__search">
           <AppIcon name="search" :size="16" color="#6B7080" />
-          <input v-model="keyword" class="picker__input" type="search" placeholder="搜索父任务…" aria-label="搜索父任务" />
+          <input
+            v-model="keyword"
+            class="picker__input"
+            type="search"
+            placeholder="搜索项目…"
+            aria-label="搜索项目"
+          />
         </div>
 
-        <p class="picker__tip">仅同清单任务可选，自身与全部子任务不在此列表中</p>
+        <p class="picker__tip">仅同清单的项目可选；普通任务不能作为父级</p>
 
         <div class="picker__list">
           <p v-if="loading" class="picker__state">加载中…</p>
@@ -126,19 +125,14 @@ function pick(parentId: number | null): void {
             <button class="picker__retry pressable" type="button" @click="load">重试</button>
           </p>
           <p v-else-if="!filtered.length" class="picker__state">
-            {{ keyword.trim() ? '没有匹配的任务' : '同清单暂无可作为父任务的任务' }}
+            {{ keyword.trim() ? '没有匹配的项目' : '同清单暂无项目，可先新建一个项目' }}
           </p>
           <ul v-else class="picker__items">
             <li v-for="t in filtered" :key="String(t.id)">
               <button class="picker__item pressable" type="button" @click="pick(Number(t.id))">
                 <span class="picker__radio" :class="{ 'picker__radio--on': isCurrent(t) }" aria-hidden="true" />
-                <span
-                  class="picker__item-title ellipsis"
-                  :style="{ paddingLeft: `${Math.min(chainDepth(t), 4) * 14}px` }"
-                >
-                  {{ t.title }}
-                </span>
-                <span v-if="isCurrent(t)" class="picker__note">当前父任务</span>
+                <span class="picker__item-title ellipsis">{{ t.title }}</span>
+                <span v-if="isCurrent(t)" class="picker__note">当前项目</span>
               </button>
             </li>
           </ul>

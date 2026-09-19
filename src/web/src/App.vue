@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppDrawer from '@/components/AppDrawer.vue'
-import AppFAB from '@/components/AppFAB.vue'
 import AppToast from '@/components/AppToast.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDrawerStore } from '@/stores/drawer'
 import { useSettingsStore } from '@/stores/settings'
 
+/**
+ * 应用外壳（v0.6.0）：
+ * - 抽屉仅由各页左上角菜单按钮打开（右滑手势已取消，UI-03）；
+ * - 右下角助手 FAB 已下线，助手入口仅保留左侧抽屉（UI-04）。
+ */
 const route = useRoute()
 const router = useRouter()
 const drawer = useDrawerStore()
@@ -27,66 +31,10 @@ watch(
   { immediate: true }
 )
 
-/** 抽屉仅在登录后的一级页面可用（登录/注册/引导页禁用） */
-const drawerEnabled = computed(() => route.meta.requiresAuth === true)
+/* ---------------- 抽屉后退关闭 ---------------- */
 
-/**
- * FAB 形态（系统设计文档 3.2，v0.3.0 收敛）：
- * /calendar、/tasks → open-chat（进入唯一对话页）；/chat 自身不再需要入口；其余页面隐藏。
- */
-const fabMode = computed<'open-chat' | 'hidden'>(() => {
-  const path = route.path
-  if (path.startsWith('/calendar') || path.startsWith('/tasks')) return 'open-chat'
-  return 'hidden'
-})
-
-function onFabClick(): void {
-  router.push('/chat')
-}
-
-/* ---------------- 抽屉手势与后退关闭 ---------------- */
-
-/** 左缘 20pt 内起手不拦截（让给系统/微信返回手势） */
-const EDGE_AVOID_PX = 20
-const OPEN_THRESHOLD_PX = 24
-const MAX_VERTICAL_PX = 24
-
-let startX = 0
-let startY = 0
-let tracking = false
 /** 抽屉打开时压入的透明历史态，用于「后退优先关抽屉」 */
 let pushedForDrawer = false
-
-/** 对话页全域禁用手势（避免与消息区横向操作冲突） */
-function gestureAllowed(): boolean {
-  return drawerEnabled.value && !route.path.startsWith('/chat')
-}
-
-function onTouchStart(event: TouchEvent): void {
-  if (!gestureAllowed() || drawer.open) return
-  const touch = event.touches[0]
-  if (!touch) return
-  // 左缘 20pt 让给系统返回手势
-  if (touch.clientX <= EDGE_AVOID_PX) {
-    tracking = false
-    return
-  }
-  startX = touch.clientX
-  startY = touch.clientY
-  tracking = true
-}
-
-function onTouchEnd(event: TouchEvent): void {
-  if (!tracking) return
-  tracking = false
-  const touch = event.changedTouches[0]
-  if (!touch) return
-  const dx = touch.clientX - startX
-  const dy = Math.abs(touch.clientY - startY)
-  if (dx > OPEN_THRESHOLD_PX && dy < MAX_VERTICAL_PX) {
-    drawer.openDrawer('gesture')
-  }
-}
 
 function onPopState(): void {
   // 抽屉打开时优先关抽屉，而不是退出页面
@@ -134,14 +82,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell" @touchstart.passive="onTouchStart" @touchend.passive="onTouchEnd">
-    <!-- v0.3.0 宽屏中栏：页面内容限宽居中，抽屉/FAB/Toast 仍相对视口定位 -->
+  <div class="app-shell">
+    <!-- v0.3.0 宽屏中栏：页面内容限宽居中，抽屉/Toast 仍相对视口定位 -->
     <div class="app-column">
       <router-view v-slot="{ Component }">
         <component :is="Component" :key="route.fullPath" />
       </router-view>
     </div>
-    <AppFAB v-if="drawerEnabled" :mode="fabMode" @click="onFabClick" />
     <AppDrawer @close="closeDrawer" @navigate="navigateFromDrawer" />
     <AppToast />
   </div>

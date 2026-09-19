@@ -41,14 +41,21 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/calendar/new',
     name: 'event-create',
-    component: () => import('@/views/calendar/EventFormView.vue'),
+    // v0.6.0：日程主页头部 ＋ → 普通日程表单（与任务日程拆分为两页）
+    component: () => import('@/views/calendar/EventNormalFormView.vue'),
     meta: { requiresAuth: true },
   },
   {
-    path: '/calendar/tasks',
-    name: 'event-task-picker',
-    component: () => import('@/views/calendar/TaskPickerView.vue'),
+    path: '/calendar/task/new',
+    name: 'event-task-create',
+    // v0.6.0：任务「安排日程」→ 任务日程表单（关联任务带入锁定）
+    component: () => import('@/views/calendar/EventTaskFormView.vue'),
     meta: { requiresAuth: true },
+  },
+  {
+    // v0.6.0：任务选择页已下线（任务日程由当前任务直接带入）
+    path: '/calendar/tasks',
+    redirect: '/tasks',
   },
   // v0.2.0：循环系列详情（须在 /calendar/:id 之前注册）
   {
@@ -66,7 +73,20 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/calendar/:id/edit',
     name: 'event-edit',
-    component: () => import('@/views/calendar/EventFormView.vue'),
+    // v0.6.0：统一编辑入口，进入后按日程类型分流到两个独立表单
+    component: () => import('@/views/calendar/EventEditDispatchView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/calendar/:id/edit/normal',
+    name: 'event-edit-normal',
+    component: () => import('@/views/calendar/EventNormalFormView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/calendar/:id/edit/task',
+    name: 'event-edit-task',
+    component: () => import('@/views/calendar/EventTaskFormView.vue'),
     meta: { requiresAuth: true },
   },
   {

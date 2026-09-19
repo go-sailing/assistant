@@ -3,7 +3,7 @@ import { computed } from 'vue'
 
 const props = withDefaults(
   defineProps<{
-    /** 直接子任务总数 */
+    /** 总项数（项目成员总数） */
     total: number
     /** 已完成数 */
     completed: number
@@ -18,10 +18,10 @@ const ratio = computed(() => {
   return Math.min(1, Math.max(0, props.completed / props.total))
 })
 
-/** 全部子任务完成时填充变 success 色 */
+/** 全部完成时填充变 success 色 */
 const allDone = computed(() => props.total > 0 && props.completed >= props.total)
 
-const ariaLabel = computed(() => props.label || `子任务进度 ${props.completed}/${props.total}`)
+const ariaLabel = computed(() => props.label || `进度 ${props.completed}/${props.total}`)
 </script>
 
 <template>

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import * as taskApi from '@/api/tasks'
 import * as listApi from '@/api/lists'
 import { ApiError, errorText } from '@/api/client'
-import type { Task, TaskList, TaskSort, TaskStatus } from '@/types'
+import type { Task, TaskList, TaskSort, TaskStatus, TaskType } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
@@ -14,6 +14,7 @@ import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
 import TaskListItem from '@/components/TaskListItem.vue'
+import ProjectCard from '@/components/tasks/ProjectCard.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
 
@@ -29,6 +30,8 @@ const tasks = ref<Task[]>([])
 const lists = ref<TaskList[]>([])
 const listId = ref<string>(ALL)
 const status = ref<TaskStatus | 'all'>('all')
+/** v0.6.0：任务类型筛选（全部 / 普通任务 / 项目） */
+const taskType = ref<'all' | TaskType>('all')
 const sort = ref<TaskSort>('due_at_asc')
 const loading = ref(true)
 const error = ref('')
@@ -43,7 +46,7 @@ const cascadeDeleteVisible = ref(false)
 
 /* v0.4.0 根任务扁平列表：不再有树展开、行内添加，层级管理全部在详情页 */
 
-/** 级联完成确认（父任务带未完成子任务） */
+/** 级联完成确认（项目带未完成成员任务） */
 const cascade = ref<{ task: Task; count: number } | null>(null)
 
 const statusOptions = [
@@ -51,6 +54,16 @@ const statusOptions = [
   { label: '未完成', value: 'todo' },
   { label: '已完成', value: 'completed' },
 ]
+
+/** v0.6.0：类型筛选（与清单/状态正交可叠加） */
+const typeOptions = [
+  { label: '全部', value: 'all' },
+  { label: '普通任务', value: 'normal' },
+  { label: '项目', value: 'project' },
+]
+
+/** 仅看项目时，空态给出「新建项目」动作 */
+const projectOnly = computed(() => taskType.value === 'project')
 
 const sortLabel = computed(() => (sort.value === 'created_at_desc' ? '按创建时间' : '按截止时间'))
 
@@ -77,7 +90,9 @@ const listItems = computed(() => [
 ])
 
 /** 是否处于筛选态（用于区分首次空态与筛选空态） */
-const filtered = computed(() => listId.value !== ALL || status.value !== 'all')
+const filtered = computed(
+  () => listId.value !== ALL || status.value !== 'all' || taskType.value !== 'all'
+)
 
 async function loadLists(): Promise<void> {
   try {
@@ -90,10 +105,12 @@ async function loadLists(): Promise<void> {
 async function loadTasks(): Promise<void> {
   error.value = ''
   try {
-    // v0.4.0：首页只列根任务（每行一条扁平行，子任务仅在详情页管理）
+    // v0.4.0：首页只列根任务（每行一条扁平行，项目成员仅在项目详情管理）
+    // v0.6.0：类型筛选与清单/状态正交叠加
     const res = await taskApi.fetchTasks({
       list_id: listId.value === ALL ? undefined : listId.value,
       status: status.value === 'all' ? undefined : status.value,
+      task_type: taskType.value === 'all' ? undefined : taskType.value,
       sort: sort.value,
       root_only: true,
       page: 1,
@@ -154,12 +171,19 @@ function onStatusChange(v: string): void {
   reloadTasks()
 }
 
+function onTypeChange(v: string): void {
+  taskType.value = v as 'all' | TaskType
+  reloadTasks()
+}
+
 function goDetail(task: Task): void {
   router.push(`/tasks/${task.id}`)
 }
 
+/** ＋ 的语义随类型筛选变化：项目筛选下直接进入新建项目 */
 function goCreate(): void {
-  router.push('/tasks/new')
+  if (projectOnly.value) router.push({ path: '/tasks/new', query: { task_type: 'project' } })
+  else router.push('/tasks/new')
 }
 
 function replaceRoot(task: Task): void {
@@ -168,11 +192,13 @@ function replaceRoot(task: Task): void {
 }
 
 function incompleteCount(e: unknown): number {
-  const details = e instanceof ApiError ? (e.details as { incomplete_descendant_count?: number } | null) : null
-  return details?.incomplete_descendant_count ?? 0
+  const details = e instanceof ApiError
+    ? (e.details as { incomplete_member_count?: number; incomplete_descendant_count?: number } | null)
+    : null
+  return details?.incomplete_member_count ?? details?.incomplete_descendant_count ?? 0
 }
 
-/** 勾选完成：乐观更新，失败回弹；父任务带未完成子任务时走级联确认 */
+/** 勾选完成：乐观更新，失败回弹；项目带未完成成员任务时走级联确认 */
 async function onToggle(task: Task): Promise<void> {
   const index = tasks.value.findIndex((t) => String(t.id) === String(task.id))
   if (index < 0) return
@@ -223,7 +249,7 @@ async function confirmCascade(): Promise<void> {
 
 function askDelete(task: Task): void {
   actionTask.value = task
-  if (task.subtask_total > 0) {
+  if (task.member_total > 0) {
     cascadeDeleteVisible.value = true
     return
   }
@@ -238,11 +264,11 @@ async function confirmDelete(): Promise<void> {
   try {
     const res = await taskApi.deleteTask(task.id)
     tasks.value = tasks.value.filter((t) => String(t.id) !== String(task.id))
-    // 级联计数来自服务端响应：任务数含自身，子任务数需减 1
-    const subTasks = Math.max(0, (res.deleted_task_count ?? 1) - 1)
+    // 级联计数来自服务端响应：任务数含自身，成员数需减 1
+    const members = Math.max(0, (res.deleted_task_count ?? 1) - 1)
     const events = res.deleted_event_count ?? 0
     const parts: string[] = []
-    if (subTasks > 0) parts.push(`${subTasks} 个子任务`)
+    if (members > 0) parts.push(`${members} 个成员任务`)
     if (events > 0) parts.push(`${events} 条日程安排`)
     toast.show(parts.length ? `已删除任务及其 ${parts.join('、')}` : '已删除')
     actionTask.value = null
@@ -318,6 +344,9 @@ onMounted(async () => {
       </button>
     </div>
 
+    <!-- v0.6.0：类型筛选（全部 / 普通任务 / 项目），与状态筛选正交 -->
+    <SegmentedControl :model-value="taskType" :options="typeOptions" @update:model-value="onTypeChange" />
+
     <SegmentedControl :model-value="status" :options="statusOptions" @update:model-value="onStatusChange" />
 
     <div
@@ -337,9 +366,17 @@ onMounted(async () => {
       <StateError v-else-if="error" :text="error" @retry="loadAll" />
 
       <StateEmpty
+        v-else-if="!tasks.length && projectOnly"
+        title="还没有项目"
+        text="项目可以容纳一组相关任务，进度一目了然"
+        action-text="新建项目"
+        @action="goCreate"
+      />
+
+      <StateEmpty
         v-else-if="!tasks.length && filtered"
         title="当前筛选下没有任务"
-        text="换个清单或状态试试"
+        text="换个清单、状态或类型试试"
       />
 
       <StateEmpty
@@ -351,16 +388,25 @@ onMounted(async () => {
       />
 
       <ul v-else class="home__list">
-        <!-- 每行一条根任务：进度摘要在行内只读展示，点击唯一语义是进详情 -->
-        <TaskListItem
-          v-for="t in tasks"
-          :key="String(t.id)"
-          :task="t"
-          :highlight="String(t.id) === highlightId"
-          @detail="goDetail"
-          @toggle="onToggle"
-          @remove="askDelete"
-        />
+        <!-- 项目：项目卡片行（成员进度 + 计数）；普通任务：单任务行，点击唯一语义是进详情 -->
+        <template v-for="t in tasks" :key="String(t.id)">
+          <ProjectCard
+            v-if="t.task_type === 'project'"
+            :project="t"
+            :highlight="String(t.id) === highlightId"
+            @detail="goDetail"
+            @toggle="onToggle"
+            @remove="askDelete"
+          />
+          <TaskListItem
+            v-else
+            :task="t"
+            :highlight="String(t.id) === highlightId"
+            @detail="goDetail"
+            @toggle="onToggle"
+            @remove="askDelete"
+          />
+        </template>
       </ul>
     </div>
 
@@ -386,11 +432,11 @@ onMounted(async () => {
       @cancel="deleteSheetVisible = false"
     />
 
-    <!-- 带子任务的根任务：删除前明示级联后果 -->
+    <!-- 带成员的项目：删除前明示级联后果 -->
     <AppModal
       :visible="cascadeDeleteVisible"
-      title="删除任务？"
-      :text="`该任务下还有子任务，将一并删除子任务及其关联的日程安排，且不可恢复。`"
+      title="删除项目？"
+      text="该项目下还有成员任务，将一并删除成员任务及其关联的日程安排，且不可恢复。"
       confirm-text="删除"
       danger
       @confirm="confirmDelete"
@@ -401,7 +447,7 @@ onMounted(async () => {
     <AppModal
       :visible="!!cascade"
       :title="cascade ? `标记「${cascade.task.title}」完成？` : ''"
-      :text="cascade ? `还有 ${cascade.count} 个子任务未完成，标记后将一并标记完成。` : ''"
+      :text="cascade ? `还有 ${cascade.count} 个成员任务未完成，标记后将一并标记完成。` : ''"
       confirm-text="全部完成"
       @confirm="confirmCascade"
       @cancel="cascade = null"

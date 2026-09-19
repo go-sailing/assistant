@@ -226,10 +226,6 @@ async function restore(): Promise<void> {
 }
 
 /** 实例视角的编辑必须经过作用域 Sheet（默认项永远是「仅本次」），不做静默整条修改 */
-function editThis(): void {
-  openScope('edit')
-}
-
 onMounted(load)
 </script>
 
@@ -369,14 +365,9 @@ onMounted(load)
             <p class="detail__hint">恢复后该次安排回到原规则时间</p>
           </template>
           <template v-else>
-            <AppButton type="primary" :loading="actionLoading" @click="editThis">
-              编辑本次安排
-            </AppButton>
+            <!-- v0.6.0（DTL-01）：编辑统一由头部「编辑」→ 作用域选择承接，底部不再重复 -->
             <button class="detail__cancel-one pressable" @click="openScope('delete')">
               取消本次安排
-            </button>
-            <button class="detail__series-link pressable" @click="goEditForm('series')">
-              编辑整条系列
             </button>
           </template>
         </div>
@@ -628,12 +619,6 @@ onMounted(load)
   padding: 0 var(--sp-4);
   font-size: var(--font-body-m);
   color: var(--color-conflict-text);
-}
-.detail__series-link {
-  min-height: 44px;
-  padding: 0 var(--sp-4);
-  font-size: var(--font-caption);
-  color: var(--color-primary);
 }
 /* 恢复本次：success 色描边按钮，与"删除/取消"路径明确区分 */
 .detail__restore {

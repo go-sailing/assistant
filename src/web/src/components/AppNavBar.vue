@@ -21,8 +21,11 @@ const drawer = useDrawerStore()
 
 /** v0.2.0：一级页（日程/任务/助手）左侧渲染汉堡菜单，底部 Tab 已下线 */
 /** v0.3.0：会话列表页下线，助手改为一页（route name = chat） */
-const MENU_ROUTE_NAMES = new Set(['calendar-month', 'task-home', 'chat'])
+/** v0.6.0：个人信息页与系统设置页由抽屉进入，左上角同样改为菜单按钮 */
+const MENU_ROUTE_NAMES = new Set(['calendar-month', 'task-home', 'chat', 'me', 'settings'])
 const showMenu = computed(() => MENU_ROUTE_NAMES.has(String(route.name ?? '')))
+/** 菜单态不并列渲染返回箭头，避免出现两个左操作 */
+const renderBack = computed(() => props.showBack && !showMenu.value)
 
 function goBack(): void {
   if (window.history.state && window.history.state.back) {
@@ -44,7 +47,7 @@ function goBack(): void {
       >
         <AppIcon name="list" :size="22" />
       </button>
-      <button v-if="showBack" class="navbar__back pressable" aria-label="返回" @click="goBack">
+      <button v-if="renderBack" class="navbar__back pressable" aria-label="返回" @click="goBack">
         <span class="navbar__arrow" aria-hidden="true">‹</span>
         <span v-if="backText" class="navbar__back-text">{{ backText }}</span>
       </button>

@@ -61,6 +61,8 @@ export interface TaskList {
 
 export type TaskStatus = 'todo' | 'completed'
 export type TaskPriority = 'none' | 'low' | 'medium' | 'high'
+/** v0.6.0：任务类型（普通任务 / 项目任务） */
+export type TaskType = 'normal' | 'project'
 
 /** 任务对象 */
 export interface Task {
@@ -75,22 +77,36 @@ export interface Task {
   created_at: string
   updated_at: string
   completed_at: string | null
+  /** 创建来源：manual（任务页）/ chat（对话） */
+  source?: 'manual' | 'chat'
   /** 该任务关联的任务日程数量（详情接口返回，v0.1.0） */
   event_count?: number
-  /* ----- v0.2.0 子任务 ----- */
-  /** 父任务 ID（null = 根任务） */
+  /* ----- v0.6.0 任务类型与项目 ----- */
+  /** 任务类型：normal 普通任务 / project 项目任务 */
+  task_type: TaskType
+  /** 所属项目 ID（null = 独立任务 / 项目本身） */
   parent_id: number | null
-  /** 相对本次子树查询根的深度（根 = 1） */
+  /** 相对本次查询根的深度（项目 = 1，成员 = 2） */
   depth: number
-  /** 直接子任务总数 */
+  /** 项目直接成员总数（普通任务恒为 0） */
+  member_total: number
+  /** 项目直接成员已完成数（普通任务恒为 0） */
+  member_completed: number
+  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
   subtask_total: number
-  /** 直接子任务已完成数 */
+  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
   subtask_completed: number
-  /** 写操作响应：被自动恢复为未完成的父任务 */
+  /** 写操作响应：被自动恢复为未完成的项目 */
   revived_parent?: { id: number; title: string } | null
 }
 
-/** v0.2.0：对话卡片中的子任务组（根任务 + 扁平节点） */
+/** v0.6.0：删除前预取的影响范围（项目成员数 / 关联日程数） */
+export interface RemovePreview {
+  deleted_task_count: number
+  deleted_event_count: number
+}
+
+/** 对话卡片中的项目结果组（项目 + 直接成员，扁平节点） */
 export interface SubtaskGroup {
   root_task_id: number
   nodes: Task[]
@@ -350,6 +366,8 @@ export interface TaskQuery {
   list_id?: string | number
   status?: TaskStatus
   priority?: TaskPriority
+  /** v0.6.0：按任务类型筛选 */
+  task_type?: TaskType
   due_from?: string
   due_to?: string
   sort?: TaskSort
@@ -367,6 +385,10 @@ export interface TaskPayload {
   due_at?: string | null
   list_id?: string | number | null
   status?: TaskStatus
+  /** v0.6.0：仅创建时有效；编辑携带会被服务端拒绝 */
+  task_type?: TaskType
+  /** v0.6.0：所属项目（移入传项目 ID，移出传 null） */
+  parent_id?: string | number | null
 }
 
 export interface Conversation {
@@ -425,7 +447,7 @@ export interface CardsBlock {
   series?: SeriesDetail[]
   /** v0.2.0：循环实例卡片 */
   occurrences?: Occurrence[]
-  /** v0.2.0：子任务组卡片 */
+  /** v0.6.0：项目结果组卡片 */
   subtask_groups?: SubtaskGroup[]
 }
 
@@ -471,7 +493,7 @@ export type ConfirmAction =
   | 'batch_update_events'
   /** v0.2.0：删除整条循环系列 */
   | 'delete_event_series'
-  /** v0.2.0：级联完成父任务及其未完成子任务 */
+  /** v0.6.0：级联完成项目及其未完成成员任务 */
   | 'complete_task_cascade'
   | string
 

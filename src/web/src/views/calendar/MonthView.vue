@@ -7,13 +7,13 @@ import type { CalendarEvent, MonthDayCount, Occurrence } from '@/types'
 import {
   buildMonthGrid,
   diffDays,
-  formatDayBarTitle,
   formatEventRange,
   formatMonthTitle,
   fromDateKey,
   toDateKey,
 } from '@/utils/time'
 import AppIcon from '@/components/AppIcon.vue'
+import FloatingTodayButton from '@/components/calendar/FloatingTodayButton.vue'
 import MonthGrid from '@/components/calendar/MonthGrid.vue'
 import EventTypeTag from '@/components/calendar/EventTypeTag.vue'
 import RecurrenceBadge from '@/components/calendar/RecurrenceBadge.vue'
@@ -22,6 +22,12 @@ import StateError from '@/components/StateError.vue'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useDrawerStore } from '@/stores/drawer'
 
+/**
+ * 日程主页（v0.6.0，CAL-01 / CAL-02）：
+ * - 头部仅「菜单 · 月份 · ＋（最右）」；换月靠左右滑动与点补位日；
+ * - 删除列表标题行；选中日 ≠ 今天时右下角显示浮动「今日」；
+ * - 删除折叠开关行：首次进入默认展开，列表顶部上滑折叠为周、折叠态下拉展开月。
+ */
 const router = useRouter()
 const route = useRoute()
 const eventSync = useEventSyncStore()
@@ -32,14 +38,9 @@ const year = ref(today.getFullYear())
 const month = ref(today.getMonth() + 1)
 const selectedDate = ref(toDateKey(today))
 
-/**
- * v0.4.0 智能定型：骨架期（数据未到达）月历按展开态占位、折叠开关条不渲染；
- * 当日列表与月计数**两个数据都就绪后一次性**定型（≥3 项 → 折叠），避免"先展开后收起"的弹动。
- */
-const shapePhase = ref<'skeleton' | 'settled'>('skeleton')
-/** 折叠态（纯内存 UI 态；用户手动切换后本次停留期间不再被重新定型） */
+/** 折叠态（纯内存 UI 态；首次进入恒为展开） */
 const collapsed = ref(false)
-/** 折叠动画进行中：忽略开关重复点击 */
+/** 折叠动画进行中：忽略新手势 */
 const animating = ref(false)
 /** 动画结束后才真正只渲染一周（动画期间保留整月内容，位置连续） */
 const renderWeek = ref(false)
@@ -62,13 +63,11 @@ let skeletonTimer = 0
 
 const pageEl = ref<HTMLElement | null>(null)
 const headEl = ref<HTMLElement | null>(null)
-const barEl = ref<HTMLElement | null>(null)
 const gridWrap = ref<HTMLElement | null>(null)
 /** 月历容器宽度（中栏内容宽）：折叠/展开高度都由它推导，横竖屏切换同样成立 */
 const containerWidth = ref(0)
 const pageHeight = ref(0)
 const headHeight = ref(0)
-const barHeight = ref(0)
 /** .grid__week 周标题行高度 */
 const WEEK_HEAD_H = 28
 /** .grid__days 底部内边距 */
@@ -77,11 +76,16 @@ const GRID_PAD_BOTTOM = 8
 const GRID_PADDING = 16
 /** 与 --grid-cell-min 一致：展开态空间不足时单格高度下限 */
 const GRID_CELL_MIN = 36
-/** 折叠开关条高度（骨架期不渲染，但空间照常预留，避免定型时列表跳动） */
-const TOGGLE_H = 44
 /** 与 --calendar-list-min-height 一致：列表区最小高度占视口比 */
 const LIST_MIN_RATIO = 0.38
 const SKELETON_DELAY = 300
+
+/** v0.6.0 手势常量（系统设计文档 4.4） */
+const GESTURE_LOCK_PX = 8
+const SHAPE_THRESHOLD_PX = 32
+const DIRECTION_RATIO = 1.5
+const SHAPE_ANIMATION_MS = 250
+const LIST_TOP_TOLERANCE = 2
 
 /** 单格边长：(容器宽 − 左右内边距) / 7，格子 aspect-ratio:1 */
 const cellSize = computed(() => {
@@ -98,10 +102,8 @@ const minExpandedHeight = computed(() => WEEK_HEAD_H + 6 * GRID_CELL_MIN + GRID_
 const weekHeight = computed(() =>
   cellSize.value ? WEEK_HEAD_H + cellSize.value + GRID_PAD_BOTTOM : 0
 )
-/** 月历可用竖向空间 = 页面高 − 头部 − 开关条 − 标题条 */
-const gridAvailable = computed(() =>
-  Math.max(0, pageHeight.value - headHeight.value - TOGGLE_H - barHeight.value)
-)
+/** 月历可用竖向空间 = 页面高 − 头部 */
+const gridAvailable = computed(() => Math.max(0, pageHeight.value - headHeight.value))
 /** 列表区最小高度（38dvh，与 --calendar-list-min-height 一致） */
 const listMinHeight = computed(() => pageHeight.value * LIST_MIN_RATIO)
 /** 展开态空间不足：月格让位已到下限，列表区无法再保证 38dvh（页面仍不出现整页滚动） */
@@ -128,11 +130,8 @@ const COMPACT_CELL_MAX = 48
 const compactCells = computed(() => effectiveCell.value > 0 && effectiveCell.value < COMPACT_CELL_MAX)
 
 const monthTitle = computed(() => formatMonthTitle(year.value, month.value))
-const dayTitle = computed(() => formatDayBarTitle(selectedDate.value))
-const inCurrentMonth = computed(() => {
-  const now = new Date()
-  return now.getFullYear() === year.value && now.getMonth() + 1 === month.value
-})
+/** 浮动「今日」按钮显隐：选中日 ≠ 今天（无论是否同月） */
+const isSelectedToday = computed(() => selectedDate.value === toDateKey(new Date()))
 
 /** 选中日在其所在月网格中的行号（0..5），折叠动画用 */
 const weekIndex = computed(() => {
@@ -157,20 +156,11 @@ const gridCounts = computed<MonthDayCount[]>(() => {
   return weekMonthKeys().flatMap(({ y, m }) => countsCache[cacheKey(y, m)] || [])
 })
 
-/** 标题条节日追加：有法定假日名时展示（不受农历开关控制，与「休」角标同源） */
-const dayHolidayName = computed(() => {
-  const c = gridCounts.value.find((x) => x.date === selectedDate.value)
-  const cd = c?.calendar_day
-  return cd?.type === 'holiday' ? cd.name || '' : ''
-})
-
 function measureLayout(): void {
   const page = pageEl.value
   if (page) pageHeight.value = page.clientHeight
   const head = headEl.value
   if (head) headHeight.value = head.offsetHeight
-  const bar = barEl.value
-  if (bar) barHeight.value = bar.offsetHeight
   const wrap = gridWrap.value
   if (wrap) containerWidth.value = wrap.clientWidth
 }
@@ -237,16 +227,16 @@ async function ensureNeighborCounts(): Promise<void> {
   await Promise.allSettled(neighbors.map((mm) => ensureCounts(mm.y, mm.m)))
 }
 
-/**
- * v0.4.0 首屏：并行拉当日列表 + 当月计数，两者就绪后一次性定型。
- * 数据到达前不暴露形态开关（开关条 v-if 于 settled），因此不存在"先展开后收起"的弹动。
- */
+/** 首屏：并行拉当日列表 + 当月计数；默认展开，不按条数自动折叠 */
 async function bootstrap(): Promise<void> {
   loading.value = true
   error.value = ''
   beginSkeleton()
   const key = cacheKey(year.value, month.value)
-  const [dayRes, monthRes] = await Promise.allSettled([fetchDay(), ensureCounts(year.value, month.value)])
+  const [dayRes, monthRes] = await Promise.allSettled([
+    fetchDay(),
+    ensureCounts(year.value, month.value),
+  ])
 
   if (dayRes.status === 'fulfilled') {
     dayEvents.value = dayRes.value
@@ -260,17 +250,10 @@ async function bootstrap(): Promise<void> {
     error.value = errorText(monthRes.reason)
   }
 
-  // 定型口径 = 当日 list 返回条数（含全天、不含已取消实例），与标题条"共 N 项"同源
-  const dayCount = dayRes.status === 'fulfilled' ? dayRes.value.length : 0
-  collapsed.value = dayCount >= 3
-  renderWeek.value = collapsed.value
-  shapePhase.value = 'settled'
-
   loading.value = false
   endSkeleton()
   await nextTick()
   measureLayout()
-  if (collapsed.value) void ensureNeighborCounts()
 }
 
 /** 展开态：当前月计数 + 当日列表，任一失败即整块错误态（不保留旧数据） */
@@ -344,7 +327,7 @@ async function loadCollapsed(): Promise<void> {
   void nextTick(measureLayout)
 }
 
-/** 形态已定型后的加载分发（重试 / 翻周 / 翻月 / 点格）；形态变化只由 toggleCollapse 触发 */
+/** 形态已定型后的加载分发（重试 / 翻周 / 翻月 / 点格） */
 function load(): void {
   if (collapsed.value) void loadCollapsed()
   else void loadExpanded()
@@ -375,12 +358,13 @@ function shiftWeek(delta: number): void {
   load()
 }
 
-/** 头部 ‹ ›：折叠态翻周，展开态翻月 */
+/** 左右滑动：折叠态翻周，展开态翻月 */
 function shift(delta: number): void {
   if (collapsed.value) shiftWeek(delta)
   else shiftMonth(delta)
 }
 
+/** 浮动「今日」：日期/月历/列表回到今天，不改变日历形态 */
 function goToday(): void {
   const now = new Date()
   year.value = now.getFullYear()
@@ -404,22 +388,22 @@ function onSelect(date: string): void {
   else void loadDayOnly()
 }
 
-/** 折叠/展开开关：不重置选中日；展开时定位到包含选中日的月份 */
-async function toggleCollapse(): Promise<void> {
-  if (animating.value) return
-  measureLayout()
-  if (!collapsed.value) {
-    // 折叠：先按整月内容播放高度/位移过渡，动画结束后只渲染选中的那一周
-    animating.value = true
-    collapsed.value = true
-    void loadCollapsed()
-    window.setTimeout(() => {
-      renderWeek.value = true
-      animating.value = false
-    }, 250)
-    return
-  }
-  // 展开：恢复整月渲染并定位到选中日所在月份
+/* ---- v0.6.0 折叠/展开手势化：删除开关行，改为列表顶部上滑折叠、下拉展开 ---- */
+
+/** 折叠：先按整月内容播放高度/位移过渡，动画结束后只渲染选中周 */
+async function collapseCalendar(): Promise<void> {
+  animating.value = true
+  collapsed.value = true
+  void loadCollapsed()
+  window.setTimeout(() => {
+    renderWeek.value = true
+    animating.value = false
+  }, SHAPE_ANIMATION_MS)
+}
+
+/** 展开：恢复整月渲染并定位到选中日所在月份 */
+async function expandCalendar(): Promise<void> {
+  animating.value = true
   collapsed.value = false
   renderWeek.value = false
   const d = fromDateKey(selectedDate.value)
@@ -428,35 +412,62 @@ async function toggleCollapse(): Promise<void> {
   await nextTick()
   measureLayout()
   void loadExpanded()
+  window.setTimeout(() => {
+    animating.value = false
+  }, SHAPE_ANIMATION_MS)
 }
 
-/* ---- v0.2.0：循环实例识别与跳转 ---- */
-
-function occurrenceOf(e: CalendarEvent): Occurrence | null {
-  const occ = e as Occurrence
-  return occ.occurrence_key ? occ : null
+interface ShapeGesture {
+  startX: number
+  startY: number
+  lock: 'none' | 'vertical' | 'horizontal'
+  fired: boolean
 }
+let shapeGesture: ShapeGesture | null = null
 
-function isModified(e: CalendarEvent): boolean {
-  return occurrenceOf(e)?.override_state === 'modified'
-}
-
-/** 同系列实例 id 相同，列表 key 需叠加 occurrence_key */
-function rowKey(e: CalendarEvent): string {
-  return `${e.id}-${occurrenceOf(e)?.occurrence_key ?? ''}`
-}
-
-/** v0.3.0：列表 item 统一直达详情（普通/任务日程 → 详情；循环实例 → 实例视角详情） */
-function onEventClick(e: CalendarEvent): void {
-  const occ = occurrenceOf(e)
-  if (occ) {
-    router.push({
-      path: `/calendar/${occ.series_id ?? e.id}`,
-      query: { occurrence_key: occ.occurrence_key },
-    })
+function onShapeTouchStart(e: TouchEvent): void {
+  if (animating.value) {
+    shapeGesture = null
     return
   }
-  router.push(`/calendar/${e.id}`)
+  const list = listEl.value
+  // 非列表顶部不接管：手势只用于滚动
+  if (!list || list.scrollTop > LIST_TOP_TOLERANCE) {
+    shapeGesture = null
+    return
+  }
+  const t = e.touches[0]
+  if (!t) return
+  shapeGesture = { startX: t.clientX, startY: t.clientY, lock: 'none', fired: false }
+}
+
+function onShapeTouchMove(e: TouchEvent): void {
+  const g = shapeGesture
+  if (!g || g.fired || animating.value) return
+  const t = e.touches[0]
+  if (!t) return
+  const dx = t.clientX - g.startX
+  const dy = t.clientY - g.startY
+
+  if (g.lock === 'none') {
+    if (Math.abs(dx) < GESTURE_LOCK_PX && Math.abs(dy) < GESTURE_LOCK_PX) return
+    g.lock = Math.abs(dy) > DIRECTION_RATIO * Math.abs(dx) ? 'vertical' : 'horizontal'
+  }
+  if (g.lock !== 'vertical') return
+  const list = listEl.value
+  if (!list || list.scrollTop > LIST_TOP_TOLERANCE) return
+
+  if (!collapsed.value && dy <= -SHAPE_THRESHOLD_PX) {
+    g.fired = true
+    void collapseCalendar()
+  } else if (collapsed.value && dy >= SHAPE_THRESHOLD_PX) {
+    g.fired = true
+    void expandCalendar()
+  }
+}
+
+function onShapeTouchEnd(): void {
+  shapeGesture = null
 }
 
 function goNew(): void {
@@ -493,8 +504,8 @@ function onTouchEnd(e: TouchEvent): void {
 /* ---- v0.4.0：详情返回恢复列表滚动位置（内存态，5 分钟内有效） ---- */
 
 const SCROLL_TTL = 5 * 60 * 1000
-/** 列表滚动位置 + 选中日（组件离开即销毁，故放模块级；不做持久化） */
-let lastView: { date: string; top: number; at: number } | null = null
+/** 列表滚动位置 + 选中日 + 日历形态（组件离开即销毁，故放模块级；不做持久化） */
+let lastView: { date: string; top: number; collapsed: boolean; at: number } | null = null
 const listEl = ref<HTMLElement | null>(null)
 /** 待恢复的滚动位置：数据渲染后再落位 */
 let restoreTop = -1
@@ -502,6 +513,35 @@ let restoreTop = -1
 /* ---- 全天置顶分组 + 定时按开始时间升序 ---- */
 const allDayEvents = computed(() => dayEvents.value.filter((e) => e.all_day))
 const timedEvents = computed(() => dayEvents.value.filter((e) => !e.all_day))
+
+/* ---- v0.6.0：循环实例识别与跳转 ---- */
+
+function occurrenceOf(e: CalendarEvent): Occurrence | null {
+  const occ = e as Occurrence
+  return occ.occurrence_key ? occ : null
+}
+
+function isModified(e: CalendarEvent): boolean {
+  return occurrenceOf(e)?.override_state === 'modified'
+}
+
+/** 同系列实例 id 相同，列表 key 需叠加 occurrence_key */
+function rowKey(e: CalendarEvent): string {
+  return `${e.id}-${occurrenceOf(e)?.occurrence_key ?? ''}`
+}
+
+/** v0.3.0：列表 item 统一直达详情（普通/任务日程 → 详情；循环实例 → 实例视角详情） */
+function onEventClick(e: CalendarEvent): void {
+  const occ = occurrenceOf(e)
+  if (occ) {
+    router.push({
+      path: `/calendar/${occ.series_id ?? e.id}`,
+      query: { occurrence_key: occ.occurrence_key },
+    })
+    return
+  }
+  router.push(`/calendar/${e.id}`)
+}
 
 onMounted(async () => {
   // 消费脏标记（本页挂载即拉取，故只做清理）
@@ -515,16 +555,19 @@ onMounted(async () => {
     year.value = d.getFullYear()
     month.value = d.getMonth() + 1
   } else if (fresh) {
-    // 详情返回：沿用离开时的选中日与列表滚动位置（月历形态按条数重新定型）
+    // 详情返回：沿用离开时的选中日、列表滚动位置与日历形态
     const d = fromDateKey(fresh.date)
     selectedDate.value = fresh.date
     year.value = d.getFullYear()
     month.value = d.getMonth() + 1
+    collapsed.value = fresh.collapsed
+    renderWeek.value = fresh.collapsed
     restoreTop = fresh.top
   }
   await nextTick()
   measureLayout()
-  await bootstrap()
+  if (collapsed.value) await loadCollapsed()
+  else await bootstrap()
   if (restoreTop >= 0 && listEl.value) {
     listEl.value.scrollTop = restoreTop
     restoreTop = -1
@@ -536,13 +579,18 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', measureLayout)
   window.clearTimeout(skeletonTimer)
   const top = listEl.value?.scrollTop ?? 0
-  lastView = { date: selectedDate.value, top, at: Date.now() }
+  lastView = {
+    date: selectedDate.value,
+    top,
+    collapsed: collapsed.value,
+    at: Date.now(),
+  }
 })
 </script>
 
 <template>
   <div ref="pageEl" class="page month" :class="{ 'month--listmin': !listBelowMin }">
-    <!-- v0.4.0：页面本身不滚；头部/月历/开关条/标题条固定，仅列表区独立滚动 -->
+    <!-- v0.6.0：头部固定三元素「菜单 · 月份 · ＋」，换月靠左右滑动 -->
     <header ref="headEl" class="month__head">
       <button
         class="month__menu pressable"
@@ -551,10 +599,10 @@ onBeforeUnmount(() => {
       >
         <AppIcon name="list" :size="22" />
       </button>
-      <button class="month__nav pressable" aria-label="上一月" @click="shift(-1)">‹</button>
       <h1 class="month__title">{{ monthTitle }}</h1>
-      <button v-if="!inCurrentMonth" class="month__today pressable" @click="goToday">今天</button>
-      <button class="month__nav pressable" aria-label="下一月" @click="shift(1)">›</button>
+      <button class="month__add pressable" aria-label="在选中日期新建日程" @click="goNew">
+        <AppIcon name="plus" :size="22" />
+      </button>
     </header>
 
     <section
@@ -584,34 +632,15 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <!-- 骨架期不暴露形态开关：数据到达定型后再淡入 -->
-    <Transition name="fade">
-      <button
-        v-if="shapePhase === 'settled'"
-        class="month__toggle pressable"
-        :aria-expanded="!collapsed"
-        :aria-label="collapsed ? '展开月历' : '折叠月历，只看本周'"
-        @click="toggleCollapse"
-      >
-        <span class="month__toggle-icon" :class="{ 'month__toggle-icon--up': !collapsed }">
-          <AppIcon name="chevron-down" :size="16" color="var(--color-primary)" />
-        </span>
-        <span class="month__toggle-text">{{ collapsed ? '展开' : '折叠' }}</span>
-      </button>
-    </Transition>
-
-    <div ref="barEl" class="month__bar">
-      <span class="month__bar-day">
-        {{ dayTitle }}
-        <span v-if="dayHolidayName" class="month__bar-holiday"> · {{ dayHolidayName }}</span>
-      </span>
-      <span class="month__bar-count">共 {{ dayEvents.length }} 项</span>
-      <button class="month__bar-add pressable" aria-label="这一天新建日程" @click="goNew">
-        ＋
-      </button>
-    </div>
-
-    <div ref="listEl" class="month__body">
+    <!-- v0.6.0：列表区（无标题行）；上滑折叠、下拉展开 -->
+    <div
+      ref="listEl"
+      class="month__body"
+      @touchstart.passive="onShapeTouchStart"
+      @touchmove.passive="onShapeTouchMove"
+      @touchend="onShapeTouchEnd"
+      @touchcancel="onShapeTouchEnd"
+    >
       <SkeletonList v-if="showSkeleton" :rows="3" />
 
       <StateError v-else-if="error" :text="error" @retry="load" />
@@ -670,6 +699,11 @@ onBeforeUnmount(() => {
         </ul>
       </template>
     </div>
+
+    <!-- 选中日 ≠ 今天：右下角浮动「今日」 -->
+    <Transition name="today-fab">
+      <FloatingTodayButton v-if="!isSelectedToday" @click="goToday" />
+    </Transition>
   </div>
 </template>
 
@@ -692,23 +726,20 @@ onBeforeUnmount(() => {
   padding: var(--safe-top) var(--sp-4) 0;
   background: var(--bg-card);
 }
-.month__menu {
+.month__menu,
+.month__add {
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 44px;
   min-height: 44px;
-  margin-left: -12px;
   color: var(--text-primary);
 }
-.month__nav {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  font-size: 26px;
-  line-height: 1;
+.month__menu {
+  margin-left: -12px;
+}
+.month__add {
+  margin-right: -12px;
   color: var(--color-primary);
 }
 .month__title {
@@ -717,14 +748,6 @@ onBeforeUnmount(() => {
   font-size: var(--font-heading-m);
   line-height: var(--font-heading-m-lh);
   font-weight: 600;
-}
-.month__today {
-  min-height: 28px;
-  padding: 0 var(--sp-3);
-  border-radius: 14px;
-  background: var(--color-primary-light);
-  color: var(--color-primary);
-  font-size: var(--font-caption);
 }
 /* 月历区：固定高（由脚本按可用空间算出，空间不足时压缩行高），折叠时裁切溢出 */
 .month__cal {
@@ -736,67 +759,9 @@ onBeforeUnmount(() => {
 .month__grid {
   transition: height var(--dur-page) ease-out;
 }
-/* 智能定型/折叠动画结束后的内容切换不再 animate，避免一周行出现回弹 */
+/* 折叠动画结束后的内容切换不再 animate，避免一周行出现回弹 */
 .month__grid--noanim {
   transition: none;
-}
-/* 折叠开关条：视觉 32pt，热区 ≥44pt；位置始终在月历下沿 */
-.month__toggle {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-1);
-  width: 100%;
-  min-height: 44px;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-color);
-}
-.month__toggle-icon {
-  display: inline-flex;
-  transition: transform var(--dur-page) ease-out;
-}
-.month__toggle-icon--up {
-  transform: rotate(180deg);
-}
-.month__toggle-text {
-  font-size: var(--font-caption);
-  color: var(--text-secondary);
-}
-/* 标题条：固定高 44pt，白底 + 底部 1pt 分隔（页面不滚，无需 sticky） */
-.month__bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: 44px;
-  padding: 0 var(--sp-4);
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-color);
-}
-.month__bar-day {
-  font-size: var(--font-body-m);
-  font-weight: 600;
-}
-/* 法定节假日名追加（与「休」角标同源，不受农历开关控制） */
-.month__bar-holiday {
-  color: var(--color-holiday);
-  font-weight: 500;
-}
-.month__bar-count {
-  flex: 1;
-  font-size: var(--font-caption);
-  color: var(--text-secondary);
-}
-.month__bar-add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  margin-right: -12px;
-  font-size: 22px;
-  color: var(--color-primary);
 }
 /* 列表区：唯一滚动容器（flex 占满剩余高度，独立滚动防穿透） */
 .month__body {
@@ -872,13 +837,13 @@ onBeforeUnmount(() => {
   color: var(--text-disabled);
   text-decoration: line-through;
 }
-/* 智能定型后开关条淡入（形态本身无过渡，避免弹动） */
-.fade-enter-active,
-.fade-leave-active {
+/* 浮动今日按钮淡入淡出 */
+.today-fab-enter-active,
+.today-fab-leave-active {
   transition: opacity var(--dur-fast) ease;
 }
-.fade-enter-from,
-.fade-leave-to {
+.today-fab-enter-from,
+.today-fab-leave-to {
   opacity: 0;
 }
 </style>

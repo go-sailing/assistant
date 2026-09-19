@@ -26,6 +26,9 @@ export const ErrorCode = {
   SUBTASK_LIST_MISMATCH: 4014,
   SUBTASK_CYCLE: 4015,
   RECURRENCE_NOT_SUPPORTED: 4016,
+  // v0.6.0 项目领域
+  PROJECT_INVALID_STATE: 4017,
+  SUBTASK_NOT_SUPPORTED: 4018,
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -52,6 +55,8 @@ const HTTP_STATUS: Record<number, number> = {
   [ErrorCode.SUBTASK_LIST_MISMATCH]: 409,
   [ErrorCode.SUBTASK_CYCLE]: 409,
   [ErrorCode.RECURRENCE_NOT_SUPPORTED]: 409,
+  [ErrorCode.PROJECT_INVALID_STATE]: 409,
+  [ErrorCode.SUBTASK_NOT_SUPPORTED]: 409,
 };
 
 export class AppError extends Error {
@@ -126,10 +131,12 @@ export class AppError extends Error {
       ...details,
     });
   }
-  /** 父任务完成需级联确认：details 携带未完成后代数量 */
-  static taskCascadeRequired(incompleteDescendantCount: number) {
-    return new AppError(ErrorCode.TASK_CASCADE_REQUIRED, '还有未完成的子任务', {
-      incomplete_descendant_count: incompleteDescendantCount,
+  /** 项目成员完成需级联确认：details 携带未完成成员数量 */
+  static taskCascadeRequired(incompleteMemberCount: number) {
+    return new AppError(ErrorCode.TASK_CASCADE_REQUIRED, '还有未完成的项目成员', {
+      incomplete_member_count: incompleteMemberCount,
+      // 兼容别名：保留一个大版本
+      incomplete_descendant_count: incompleteMemberCount,
       cascade_required: true,
     });
   }
@@ -153,7 +160,7 @@ export class AppError extends Error {
   }
   /** 子任务必须与根任务在同一清单 */
   static subtaskListMismatch() {
-    return new AppError(ErrorCode.SUBTASK_LIST_MISMATCH, '子任务必须与父任务在同一清单');
+    return new AppError(ErrorCode.SUBTASK_LIST_MISMATCH, '成员任务必须与项目在同一清单');
   }
   /** 不能移动到自身或自己的子任务下 */
   static subtaskCycle() {
@@ -165,5 +172,13 @@ export class AppError extends Error {
       ErrorCode.RECURRENCE_NOT_SUPPORTED,
       '任务日程不支持重复，只能创建单次安排'
     );
+  }
+  /** 项目任务必须为顶层任务（v0.6.0） */
+  static projectInvalidState(message = '项目任务不能挂到其他任务下，项目须为顶层任务') {
+    return new AppError(ErrorCode.PROJECT_INVALID_STATE, message);
+  }
+  /** 普通任务不支持子任务（v0.6.0）：父任务只能是项目 */
+  static subtaskNotSupported(message = '普通任务不支持子任务，仅项目可包含任务') {
+    return new AppError(ErrorCode.SUBTASK_NOT_SUPPORTED, message);
   }
 }

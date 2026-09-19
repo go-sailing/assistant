@@ -32,3 +32,5 @@ export const optionalId = z.preprocess(
 
 export const priorityEnum = z.enum(['none', 'low', 'medium', 'high']);
 export const statusEnum = z.enum(['todo', 'completed']);
+/** v0.6.0 任务类型：normal 普通任务 / project 项目任务 */
+export const taskTypeEnum = z.enum(['normal', 'project']);

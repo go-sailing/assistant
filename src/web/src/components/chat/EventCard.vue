@@ -57,8 +57,11 @@ const taskAsTask = computed<Task | null>(() => {
     created_at: '',
     updated_at: '',
     completed_at: t.completed_at,
+    task_type: 'normal',
     parent_id: null,
     depth: 1,
+    member_total: 0,
+    member_completed: 0,
     subtask_total: 0,
     subtask_completed: 0,
   }

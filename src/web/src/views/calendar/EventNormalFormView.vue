@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as eventApi from '@/api/events'
-import * as taskApi from '@/api/tasks'
 import { ApiError, errorText } from '@/api/client'
 import type {
   ConflictDateGroup,
@@ -11,7 +10,6 @@ import type {
   EventConflictBrief,
   EventPayload,
   EventScope,
-  EventType,
   LunarResolved,
   RecurrenceRule,
 } from '@/types'
@@ -35,29 +33,31 @@ import RepeatSheet from '@/components/calendar/RepeatSheet.vue'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
 
+/**
+ * 普通日程表单（v0.6.0，FRM-01）：由旧合并表单的 normal 分支整体迁出。
+ * 手工输入标题；可设全天、公历/农历、重复规则；不支持关联任务。
+ */
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
 const eventSync = useEventSyncStore()
 
-const editId = computed(() => (route.name === 'event-edit' ? String(route.params.id) : ''))
-const typeLocked = computed(() => !!editId.value)
-/** v0.2.0：实例编辑带 scope=this/following 与 occurrence_key；整条编辑带 scope=series */
+/** 编辑态（含实例作用域/整条系列）；新建态为空 */
+const editId = computed(() =>
+  route.name === 'event-edit-normal' ? String(route.params.id) : ''
+)
 const scopeParam = computed(() => (typeof route.query.scope === 'string' ? route.query.scope : ''))
 const occurrenceKey = computed(() =>
   typeof route.query.occurrence_key === 'string' ? route.query.occurrence_key : ''
 )
-/** 实例视角（本次 / 本次及以后）：不展示重复设置行 */
 const scopedToOccurrence = computed(
   () => !!occurrenceKey.value && (scopeParam.value === 'this' || scopeParam.value === 'following')
 )
+const isSeriesEdit = computed(
+  () => !!editId.value && (!!recurrence.value || scopeParam.value === 'series')
+)
 
-const eventType = ref<EventType>('normal')
 const title = ref('')
-const taskId = ref('')
-const taskTitle = ref('')
-/** 由任务详情带入的任务不可再改 */
-const taskLocked = ref(false)
 const allDay = ref(false)
 const startLocal = ref('')
 const endLocal = ref('')
@@ -67,7 +67,6 @@ const location = ref('')
 const note = ref('')
 
 const titleError = ref('')
-const taskError = ref('')
 const formError = ref('')
 const saving = ref(false)
 const loading = ref(false)
@@ -81,15 +80,10 @@ const conflictDateGroups = ref<ConflictDateGroup[]>([])
 const conflictDatesTotal = ref(0)
 const conflictTotal = ref(0)
 
-/* ---------------- v0.2.0 循环规则 ---------------- */
+/* ---------------- 循环规则 ---------------- */
 const recurrence = ref<RecurrenceRule | null>(null)
-/** 服务端下发的规则摘要；刚在弹层里改过则为端上同规则预览（保存后以服务端摘要为准） */
 const recurrenceSummary = ref('')
 const repeatVisible = ref(false)
-/** 编辑整条系列：表单需展示并提交重复规则 */
-const isSeriesEdit = computed(() => !!editId.value && (!!recurrence.value || scopeParam.value === 'series'))
-/** 任务日程不支持循环，因此不渲染"重复"行 */
-const showRepeatRow = computed(() => eventType.value === 'normal' && !scopedToOccurrence.value)
 
 const headTitle = computed(() => {
   if (!editId.value) return '新建日程'
@@ -120,11 +114,6 @@ function onRepeatConfirm(rule: RecurrenceRule, preview: string): void {
 /** 用户手动改过结束时间后，开始时间变化不再自动跟随 */
 let endTouched = false
 
-const typeOptions = [
-  { label: '普通日程', value: 'normal' },
-  { label: '任务日程', value: 'task' },
-]
-
 const startIso = computed<string | null>(() =>
   allDay.value ? toIso(fromDateKey(startDay.value)) : fromLocalInputValue(startLocal.value)
 )
@@ -132,7 +121,7 @@ const endIso = computed<string | null>(() =>
   allDay.value ? toIso(nextDay(fromDateKey(endDay.value))) : fromLocalInputValue(endLocal.value)
 )
 
-/* ---------------- v0.4.0：日期区公历 / 农历切换（PRD 5.6.2） ---------------- */
+/* ---------------- 日期区公历 / 农历切换 ---------------- */
 
 type CalendarMode = 'solar' | 'lunar'
 const calendarOptions = [
@@ -182,7 +171,9 @@ const WEEKS = ['周日', '周一', '周二', '周三', '周四', '周五', '周�
 
 /** 换算未完成/失败时禁止保存（不凭端上猜测提交公历日期） */
 const lunarBlocked = computed(
-  () => calendarMode.value === 'lunar' && (lunarLoading.value || !!lunarError.value || !lunarResult.value)
+  () =>
+    calendarMode.value === 'lunar' &&
+    (lunarLoading.value || !!lunarError.value || !lunarResult.value)
 )
 
 /** 换算结果行：`对应公历 2026-09-25（周五）· 中秋节` */
@@ -404,120 +395,21 @@ function openPicker(e: MouseEvent): void {
   }
 }
 
-function onTypeChange(v: string): void {
-  eventType.value = v as EventType
-  titleError.value = ''
-  taskError.value = ''
-}
-
-function initFromQuery(): void {
-  if (route.query.event_type === 'task') {
-    eventType.value = 'task'
-    const qid = typeof route.query.task_id === 'string' ? route.query.task_id : ''
-    if (qid) {
-      taskId.value = qid
-      taskLocked.value = true
-      void loadTaskTitle(qid)
-    }
-  }
-  applyDefaults()
-}
-
-async function loadTaskTitle(id: string): Promise<void> {
-  try {
-    const t = await taskApi.fetchTask(id)
-    taskTitle.value = t.title
-  } catch {
-    taskTitle.value = ''
-  }
-}
-
-interface FormDraft {
-  key: string
-  eventType: EventType
-  title: string
-  taskId: string
-  taskTitle: string
-  allDay: boolean
-  startLocal: string
-  endLocal: string
-  startDay: string
-  endDay: string
-  location: string
-  note: string
-  endTouched: boolean
-}
-
-/**
- * 去「选择任务」页会卸载本组件（App.vue 以 fullPath 作 key），
- * 用模块级草稿存住已填内容，返回同一条表单路由时恢复，避免用户重填。
- */
-let pickerDraft: FormDraft | null = null
-
-function saveDraft(): void {
-  pickerDraft = {
-    key: route.fullPath,
-    eventType: eventType.value,
-    title: title.value,
-    taskId: taskId.value,
-    taskTitle: taskTitle.value,
-    allDay: allDay.value,
-    startLocal: startLocal.value,
-    endLocal: endLocal.value,
-    startDay: startDay.value,
-    endDay: endDay.value,
-    location: location.value,
-    note: note.value,
-    endTouched,
-  }
-}
-
-function restoreDraft(): boolean {
-  if (!pickerDraft || pickerDraft.key !== route.fullPath) return false
-  const d = pickerDraft
-  pickerDraft = null
-  eventType.value = d.eventType
-  title.value = d.title
-  taskId.value = d.taskId
-  taskTitle.value = d.taskTitle
-  allDay.value = d.allDay
-  startLocal.value = d.startLocal
-  endLocal.value = d.endLocal
-  startDay.value = d.startDay
-  endDay.value = d.endDay
-  location.value = d.location
-  note.value = d.note
-  endTouched = d.endTouched
-  return true
-}
-
-function goPickTask(): void {
-  if (taskLocked.value) return
-  saveDraft()
-  router.push('/calendar/tasks')
-}
-
-/** 任务选择结果由 TaskPickerView 写入 history.state，取用后清空 */
-function consumePickedTask(): void {
-  const state = window.history.state as { pickedTask?: { id?: string | number; title?: string } } | null
-  const picked = state?.pickedTask
-  if (!picked || picked.id === undefined || picked.id === null) return
-  window.history.replaceState({ ...(state || {}), pickedTask: null }, '')
-  taskId.value = String(picked.id)
-  taskTitle.value = picked.title || ''
-  taskError.value = ''
-}
-
 async function loadEvent(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
     // 实例视角取实例（带覆盖后的字段），整条视角取系列主记录（= 首次时间锚点）
     const ev = await eventApi.fetchEvent(editId.value, occurrenceKey.value || undefined)
-    eventType.value = ev.event_type
+    if (ev.event_type === 'task') {
+      // 任务日程不属于本表单：交由统一编辑入口按类型分流
+      await router.replace({
+        path: `/calendar/${editId.value}/edit/task`,
+        query: { ...route.query },
+      })
+      return
+    }
     title.value = ev.title
-    taskId.value = ev.task_id ? String(ev.task_id) : ev.task ? String(ev.task.id) : ''
-    taskTitle.value = ev.task?.title || ev.title
     allDay.value = ev.all_day
     location.value = ev.location || ''
     note.value = ev.note || ''
@@ -541,21 +433,14 @@ async function loadEvent(): Promise<void> {
 
 function buildPayload(confirmConflict: boolean): EventPayload {
   const payload: EventPayload = {
+    title: title.value.trim(),
     all_day: allDay.value,
     start_at: startIso.value as string,
     end_at: endIso.value as string,
     location: location.value.trim() || null,
     note: note.value.trim() || null,
   }
-  // 编辑时不下发 event_type/task_id：类型与关联创建后不可变更，服务端只接受创建时指定
-  if (!editId.value) {
-    payload.event_type = eventType.value
-    if (eventType.value === 'task') {
-      payload.task_id = taskId.value
-      // 任务日程的标题即任务标题，前端不改写
-    }
-  }
-  if (eventType.value === 'normal') payload.title = title.value.trim()
+  if (!editId.value) payload.event_type = 'normal'
 
   // 循环：创建时携带规则；实例作用域只提交本次/本次及以后，不夹带规则
   if (editId.value && (scopeParam.value === 'this' || scopeParam.value === 'following')) {
@@ -572,12 +457,8 @@ function buildPayload(confirmConflict: boolean): EventPayload {
 
 function validate(): boolean {
   let ok = true
-  if (eventType.value === 'normal' && !title.value.trim()) {
+  if (!title.value.trim()) {
     titleError.value = '请输入日程标题'
-    ok = false
-  }
-  if (eventType.value === 'task' && !taskId.value) {
-    taskError.value = '请选择关联任务'
     ok = false
   }
   if (!startIso.value || !endIso.value || endError.value) ok = false
@@ -612,7 +493,6 @@ async function submit(confirmConflict = false): Promise<void> {
     const payload = buildPayload(confirmConflict)
     if (editId.value) await eventApi.updateEvent(editId.value, payload)
     else await eventApi.createEvent(payload)
-    pickerDraft = null
     conflictVisible.value = false
     eventSync.markDirty()
     toast.show(successText())
@@ -648,22 +528,13 @@ function applyConflictDetail(details: unknown): void {
 }
 
 function cancel(): void {
-  pickerDraft = null
   goBackAfterSave()
 }
 
 onMounted(async () => {
   if (editId.value) await loadEvent()
-  // 草稿优先于接口初始值（从任务选择页返回的场景）
-  if (!restoreDraft() && !editId.value) initFromQuery()
-  consumePickedTask()
+  else applyDefaults()
 })
-
-// 若上层后续启用 keep-alive，返回本页时仍需消费任务选择结果
-watch(
-  () => route.fullPath,
-  () => consumePickedTask()
-)
 </script>
 
 <template>
@@ -694,18 +565,7 @@ watch(
           </span>
         </p>
 
-        <section class="form__group form__group--plain">
-          <div class="form__type" :class="{ 'form__type--locked': typeLocked }">
-            <SegmentedControl
-              :model-value="eventType"
-              :options="typeOptions"
-              @update:model-value="onTypeChange"
-            />
-          </div>
-          <p v-if="typeLocked" class="form__type-hint">日程类型创建后不可更改</p>
-        </section>
-
-        <section v-if="eventType === 'normal'" class="form__group">
+        <section class="form__group">
           <AppInput
             v-model="title"
             label="标题 *"
@@ -715,23 +575,6 @@ watch(
             :error="titleError"
             @update:model-value="titleError = ''"
           />
-        </section>
-
-        <section v-else class="form__group form__group--rows">
-          <button
-            class="form__row pressable"
-            :disabled="taskLocked"
-            @click="goPickTask"
-          >
-            <AppIcon name="link" :size="18" color="#6B7080" />
-            <span class="form__row-label">关联任务 *</span>
-            <span class="form__row-value" :class="{ 'form__row-value--empty': !taskTitle }">
-              {{ taskTitle || '请选择任务' }}
-            </span>
-            <AppIcon v-if="!taskLocked" name="chevron-right" :size="18" color="#B5B9C4" />
-          </button>
-          <p v-if="taskLocked" class="form__hint">已由当前任务带入</p>
-          <p v-if="taskError" class="form__hint form__hint--error">{{ taskError }}</p>
         </section>
 
         <section class="form__group form__group--rows">
@@ -841,12 +684,9 @@ watch(
           </div>
         </section>
 
-        <!-- v0.2.0：重复设置行（任务日程不渲染） -->
-        <section v-if="showRepeatRow" class="form__group form__group--rows">
-          <button
-            class="form__row pressable"
-            @click="openRepeat"
-          >
+        <!-- 重复设置行（普通日程专属；任务日程禁循环） -->
+        <section v-if="!scopedToOccurrence" class="form__group form__group--rows">
+          <button class="form__row pressable" @click="openRepeat">
             <AppIcon name="repeat" :size="18" color="#6B7080" />
             <span class="form__row-label">重复</span>
             <span
@@ -953,10 +793,6 @@ watch(
   padding: var(--sp-4);
   background: var(--bg-card);
 }
-.form__group--plain {
-  padding: 0;
-  overflow: hidden;
-}
 .form__group--rows {
   padding: 0;
   overflow: hidden;
@@ -965,11 +801,6 @@ watch(
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
-}
-/* 类型创建后不可更改：只读展示 */
-.form__type--locked {
-  pointer-events: none;
-  opacity: 0.5;
 }
 .form__type-hint {
   padding: var(--sp-2) var(--sp-4);

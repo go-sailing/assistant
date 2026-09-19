@@ -23,6 +23,7 @@ import { useToastStore } from '@/stores/toast'
  * - 不提供深色模式/字号/推送/多语言等入口。
  */
 const router = useRouter()
+/** 仅用于「默认启动页」同步到会话内状态（退出/注销入口已在本页移除） */
 const auth = useAuthStore()
 const chat = useChatStore()
 const conversation = useConversationStore()
@@ -40,8 +41,6 @@ const homeSheetOpen = ref(false)
 const aboutOpen = ref(false)
 const clearOpen = ref(false)
 const clearing = ref(false)
-const destroyOpen = ref(false)
-const destroying = ref(false)
 /** v0.5.0：长期记忆条数（0 条也照常显示，与记忆页同源） */
 const memoryCount = ref(0)
 
@@ -140,27 +139,8 @@ async function confirmClear(): Promise<void> {
   }
 }
 
-async function doLogout(): Promise<void> {
-  await auth.logout()
-  // 清理偏好，避免下一个账号继承上一个账号的设置
-  settingsStore.reset()
-  router.replace('/login')
-}
-
-async function doDestroy(): Promise<void> {
-  if (destroying.value) return
-  destroying.value = true
-  try {
-    await auth.destroyAccount()
-    settingsStore.reset()
-    destroyOpen.value = false
-    router.replace('/login')
-  } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    destroying.value = false
-  }
-}
+/* v0.6.0（UI-01）：本页危险区（退出登录 / 注销账号）已移除，
+   能力与接口保留，唯一入口为个人信息页危险区。 */
 </script>
 
 <template>
@@ -251,7 +231,7 @@ async function doDestroy(): Promise<void> {
           <li>
             <button class="settings__row pressable" @click="aboutOpen = true">
               <span class="settings__label">关于</span>
-              <span class="settings__value">v0.5.0</span>
+              <span class="settings__value">v0.6.0</span>
               <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
             </button>
           </li>
@@ -259,21 +239,8 @@ async function doDestroy(): Promise<void> {
         <p class="settings__caption">长期未使用（30 天）需重新登录</p>
       </section>
 
-      <!-- 危险区 -->
-      <section class="settings__group settings__group--danger">
-        <ul class="settings__list">
-          <li>
-            <button class="settings__row settings__row--danger pressable" @click="doLogout">
-              退出登录
-            </button>
-          </li>
-          <li>
-            <button class="settings__row settings__row--danger pressable" @click="destroyOpen = true">
-              注销账号
-            </button>
-          </li>
-        </ul>
-      </section>
+      <!-- v0.6.0（UI-01）：危险区（退出登录 / 注销账号）已整体移除。
+           退出与注销的唯一入口为「个人信息 → 危险区」。 -->
     </div>
 
     <AppActionSheet
@@ -294,7 +261,7 @@ async function doDestroy(): Promise<void> {
     >
       <div class="about">
         <p class="about__row"><span>应用名称</span><span>个人助手</span></p>
-        <p class="about__row"><span>版本</span><span>v0.5.0</span></p>
+        <p class="about__row"><span>版本</span><span>v0.6.0</span></p>
         <p class="about__tip">日历、任务与助手一体化；长期未使用（30 天）需重新登录。</p>
       </div>
     </AppModal>
@@ -309,17 +276,6 @@ async function doDestroy(): Promise<void> {
       @confirm="confirmClear"
       @cancel="clearOpen = false"
     />
-
-    <AppModal
-      :visible="destroyOpen"
-      title="注销账号？"
-      text="将永久删除账号及全部任务、日程与聊天记录，且不可恢复。"
-      confirm-text="注销账号"
-      danger
-      :loading="destroying"
-      @confirm="doDestroy"
-      @cancel="destroyOpen = false"
-    />
   </div>
 </template>
 
@@ -329,9 +285,6 @@ async function doDestroy(): Promise<void> {
 }
 .settings__group {
   margin-top: var(--sp-4);
-}
-.settings__group--danger {
-  margin-top: var(--sp-6);
 }
 .settings__group-title {
   padding: 0 var(--sp-4) var(--sp-2);
@@ -367,9 +320,6 @@ async function doDestroy(): Promise<void> {
 }
 .settings__value--num {
   font-variant-numeric: tabular-nums;
-}
-.settings__row--danger {
-  color: var(--color-danger);
 }
 .settings__row--disabled {
   opacity: 0.5;

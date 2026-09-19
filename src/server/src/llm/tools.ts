@@ -9,11 +9,18 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'create_task',
-      description: '创建一个新任务。用户表达「提醒我做某事」「记一下…」时使用。',
+      description:
+        '创建一个新任务。task_type=normal（默认）为普通任务；task_type=project 为项目（一组相关任务的容器）。' +
+        '用户表达「提醒我做某事」用 normal；用户说「建个项目」或一件事包含 ≥2 个相关任务时用 project。',
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: '任务标题，必填' },
+          task_type: {
+            type: 'string',
+            enum: ['normal', 'project'],
+            description: '任务类型，默认 normal。project 的 parent_id 必须为空（项目为顶层）。',
+          },
+          title: { type: 'string', description: '任务标题；task_type=project 时为项目名称，必填' },
           note: { type: 'string', description: '备注，可选' },
           priority: {
             type: 'string',
@@ -33,8 +40,9 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           parent_id: {
             type: 'number',
             description:
-              '父任务ID（v0.2.0 子任务）：把新任务挂到某个已有任务下时传，必须先用 search_tasks/get_task 查证真实 ID，禁止猜测。' +
-              '子任务须与父任务在同一清单、最多 5 级。',
+              '挂载到项目下时传项目任务的真实 ID：普通任务的父只能是 project。' +
+              '创建「带成员的项目」时必须先 create_task(task_type=project) 取得返回的项目 ID，' +
+              '再以该 ID 作为 parent_id 依次创建成员；禁止猜测 ID，禁止把任务挂到普通任务下。',
           },
         },
         required: ['title'],
@@ -59,8 +67,8 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           parent_id: {
             type: 'number',
             description:
-              '移动到某个父任务下（v0.2.0）：传 0 或 null 表示移到顶层成为根任务；传真实任务ID 表示挂到该任务下。' +
-              '不能移动到自身或自己的子任务下，且必须与目标父任务同清单。',
+              '所属项目（v0.6.0）：传项目任务真实 ID = 移入该项目成为成员；传 0 或 null = 移出成为独立任务。' +
+              '不能挂到普通任务下；project 任务不能移动到任何父任务下。移入须与项目同清单。',
           },
         },
         required: ['task_id'],
@@ -73,8 +81,8 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
       name: 'update_task_status',
       description:
         '把任务标记为已完成或恢复为未完成。' +
-        '（v0.2.0）完成一个还有未完成子任务的父任务时，系统会返回 need_cascade_confirmation 并要求用户确认后级联完成；' +
-        '取消完成只作用于该任务本身，不会影响子任务。',
+        '完成一个还有未完成成员的项目时，系统会返回 need_cascade_confirmation 并要求用户确认后级联完成；' +
+        '取消完成只作用于该任务本身，不会影响成员任务。',
       parameters: {
         type: 'object',
         properties: {
@@ -89,7 +97,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'get_task',
-      description: '查询单个任务的详细信息（含父任务、层级与直接子任务进度）。',
+      description: '查询单个任务的详细信息（含所属项目、任务类型与项目成员进度）。',
       parameters: {
         type: 'object',
         properties: { task_id: { type: 'number' } },
@@ -102,12 +110,12 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'get_task_subtree',
       description:
-        '查询某个任务及其全部子任务（扁平列表，含层级与进度）。用户问「这个任务下面有哪些子任务」时使用。',
+        '查询项目的成员列表（项目 + 直接成员，成员仅一层）。普通任务没有成员，仅返回自身。',
       parameters: {
         type: 'object',
         properties: {
-          task_id: { type: 'number', description: '根任务ID' },
-          depth: { type: 'number', description: '向下展开的层数，默认全部（受 200 节点上限保护）' },
+          task_id: { type: 'number', description: '项目任务ID' },
+          depth: { type: 'number', description: '保留字段：成员仅一层，传与不传结果相同' },
         },
         required: ['task_id'],
       },
@@ -133,8 +141,13 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             description: '排序，默认 due_at_asc',
           },
           limit: { type: 'number', description: '返回条数上限，默认 50' },
-          root_only: { type: 'boolean', description: '只看根任务（v0.2.0 子任务），默认 false' },
-          parent_id: { type: 'number', description: '只看某个任务的直接子任务（v0.2.0）' },
+          task_type: {
+            type: 'string',
+            enum: ['normal', 'project'],
+            description: '按任务类型筛选：project=只看项目，normal=只看普通任务；缺省不过滤',
+          },
+          root_only: { type: 'boolean', description: '只看根任务（项目与独立任务），默认 false' },
+          parent_id: { type: 'number', description: '只看某个项目的直接成员' },
         },
       },
     },

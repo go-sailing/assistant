@@ -13,7 +13,7 @@ export type MessageBlock =
       series?: SeriesDTO[];
       /** v0.2.0：循环实例卡片 */
       occurrences?: OccurrenceDTO[];
-      /** v0.2.0：子任务组卡片（根任务 + 扁平节点） */
+      /** v0.6.0：项目结果组卡片（项目 + 直接成员，扁平节点） */
       subtask_groups?: SubtaskGroup[];
     }
   | {

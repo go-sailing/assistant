@@ -13,6 +13,7 @@ import {
   type TaskFilter,
   type TaskRow,
   type TaskStatus,
+  type TaskType,
   type TaskWriteResult,
   type UpdateTaskInput,
 } from './types';
@@ -20,14 +21,11 @@ import {
 const TITLE_MAX = 200;
 const NOTE_MAX = 2000;
 
-/** 递归深度硬上限：理论无环（写入保证），仅作脏数据防御 */
-const MAX_CTE_DEPTH = 32;
-
 /**
- * 直接子任务进度聚合（折叠态显示 "2/5"）：
- * 单次聚合扫描后 LEFT JOIN 回主查询，避免 N+1。
+ * 项目成员进度聚合（v0.6.0）：单次 GROUP BY 扫描后 LEFT JOIN 回主查询，
+ * 列表/详情共用，避免 N+1。新模型保证 parent_id 仅指向 project。
  */
-const SUBTASK_PROGRESS_JOIN = `
+const MEMBER_PROGRESS_JOIN = `
   LEFT JOIN (
     SELECT parent_id,
            count(*)::int AS total,
@@ -40,35 +38,13 @@ const SUBTASK_PROGRESS_JOIN = `
 
 const TASK_SELECT = `
   SELECT t.*, l.name AS list_name,
+         COALESCE(c.total, 0)::int AS member_total,
+         COALESCE(c.done, 0)::int AS member_completed,
          COALESCE(c.total, 0)::int AS subtask_total,
          COALESCE(c.done, 0)::int AS subtask_completed
   FROM tasks t
   JOIN task_lists l ON l.id = t.list_id
-  ${SUBTASK_PROGRESS_JOIN}
-`;
-
-/** 子树递归 CTE（含自身），用于删除级联 / 后代校验 / 子树查询 */
-const SUBTREE_CTE = `
-  WITH RECURSIVE subtree AS (
-    SELECT t.id, t.parent_id, 1 AS depth
-    FROM tasks t WHERE t.id = $1 AND t.user_id = $2
-    UNION ALL
-    SELECT t.id, t.parent_id, s.depth + 1
-    FROM tasks t JOIN subtree s ON t.parent_id = s.id
-    WHERE t.user_id = $2 AND s.depth < ${MAX_CTE_DEPTH}
-  )
-`;
-
-/** 祖先链递归 CTE（含自身，向上） */
-const ANCESTORS_CTE = `
-  WITH RECURSIVE ancestors AS (
-    SELECT t.id, t.parent_id, t.list_id, 1 AS depth
-    FROM tasks t WHERE t.id = $1 AND t.user_id = $2
-    UNION ALL
-    SELECT t.id, t.parent_id, t.list_id, a.depth + 1
-    FROM tasks t JOIN ancestors a ON t.id = a.parent_id
-    WHERE t.user_id = $2 AND a.depth < ${MAX_CTE_DEPTH}
-  )
+  ${MEMBER_PROGRESS_JOIN}
 `;
 
 interface Condition {
@@ -94,6 +70,10 @@ function buildConditions(userId: number, filter: TaskFilter): Condition {
     clauses.push(`t.priority = $${index++}`);
     params.push(filter.priority);
   }
+  if (filter.task_type) {
+    clauses.push(`t.task_type = $${index++}`);
+    params.push(filter.task_type);
+  }
   if (filter.due_from) {
     clauses.push(`t.due_at >= $${index++}::timestamptz`);
     params.push(filter.due_from);
@@ -108,7 +88,7 @@ function buildConditions(userId: number, filter: TaskFilter): Condition {
     params.push(`%${escaped}%`);
     index += 1;
   }
-  // v0.2.0：根任务列表（任务首页）/ 直接子任务
+  // v0.2.0：根任务列表（任务首页）/ 直接子任务（v0.6.0 起即项目成员）
   if (filter.root_only) {
     clauses.push('t.parent_id IS NULL');
   } else if (filter.parent_id) {
@@ -160,10 +140,13 @@ function normalizeDueAt(dueAt: string | null | undefined): Date | null {
   return date;
 }
 
-interface AncestorNode {
-  id: number;
-  list_id: number;
-  depth: number;
+/** v0.6.0：任务类型归一化的独立导出，供编排层与路由侧复用 */
+export function normalizeTaskType(raw: unknown): TaskType {
+  if (raw === undefined || raw === null) return 'normal';
+  if (raw !== 'normal' && raw !== 'project') {
+    throw AppError.paramInvalid('任务类型不合法，仅支持 normal 或 project');
+  }
+  return raw;
 }
 
 /**
@@ -255,91 +238,79 @@ export const taskService = {
     return this.listAll(userId, { keyword, sort: 'created_at_desc' }, limit);
   },
 
-  /* ------------------- v0.2.0 子树能力 ------------------- */
+  /* ------------------- v0.6.0 任务类型与项目能力 ------------------- */
 
-  /** 整棵子树的 id 集合（含自身） */
+  /** 4017：项目任务必须为根任务（parent_id 为空） */
+  assertProjectRoot(taskType: TaskType, parentId: number | null): void {
+    if (taskType === 'project' && parentId !== null) {
+      throw AppError.projectInvalidState();
+    }
+  },
+
+  /**
+   * 4018：普通任务的父任务只能指向项目任务。
+   * 父任务不存在/越权由 getOwned 统一 404；成员仅一层由此天然保证
+   * （成员是 normal，挂到成员下即父非 project → 4018）。
+   */
+  async assertParentIsProject(userId: number, parentId: number): Promise<TaskRow> {
+    const parent = await this.getOwned(userId, parentId);
+    if (parent.task_type !== 'project') throw AppError.subtaskNotSupported();
+    return parent;
+  },
+
+  /** 4014：成员任务必须与项目同清单 */
+  assertSameList(childListId: number, parentListId: number): void {
+    if (Number(childListId) !== Number(parentListId)) {
+      throw AppError.subtaskListMismatch();
+    }
+  },
+
+  /** 项目成员规模上限：直接成员数 < TASK_TREE_MAX_NODES（默认 200） */
+  async assertMemberCapacity(
+    userId: number,
+    projectId: number,
+    excludeTaskId?: number
+  ): Promise<void> {
+    const res = await query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM tasks
+       WHERE user_id = $2 AND parent_id = $1
+         AND ($3::int IS NULL OR id <> $3::int)`,
+      [projectId, userId, excludeTaskId ?? null]
+    );
+    if (Number(res.rows[0]?.n ?? 0) >= config.task.treeMaxNodes) {
+      throw AppError.paramInvalid(`项目成员最多 ${config.task.treeMaxNodes} 个`);
+    }
+  },
+
+  /**
+   * 子节点 id 集合（v0.6.0 非递归）：项目 = 自身 + 直接成员；普通任务 = 仅自身。
+   * 用于删除级联计数。
+   */
   async listSubtreeIds(userId: number, taskId: number, client?: PoolClient): Promise<number[]> {
-    const sql = `${SUBTREE_CTE} SELECT id FROM subtree`;
+    const sql = `SELECT id FROM tasks WHERE user_id = $2 AND (id = $1 OR parent_id = $1)`;
     const res = client
       ? await client.query<{ id: number }>(sql, [taskId, userId])
       : await query<{ id: number }>(sql, [taskId, userId]);
     return res.rows.map((r) => r.id);
   },
 
-  /** 祖先链（根 → 父 → 当前），不存在返回空数组 */
-  async listAncestorChain(userId: number, taskId: number): Promise<AncestorNode[]> {
-    const res = await query<AncestorNode>(
-      `${ANCESTORS_CTE} SELECT id, list_id, depth FROM ancestors ORDER BY depth DESC`,
-      [taskId, userId]
-    );
-    return res.rows;
-  },
-
-  /** 子树高度（自身为 1） */
-  async subtreeHeight(userId: number, taskId: number): Promise<number> {
-    const res = await query<{ h: number }>(
-      `WITH RECURSIVE s AS (
-         SELECT t.id, 1 AS d FROM tasks t WHERE t.id = $1 AND t.user_id = $2
-         UNION ALL
-         SELECT t.id, s.d + 1 FROM tasks t JOIN s ON t.parent_id = s.id
-         WHERE t.user_id = $2 AND s.d < ${MAX_CTE_DEPTH}
-       )
-       SELECT COALESCE(MAX(d), 0)::int AS h FROM s`,
-      [taskId, userId]
-    );
-    return Number(res.rows[0]?.h ?? 0);
-  },
-
-  /** 未完成后代数（不含自身），用于级联完成的两阶段判定 */
-  async countIncompleteDescendants(userId: number, taskId: number): Promise<number> {
+  /** 未完成直接成员数（项目级联完成的两阶段判定） */
+  async countIncompleteMembers(userId: number, projectId: number): Promise<number> {
     const res = await query<{ n: number }>(
-      `WITH RECURSIVE s AS (
-         SELECT t.id, 1 AS d FROM tasks t WHERE t.id = $1 AND t.user_id = $2
-         UNION ALL
-         SELECT t.id, s.d + 1 FROM tasks t JOIN s ON t.parent_id = s.id
-         WHERE t.user_id = $2 AND s.d < ${MAX_CTE_DEPTH}
-       )
-       SELECT COUNT(*)::int AS n FROM tasks t
-       WHERE t.user_id = $2 AND t.id IN (SELECT id FROM s WHERE d > 1) AND t.status = 'todo'`,
-      [taskId, userId]
+      `SELECT count(*)::int AS n FROM tasks
+       WHERE user_id = $2 AND parent_id = $1 AND status = 'todo'`,
+      [projectId, userId]
     );
     return Number(res.rows[0]?.n ?? 0);
   },
 
-  /**
-   * 挂载校验（系统设计文档 6.2）：存在/归属、同清单、无环、深度四类约束。
-   * @param listId 被挂载任务（或子树根）所属清单
-   * @param movingTaskId 移动场景传入被移动节点 id，用于无环与深度校验
-   */
-  async assertCanAttach(
-    userId: number,
-    parentId: number,
-    listId: number,
-    movingTaskId?: number
-  ): Promise<void> {
-    const chain = await this.listAncestorChain(userId, parentId);
-    if (chain.length === 0) throw AppError.notFound('父任务不存在');
-    const root = chain[0];
-    if (Number(root.list_id) !== Number(listId)) throw AppError.subtaskListMismatch();
-
-    if (movingTaskId) {
-      if (movingTaskId === parentId || chain.some((a) => a.id === movingTaskId)) {
-        throw AppError.subtaskCycle();
-      }
-    }
-
-    const parentDepth = chain.length;
-    const height = movingTaskId ? await this.subtreeHeight(userId, movingTaskId) : 1;
-    if (parentDepth + height > config.task.maxDepth) {
-      throw AppError.subtaskDepthExceeded(config.task.maxDepth);
-    }
-  },
-
-  /** 父任务已完成后新增/移入未完成子任务 → 仅恢复**直接父**（系统设计文档 6.4） */
+  /** 项目已完成后新增/移入未完成成员 → 仅恢复直接父（项目） */
   async maybeReviveParent(
     userId: number,
-    parentId: number
+    parentId: number,
+    childStatus: TaskStatus
   ): Promise<{ id: number; title: string } | null> {
+    if (childStatus !== 'todo') return null;
     const res = await query<{ id: number; title: string; status: string }>(
       `SELECT id, title, status FROM tasks WHERE id = $1 AND user_id = $2`,
       [parentId, userId]
@@ -351,55 +322,38 @@ export const taskService = {
        WHERE id = $1 AND user_id = $2`,
       [parentId, userId]
     );
-    logger.info('parent_auto_revived', { user_id: userId, task_id: parentId });
+    logger.info('project_auto_revived', { user_id: userId, project_id: parentId });
     return { id: parent.id, title: parent.title };
   },
 
-  /** 子树查询：返回扁平节点数组（depth/进度），前端据此还原树 */
-  async getSubtree(
-    userId: number,
-    rootId: number,
-    depth?: number | null
-  ): Promise<TaskDTO[]> {
-    const maxLevels = depth && depth > 0 ? depth : null;
-    const res = await query<TaskRow & { subtree_size: number }>(
-      `WITH RECURSIVE subtree AS (
-         SELECT t.*, 1 AS depth FROM tasks t WHERE t.id = $1 AND t.user_id = $2
-         UNION ALL
-         SELECT t.*, s.depth + 1 FROM tasks t JOIN subtree s ON t.parent_id = s.id
-         WHERE t.user_id = $2 AND s.depth < ${MAX_CTE_DEPTH}
-           AND ($3::int IS NULL OR s.depth <= $3::int)
-       )
-       SELECT s.*, l.name AS list_name,
-              (SELECT count(*)::int FROM subtree) AS subtree_size,
-              COALESCE(p.total, 0)::int AS subtask_total,
-              COALESCE(p.done, 0)::int AS subtask_completed
-       FROM subtree s
-       JOIN task_lists l ON l.id = s.list_id
-       LEFT JOIN (
-         SELECT parent_id,
-                count(*)::int AS total,
-                count(*) FILTER (WHERE status = 'completed')::int AS done
-         FROM tasks WHERE parent_id IS NOT NULL GROUP BY parent_id
-       ) p ON p.parent_id = s.id
-       ORDER BY s.depth, (s.due_at IS NULL), s.due_at, s.id`,
-      [rootId, userId, maxLevels]
-    );
-    if (res.rowCount === 0) throw AppError.notFound('任务不存在');
-    const size = Number(res.rows[0]?.subtree_size ?? 0);
-    if (size > config.task.treeMaxNodes) {
-      throw AppError.paramInvalid(
-        `子树包含 ${size} 个任务，超过 ${config.task.treeMaxNodes} 个上限，请收窄范围`
-      );
+  /**
+   * 子树（v0.6.0 语义收窄）：项目返回 [项目, ...直接成员]（depth 1/2）；
+   * 普通任务没有成员，仅返回自身。
+   */
+  async getSubtree(userId: number, rootId: number, depth?: number | null): Promise<TaskDTO[]> {
+    const root = await this.getOwned(userId, rootId);
+    if (root.task_type !== 'project') {
+      return [toTaskDTO(root)];
     }
-    return res.rows.map(toTaskDTO);
+    const maxLevels = depth && depth > 0 ? depth : null;
+    const res = await query<TaskRow>(
+      `${TASK_SELECT}
+       WHERE t.user_id = $1
+         AND (t.id = $2
+              OR (t.parent_id = $2 AND ($3::int IS NULL OR $3::int >= 1)))
+       ORDER BY (t.id = $2) DESC, (t.due_at IS NULL), t.due_at, t.id`,
+      [userId, rootId, maxLevels]
+    );
+    if ((res.rowCount ?? 0) - 1 > config.task.treeMaxNodes) {
+      throw AppError.paramInvalid(`项目成员超过 ${config.task.treeMaxNodes} 个，请收窄范围`);
+    }
+    return res.rows.map((row, i) => toTaskDTO({ ...row, depth: i === 0 ? 1 : 2 }));
   },
 
-  /** 面包屑（根 → 当前） */
+  /** 面包屑（v0.6.0 起为「项目 → 成员」至多两层） */
   async getAncestorPath(userId: number, taskId: number): Promise<TaskDTO[]> {
-    const chain = await this.listAncestorChain(userId, taskId);
-    if (chain.length === 0) throw AppError.notFound('任务不存在');
-    const ids = chain.map((c) => c.id);
+    const self = await this.getOwned(userId, taskId);
+    const ids = self.parent_id ? [Number(self.parent_id), self.id] : [self.id];
     const res = await query<TaskRow>(
       `${TASK_SELECT} WHERE t.user_id = $1 AND t.id = ANY($2::int[])`,
       [userId, ids]
@@ -408,29 +362,18 @@ export const taskService = {
     return ids.map((id) => map.get(id)).filter((t): t is TaskDTO => !!t);
   },
 
-  /** 可挂载的父任务候选：同清单，排除自身与全部后代 */
+  /** 可挂载的父任务候选（v0.6.0）：同清单的 project 列表，排除自身 */
   async listParentCandidates(userId: number, taskId: number): Promise<TaskDTO[]> {
     const self = await this.getOwned(userId, taskId);
-    // 子任务与根任务同清单：候选取该任务所在「根」的清单
-    const chain = await this.listAncestorChain(userId, taskId);
-    const rootListId = chain.length > 0 ? Number(chain[0].list_id) : self.list_id;
     const res = await query<TaskRow>(
       `${TASK_SELECT}
        WHERE t.user_id = $1
          AND t.list_id = $2
+         AND t.task_type = 'project'
          AND t.id <> $3
-         AND t.id NOT IN (
-           WITH RECURSIVE s AS (
-             SELECT t2.id, 1 AS d FROM tasks t2 WHERE t2.id = $3 AND t2.user_id = $1
-             UNION ALL
-             SELECT t2.id, s.d + 1 FROM tasks t2 JOIN s ON t2.parent_id = s.id
-             WHERE t2.user_id = $1 AND s.d < ${MAX_CTE_DEPTH}
-           )
-           SELECT id FROM s
-         )
        ORDER BY (t.due_at IS NULL), t.due_at, t.id
        LIMIT 200`,
-      [userId, rootListId, taskId]
+      [userId, self.list_id, taskId]
     );
     return res.rows.map(toTaskDTO);
   },
@@ -442,54 +385,85 @@ export const taskService = {
     input: CreateTaskInput,
     source: 'manual' | 'chat' = 'manual'
   ): Promise<TaskWriteResult> {
+    const taskType = normalizeTaskType(input.task_type);
     const title = normalizeTitle(input.title);
     const note = normalizeNote(input.note);
     const dueAt = normalizeDueAt(input.due_at);
     const listId = await this.resolveListId(userId, input.list_id);
 
-    let parentId: number | null = null;
-    if (input.parent_id) {
-      parentId = Number(input.parent_id);
-      await this.assertCanAttach(userId, parentId, listId);
+    const parentId = input.parent_id ? Number(input.parent_id) : null;
+    // 4017：项目必须为顶层任务
+    this.assertProjectRoot(taskType, parentId);
+    if (parentId !== null) {
+      // 404 / 4018：父任务必须是项目
+      const parent = await this.assertParentIsProject(userId, parentId);
+      this.assertSameList(listId, parent.list_id); // 4014
+      await this.assertMemberCapacity(userId, parentId);
     }
 
     const res = await query<TaskRow>(
-      `INSERT INTO tasks(user_id, list_id, title, note, priority, due_at, source, parent_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [userId, listId, title, note, input.priority ?? 'none', dueAt, source, parentId]
+      `INSERT INTO tasks(user_id, list_id, title, note, priority, due_at, source, parent_id, task_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [userId, listId, title, note, input.priority ?? 'none', dueAt, source, parentId, taskType]
     );
 
-    const revived = parentId ? await this.maybeReviveParent(userId, parentId) : null;
+    // 新建任务恒 todo；挂到已完成项目 → 唤醒项目
+    const revived =
+      parentId !== null ? await this.maybeReviveParent(userId, parentId, 'todo') : null;
     const dto = await this.get(userId, res.rows[0].id);
-    if (parentId) {
-      logger.info('subtask_created', { user_id: userId, task_id: dto.id, parent_id: parentId });
+    if (taskType === 'project') {
+      // 埋点（SDD 11.2）：仅记 ID 与来源，不记项目正文
+      logger.info('project_create', { user_id: userId, task_id: dto.id, source });
+    } else if (parentId !== null) {
+      logger.info('project_member_add', {
+        user_id: userId,
+        task_id: dto.id,
+        project_id: parentId,
+        source,
+      });
     }
     return { ...dto, revived_parent: revived };
   },
 
   async update(userId: number, taskId: number, patch: UpdateTaskInput): Promise<TaskWriteResult> {
     const existing = await this.getOwned(userId, taskId);
+    // v0.6.0：task_type 创建后不可变更，携带即参数校验错误
+    if (patch.task_type !== undefined) {
+      throw AppError.paramInvalid('任务类型创建后不可变更');
+    }
     const sets: string[] = [];
     const params: unknown[] = [];
     let index = 1;
     let revived: { id: number; title: string } | null = null;
+    /** 仅改清单的快路径：列表迁移已直接落库，返回前需回读 */
+    let listChanged = false;
 
-    // 移动层级：显式 null = 移出为根任务
+    // 移动层级：显式 null / 0 = 移出成为独立任务
     if (patch.parent_id !== undefined) {
-      const newParentId = patch.parent_id === null ? null : Number(patch.parent_id);
+      const newParentId =
+        patch.parent_id === null || Number(patch.parent_id) === 0 ? null : Number(patch.parent_id);
       if (newParentId !== (existing.parent_id ?? null)) {
+        if (existing.task_type === 'project' && newParentId !== null) {
+          throw AppError.projectInvalidState(); // 4017
+        }
         if (newParentId !== null) {
-          await this.assertCanAttach(userId, newParentId, existing.list_id, taskId);
+          // 404 / 4018：目标父必须是项目
+          const parent = await this.assertParentIsProject(userId, newParentId);
+          this.assertSameList(existing.list_id, parent.list_id); // 4014
+          await this.assertMemberCapacity(userId, newParentId, taskId);
         }
         sets.push(`parent_id = $${index++}`);
         params.push(newParentId);
         if (newParentId !== null) {
-          revived = await this.maybeReviveParent(userId, newParentId);
-          logger.info('subtask_moved', {
+          // 已完成成员移入不唤醒项目
+          revived = await this.maybeReviveParent(userId, newParentId, existing.status as TaskStatus);
+          logger.info('project_member_move_in', {
             user_id: userId,
             task_id: taskId,
-            to_parent_id: newParentId,
+            project_id: newParentId,
           });
+        } else {
+          logger.info('project_member_move_out', { user_id: userId, task_id: taskId });
         }
       }
     }
@@ -513,27 +487,32 @@ export const taskService = {
     if (patch.list_id !== undefined && patch.list_id !== null) {
       const listId = await this.resolveListId(userId, patch.list_id);
       if (existing.parent_id !== null) {
-        // 子任务的清单必须与父任务一致：先移出为根任务再改清单
+        // 成员任务的清单必须与项目一致：先移出成为独立任务再改清单
         throw AppError.subtaskListMismatch();
       }
       if (listId !== existing.list_id) {
-        // 根任务改清单时整棵子树跟随
-        await query(
-          `WITH RECURSIVE s AS (
-             SELECT t2.id, 1 AS d FROM tasks t2 WHERE t2.id = $1 AND t2.user_id = $2
-             UNION ALL
-             SELECT t2.id, s.d + 1 FROM tasks t2 JOIN s ON t2.parent_id = s.id
-             WHERE t2.user_id = $2 AND s.d < ${MAX_CTE_DEPTH}
-           )
-           UPDATE tasks SET list_id = $3, updated_at = now()
-           WHERE user_id = $2 AND id IN (SELECT id FROM s)`,
-          [taskId, userId, listId]
-        );
+        listChanged = true;
+        if (existing.task_type === 'project') {
+          // 项目改清单：项目自身 + 直接成员一并迁移（仅一层）
+          await query(
+            `UPDATE tasks SET list_id = $3, updated_at = now()
+             WHERE user_id = $2 AND (id = $1 OR parent_id = $1)`,
+            [taskId, userId, listId]
+          );
+        } else {
+          await query(
+            `UPDATE tasks SET list_id = $3, updated_at = now()
+             WHERE user_id = $2 AND id = $1`,
+            [taskId, userId, listId]
+          );
+        }
       }
     }
 
     if (sets.length === 0) {
-      return { ...toTaskDTO(existing), revived_parent: revived };
+      // 仅改清单时列表迁移已直接落库，需回读最新值而非返回变更前快照
+      const dto = listChanged ? await this.get(userId, taskId) : toTaskDTO(existing);
+      return { ...dto, revived_parent: revived };
     }
 
     sets.push('updated_at = now()');
@@ -548,7 +527,7 @@ export const taskService = {
 
   /**
    * 完成 / 取消完成。
-   * 完成父任务且存在未完成后代时，未带 cascade 抛 4010（两阶段）；
+   * 完成项目且存在未完成成员时，未带 cascade 抛 4010（两阶段）；
    * 取消完成只作用于自身，不级联（非对称规则）。
    */
   async setStatus(
@@ -561,28 +540,26 @@ export const taskService = {
 
     if (status === 'completed') {
       if (existing.status === 'completed') return toTaskDTO(existing);
-      const incomplete = await this.countIncompleteDescendants(userId, taskId);
+      const incomplete =
+        existing.task_type === 'project' ? await this.countIncompleteMembers(userId, taskId) : 0;
       if (incomplete > 0 && !opts.cascade) {
         throw AppError.taskCascadeRequired(incomplete);
       }
       await withTransaction(async (client: PoolClient) => {
+        // 一条 UPDATE 完成项目自身及其未完成直接成员（普通任务无成员，仅自身）
         await client.query(
-          `WITH RECURSIVE s AS (
-             SELECT t.id, 1 AS d FROM tasks t WHERE t.id = $1 AND t.user_id = $2
-             UNION ALL
-             SELECT t.id, s.d + 1 FROM tasks t JOIN s ON t.parent_id = s.id
-             WHERE t.user_id = $2 AND s.d < ${MAX_CTE_DEPTH}
-           )
-           UPDATE tasks SET status = 'completed', completed_at = now(), updated_at = now()
-           WHERE user_id = $2 AND id IN (SELECT id FROM s) AND status = 'todo'`,
+          `UPDATE tasks SET status = 'completed', completed_at = now(), updated_at = now()
+           WHERE user_id = $2 AND status = 'todo' AND (id = $1 OR parent_id = $1)`,
           [taskId, userId]
         );
       });
-      if (incomplete > 0) {
-        logger.info('task_cascade_completed', {
+      if (existing.task_type === 'project') {
+        // 埋点（SDD 11.2）：是否级联 + 级联成员数
+        logger.info('project_complete', {
           user_id: userId,
-          task_id: taskId,
-          descendants: incomplete,
+          project_id: taskId,
+          cascade: incomplete > 0 && opts.cascade === true,
+          member_count: incomplete,
         });
       }
     } else {
@@ -623,6 +600,11 @@ export const taskService = {
     return withTransaction(async (client) => {
       const ids = await this.listSubtreeIds(userId, taskId, client);
       if (ids.length === 0) throw AppError.notFound('任务不存在');
+      const kindRow = await client.query<{ task_type: string }>(
+        `SELECT task_type FROM tasks WHERE id = $1 AND user_id = $2`,
+        [taskId, userId]
+      );
+      const isProject = kindRow.rows[0]?.task_type === 'project';
 
       const deletedEvents = await client.query(
         `DELETE FROM events WHERE user_id = $1 AND task_id = ANY($2::int[])`,
@@ -637,7 +619,8 @@ export const taskService = {
         deleted_task_count: ids.length,
         deleted_event_count: deletedEvents.rowCount ?? 0,
       };
-      logger.info('task_subtree_deleted', {
+      // 埋点（SDD 11.2）：项目删除记录级联计数；普通任务删除沿用原事件名
+      logger.info(isProject ? 'project_delete' : 'task_subtree_deleted', {
         user_id: userId,
         task_id: taskId,
         ...counts,

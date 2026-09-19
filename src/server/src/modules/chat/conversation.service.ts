@@ -86,7 +86,7 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
   ]);
 
   /**
-   * 子任务组按 root 重新拉取整棵子树：他端新增/删除子任务后重开会话要能看到最新结构
+   * 项目成员组按 root 重新拉取：他端新增/删除成员后重开会话要能看到最新结构
    * （只刷新已有节点的字段会漏掉新增节点）。拉取失败（如超节点上限）时退回字段刷新。
    */
   const freshSubtrees = new Map<number, TaskDTO[]>();

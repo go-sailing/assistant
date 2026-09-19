@@ -59,7 +59,7 @@ const description = computed(() => {
     case 'complete_task_cascade':
       return (
         props.block.description ||
-        `「${first || '该任务'}」还有 ${Math.max(count - 1, 0)} 个子任务未完成，标记完成后将一并完成`
+        `「${first || '该项目'}」还有 ${Math.max(count - 1, 0)} 个成员任务未完成，标记完成后将一并完成`
       )
     case 'batch_update_events':
       return `确认批量处理这 ${count} 个日程？`
@@ -99,7 +99,7 @@ const resultText = computed(() => {
     case 'complete_task_cascade': {
       const first = affected[0]?.title
       const sub = count - 1
-      return sub > 0 ? `已标记完成「${first || '该任务'}」及 ${sub} 个子任务` : '已标记完成'
+      return sub > 0 ? `已标记完成「${first || '该项目'}」及 ${sub} 个成员任务` : '已标记完成'
     }
     case 'batch_update_events':
       return `已处理 ${count} 个日程`

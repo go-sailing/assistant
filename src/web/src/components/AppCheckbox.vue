@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
 
 const props = withDefaults(
@@ -8,18 +7,11 @@ const props = withDefaults(
     disabled?: boolean
     label?: string
     size?: number
-    /** v0.2.0 三态：部分完成（视觉为横向短杠，aria-checked="mixed"） */
-    indeterminate?: boolean
   }>(),
-  { disabled: false, label: '切换完成状态', size: 22, indeterminate: false }
+  { disabled: false, label: '切换完成状态', size: 22 }
 )
 
 const emit = defineEmits<{ (e: 'toggle'): void }>()
-
-/** 半选优先于勾选：父任务未完成但部分子任务已完成 */
-const ariaChecked = computed<'true' | 'false' | 'mixed'>(() =>
-  props.indeterminate ? 'mixed' : props.checked ? 'true' : 'false'
-)
 
 function onClick(e: Event): void {
   e.stopPropagation()
@@ -31,17 +23,15 @@ function onClick(e: Event): void {
 <template>
   <button
     class="checkbox pressable"
-    :class="{ 'checkbox--checked': checked && !indeterminate, 'checkbox--indeterminate': indeterminate }"
+    :class="{ 'checkbox--checked': checked }"
     :style="{ width: `${size}px`, height: `${size}px` }"
     :disabled="disabled"
     role="checkbox"
-    :aria-checked="ariaChecked"
+    :aria-checked="checked ? 'true' : 'false'"
     :aria-label="label"
     @click="onClick"
   >
-    <AppIcon v-if="checked && !indeterminate" name="check" :size="size - 6" color="#fff" />
-    <!-- 半选：短杠 + primary 描边，形态与对勾区分，不依赖颜色 -->
-    <span v-else-if="indeterminate" class="checkbox__dash" aria-hidden="true" />
+    <AppIcon v-if="checked" name="check" :size="size - 6" color="#fff" />
   </button>
 </template>
 
@@ -70,15 +60,5 @@ function onClick(e: Event): void {
 .checkbox--checked {
   background: var(--color-primary);
   border-color: var(--color-primary);
-}
-.checkbox--indeterminate {
-  background: var(--color-primary-light);
-  border-color: var(--color-primary);
-}
-.checkbox__dash {
-  width: 55%;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--color-primary);
 }
 </style>

@@ -91,11 +91,14 @@ export const config = {
     /** 系列详情实例分页大小 */
     occurrencePageSize: num('EVENT_OCCURRENCE_PAGE_SIZE', 20),
   },
-  /** v0.2.0 子任务配置 */
+  /** v0.6.0 任务/项目配置 */
   task: {
-    /** 子任务最大层级（根为 1） */
+    /**
+     * @deprecated v0.6.0 保留（层级收窄为「项目 → 成员」一层，无触发面）；
+     * 环境变量与默认值不变，便于回滚与配置兼容。
+     */
     maxDepth: num('TASK_MAX_DEPTH', 5),
-    /** 子树查询节点上限 */
+    /** 单个项目的直接成员上限（v0.6.0 起语义由「子树节点上限」过渡而来） */
     treeMaxNodes: num('TASK_TREE_MAX_NODES', 200),
   },
   /** v0.4.0 法定工作日历 */

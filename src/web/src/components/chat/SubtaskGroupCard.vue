@@ -4,37 +4,36 @@ import type { SubtaskGroup, Task } from '@/types'
 import AppIcon from '../AppIcon.vue'
 
 /**
- * 对话内子任务组卡片（UX 5.10）。
- * 自包含实现：层级由 nodes 的 depth/parent_id 还原，缩进 + 树引导线表达父子关系，
- * 进度用「文字计数 + 4pt 进度条」双重表达，不只靠颜色。
+ * 对话内项目结果组卡片（v0.6.0，UX 5.11）。
+ * 自包含实现：成员仅一层，进度用「文字计数 + 4pt 进度条」双重表达，不只靠颜色。
  */
 const props = defineProps<{ group: SubtaskGroup }>()
 
 const emit = defineEmits<{ (e: 'task', task: Task): void }>()
 
-/** 折叠阈值：超过 3 条子任务折叠（「查看全部 N 项」进入任务详情） */
+/** 折叠阈值：超过 3 个成员折叠（「查看全部 N 项」进入项目详情） */
 const FOLD = 3
-/** 树缩进：每级 14px，第 5 级不再缩进 */
+/** 成员缩进：一层，统一 14px */
 const INDENT_STEP = 14
-const MAX_LEVEL = 4
+const MAX_LEVEL = 1
 
 const nodes = computed<Task[]>(() => props.group.nodes || [])
 
-/** 根节点（父任务）：被删除时整组降级为占位 */
+/** 根节点（项目）：被删除时整组降级为占位 */
 const root = computed<Task | null>(
   () => nodes.value.find((n) => String(n.id) === String(props.group.root_task_id)) || null
 )
 
-/** 直接子任务（服务端未给进度时的兜底口径） */
+/** 直接成员（服务端未给进度时的兜底口径） */
 const directChildren = computed<Task[]>(() =>
   nodes.value.filter((n) => String(n.parent_id) === String(props.group.root_task_id))
 )
 
 const progress = computed(() => {
   const r = root.value
-  const total = r?.subtask_total ?? directChildren.value.length
+  const total = r?.member_total ?? directChildren.value.length
   const done =
-    r?.subtask_completed ?? directChildren.value.filter((n) => n.status === 'completed').length
+    r?.member_completed ?? directChildren.value.filter((n) => n.status === 'completed').length
   return { done, total }
 })
 
@@ -42,29 +41,14 @@ const percent = computed(() =>
   progress.value.total ? Math.round((progress.value.done / progress.value.total) * 100) : 0
 )
 
-/** 扁平节点 → 缩进行（level 相对根任务，根任务行单独渲染） */
+/** 扁平节点 → 行（成员仅一层） */
 const rows = computed(() => {
   const list = nodes.value
   const r = root.value
-  const byId = new Map(list.map((n) => [String(n.id), n]))
-  // 优先用服务端 depth；缺失时按 parent_id 回溯
-  const depthOf = (node: Task): number => {
-    if (typeof node.depth === 'number' && node.depth > 0) return node.depth
-    let depth = 1
-    let cur: Task | undefined = node
-    for (let i = 0; i < 32 && cur && cur.parent_id != null; i += 1) {
-      const parent: Task | undefined = byId.get(String(cur.parent_id))
-      if (!parent) break
-      cur = parent
-      depth += 1
-    }
-    return depth
-  }
-  const base = r ? depthOf(r) : 1
   return list
     .filter((n) => (r ? String(n.id) !== String(r.id) : true))
     .map((n) => {
-      const level = Math.min(Math.max(depthOf(n) - base, 1), MAX_LEVEL)
+      const level = Math.min(Math.max((n.depth ?? 2) - 1, 1), MAX_LEVEL)
       return { task: n, level, indent: (level - 1) * INDENT_STEP }
     })
 })
@@ -74,11 +58,11 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
 </script>
 
 <template>
-  <!-- 父任务已被删除（服务端 missing 标记或根节点缺失）：整组渲染占位，不展示陈旧快照 -->
+  <!-- 项目已被删除（服务端 missing 标记或根节点缺失）：整组渲染占位，不展示陈旧快照 -->
   <div v-if="group.missing || !root" class="sgroup sgroup--missing">
     <div class="sgroup__row">
       <AppIcon name="list" :size="16" color="#B5B9C4" />
-      <p class="sgroup__missing">该任务已删除</p>
+      <p class="sgroup__missing">该项目已删除</p>
     </div>
   </div>
 
@@ -86,14 +70,14 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
     <button
       type="button"
       class="sgroup__head pressable"
-      :aria-label="`查看任务 ${root.title}，子任务 ${progress.done}/${progress.total}`"
+      :aria-label="`查看项目 ${root.title}，成员 ${progress.done}/${progress.total}`"
       @click="emit('task', root)"
     >
       <span class="sgroup__main">
         <span class="sgroup__title" :class="{ 'sgroup__title--done': root.status === 'completed' }">
           {{ root.title }}
         </span>
-        <span class="sgroup__count">子任务 {{ progress.done }}/{{ progress.total }}</span>
+        <span class="sgroup__count">成员 {{ progress.done }}/{{ progress.total }}</span>
       </span>
       <AppIcon name="chevron-right" :size="18" color="#B5B9C4" />
     </button>
