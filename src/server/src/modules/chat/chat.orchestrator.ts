@@ -7,8 +7,9 @@ import { TOOL_DEFINITIONS, isDangerousCall, isKnownTool } from '../../llm/tools'
 import { llmProvider } from '../../llm/deepseek';
 import { LlmError, type LlmMessage } from '../../llm/types';
 import { toolExecutor, type ToolResult } from '../../tools/executor';
-import { taskService } from '../task/task.service';
-import type { SubtaskGroup, TaskDTO } from '../task/types';
+import { projectService } from '../project/project.service';
+import type { TaskDTO } from '../task/types';
+import type { ProjectDTO } from '../project/types';
 import type { EventDTO, OccurrenceDTO, SeriesDTO } from '../event/types';
 import type { ConflictDateGroup } from '../event/recurrence/types';
 import {
@@ -17,7 +18,7 @@ import {
 } from './conversation.service';
 import { compactionService } from './compaction.service';
 import { memoryService } from '../memory/memory.service';
-import type { MessageBlock } from './chat.types';
+import type { MessageBlock, ProjectGroup } from './chat.types';
 import { query } from '../../db/pool';
 
 export type SseEmitter = (event: string, data: unknown) => void;
@@ -41,7 +42,8 @@ const READ_TOOL_NAMES = new Set([
   'list_tasks',
   'search_tasks',
   'get_task',
-  'get_subtree',
+  'get_project_members',
+  'list_projects',
   'list_lists',
   'resolve_lunar_date',
 ]);
@@ -66,14 +68,21 @@ function tasksForModel(tasks?: TaskDTO[]) {
     status: t.status,
     priority: t.priority,
     due_at: t.due_at,
-    // v0.6.0：任务类型与项目成员关系（数据最小化：不含备注全文）
-    task_type: t.task_type,
-    parent_id: t.parent_id,
-    depth: t.depth,
-    member_progress: t.member_total > 0 ? `${t.member_completed}/${t.member_total}` : undefined,
+    // v0.8.0：所属项目摘要（数据最小化：不含备注全文）
+    project: t.project ?? undefined,
     // v0.7.0：代理执行维度（模型可回答"那个任务执行得怎么样"）
     agent_name: t.agent_name ?? undefined,
     agent_state: t.agent_id ? t.agent_state : undefined,
+  }));
+}
+
+/** v0.8.0：喂回模型的项目摘要（进度归项目，任务只带项目 id/名称） */
+function projectsForModel(projects?: ProjectDTO[]) {
+  if (!projects || projects.length === 0) return undefined;
+  return projects.map((p) => ({
+    id: p.id,
+    name: p.name,
+    progress: p.member_total > 0 ? `${p.member_completed}/${p.member_total}` : '无成员',
   }));
 }
 
@@ -122,56 +131,60 @@ function seriesForModel(series?: SeriesDTO[]) {
   }));
 }
 
-function subtaskGroupsForModel(groups?: SubtaskGroup[]) {
+function projectGroupsForModel(groups?: ProjectGroup[]) {
   if (!groups || groups.length === 0) return undefined;
   return groups.map((g) => ({
-    root_task_id: g.root_task_id,
-    nodes: g.nodes.map((n) => ({
-      id: n.id,
-      title: n.title,
-      status: n.status,
-      parent_id: n.parent_id,
-      depth: n.depth,
-    })),
+    project_id: g.project_id,
+    name: g.name,
+    member_total: g.member_total,
+    member_completed: g.member_completed,
+    nodes: g.nodes.map((n) => ({ id: n.id, title: n.title, status: n.status })),
   }));
 }
 
 /**
- * v0.6.0：任务类写结果轮末聚合（系统设计文档 9.4）。
+ * v0.8.0：任务/项目类写结果轮末聚合（系统设计文档 7.4）。
  *
- * - 项目（任务自身 task_type=project，或出现在组根）→ 云端重拉成员，输出**一个**项目结果组
+ * - **本轮项目写操作记录的项目 id 集合**（`create_project` 建的项目、成员任务创建/移入带出的
+ *   `task.project`、以及项目工具返回的 `projects`）→ 云端重拉项目 + 成员，输出**一个**项目结果组
  *   （项目名 + 成员列表 + 最新进度），避免一轮「项目 + N 成员」产生 N+1 张散卡；
- * - 其余普通任务 → 合并为一个任务卡组；
+ * - 其余任务 → 合并为一个任务卡组；
  * - 同一 id 去重（后写覆盖先写，反映最新状态）；项目已被删除则跳过，不展示陈旧数据。
  */
 async function aggregateTaskWriteCards(
   userId: number,
-  cards: Array<Extract<MessageBlock, { type: 'cards' }>>
+  cards: Array<Extract<MessageBlock, { type: 'cards' }>>,
+  touchedProjectIds: Set<number>
 ): Promise<Array<Extract<MessageBlock, { type: 'cards' }>>> {
   const byId = new Map<number, TaskDTO>();
-  const groupRootIds: number[] = [];
+  const projectIds = new Set<number>(touchedProjectIds);
   for (const card of cards) {
-    for (const t of card.tasks) byId.set(t.id, t);
-    for (const g of card.subtask_groups ?? []) {
-      if (!groupRootIds.includes(g.root_task_id)) groupRootIds.push(g.root_task_id);
+    for (const t of card.tasks) {
+      byId.set(t.id, t);
+      if (t.project) projectIds.add(t.project.id);
+    }
+    for (const g of card.project_groups ?? []) {
+      projectIds.add(g.project_id);
       for (const n of g.nodes) byId.set(n.id, n);
     }
-  }
-
-  const projectIds = new Set<number>(groupRootIds);
-  for (const t of byId.values()) {
-    if (t.task_type === 'project') projectIds.add(t.id);
   }
 
   const out: Array<Extract<MessageBlock, { type: 'cards' }>> = [];
 
   if (projectIds.size > 0) {
-    const groups: SubtaskGroup[] = [];
+    const groups: ProjectGroup[] = [];
     for (const projectId of projectIds) {
       try {
-        const nodes = await taskService.getSubtree(userId, projectId);
-        groups.push({ root_task_id: projectId, nodes });
-        for (const n of nodes) byId.delete(n.id);
+        const project = await projectService.get(userId, projectId);
+        const { list: members } = await projectService.listMembers(userId, projectId, {});
+        groups.push({
+          project_id: project.id,
+          name: project.name,
+          member_total: project.member_total,
+          member_completed: project.member_completed,
+          nodes: members,
+        });
+        for (const n of members) byId.delete(n.id);
       } catch {
         /* 已删除/越权：跳过，不展示陈旧数据 */
       }
@@ -183,12 +196,13 @@ async function aggregateTaskWriteCards(
         events: [],
         series: [],
         occurrences: [],
-        subtask_groups: groups,
+        project_groups: groups,
       });
     }
   }
 
-  const rest = [...byId.values()].filter((t) => !projectIds.has(t.id));
+  // 项目成员已随项目结果组展示，避免重复出现为散卡
+  const rest = [...byId.values()].filter((t) => !t.project || !projectIds.has(t.project.id));
   if (rest.length > 0) {
     out.push({
       type: 'cards',
@@ -196,7 +210,7 @@ async function aggregateTaskWriteCards(
       events: [],
       series: [],
       occurrences: [],
-      subtask_groups: [],
+      project_groups: [],
     });
   }
   return out;
@@ -210,7 +224,8 @@ function toolResultForModel(result: ToolResult) {
     events: eventsForModel(result.events),
     series: seriesForModel(result.series),
     occurrences: eventsForModel(result.occurrences),
-    subtask_groups: subtaskGroupsForModel(result.subtask_groups),
+    projects: projectsForModel(result.projects),
+    project_groups: projectGroupsForModel(result.project_groups),
     list: result.data?.list,
     lists: result.data?.lists,
     // 冲突未确认：把冲突明细交给模型，必须先告知用户再决定是否二次提交
@@ -221,19 +236,13 @@ function toolResultForModel(result: ToolResult) {
     conflict_dates: result.data?.conflict_dates,
     conflict_dates_total: result.data?.conflict_dates_total,
     conflict_total: result.data?.conflict_total,
-    // v0.2.0：级联完成需用户确认；父任务自动恢复需在回复中告知
-    need_cascade_confirmation: result.data?.need_cascade_confirmation,
-    incomplete_descendant_count: result.data?.incomplete_descendant_count,
-    revived_parent: result.data?.revived_parent,
     restored: result.data?.restored,
     error: result.error,
     // 失败时明确禁止重试同一调用，避免模型反复重试耗尽轮数
     hint: result.ok
       ? result.data?.need_conflict_confirmation
         ? '这是冲突提示，不是失败。请先把冲突日程（或冲突日期与次数）告知用户并询问如何处理；用户明确同意后才带 confirm_conflict=true 重试。'
-        : result.data?.need_cascade_confirmation
-          ? '这是确认请求，不是失败。请先询问用户是否把未完成的成员任务一起标记完成；用户同意后系统会代为执行，你无需再次调用工具。'
-          : undefined
+        : undefined
       : '该工具调用已失败，不要用相同的参数重试。请向用户说明失败原因，或请求用户澄清后再试。',
   };
 }
@@ -342,11 +351,13 @@ export const chatOrchestrator = {
       let writeToolCalled = false;
       const pendingReadCards: Array<Extract<MessageBlock, { type: 'cards' }>> = [];
       /**
-       * v0.6.0：任务类写结果轮末聚合（系统设计文档 9.4）。
+       * v0.8.0：任务/项目类写结果轮末聚合（系统设计文档 7.4）。
        * 一轮「项目 + N 个成员」最终只展示一个项目结果组，不产生 N+1 张散卡；
        * 事件类写结果仍即时展示。
        */
       const pendingWriteTaskCards: Array<Extract<MessageBlock, { type: 'cards' }>> = [];
+      /** v0.8.0：本轮项目写操作记录的项目 id 集合（create_project / 成员创建或移入均可归组） */
+      const touchedProjectIds = new Set<number>();
 
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         let roundText = '';
@@ -595,47 +606,12 @@ export const chatOrchestrator = {
           });
           if (!toolResult.ok) {
             toolFailures.push(toolResult.summary);
-          }
-
-          // v0.6.0：项目级联完成 → 落 pending 并出确认条（系统设计文档 6.3 / 8.4）
-          if (toolResult.ok && toolResult.data?.need_cascade_confirmation === true) {
-            const task = toolResult.data.task as TaskDTO | undefined;
-            const incomplete = (toolResult.data.incomplete_members as TaskDTO[] | undefined) ?? [];
-            const n = Number(
-              toolResult.data.incomplete_member_count ??
-                toolResult.data.incomplete_descendant_count ??
-                incomplete.length
-            );
-            if (task) {
-              const affected = [task, ...incomplete];
-              const pending = await pendingActionService.create({
-                conversationId,
-                userId,
-                toolName: 'update_task_status',
-                resolvedParams: { task_id: task.id, status: 'completed', cascade: true },
-                affected,
-                affectedEvents: [],
-              });
-              const confirmBlock: Extract<MessageBlock, { type: 'confirm' }> = {
-                type: 'confirm',
-                pending_action_id: pending.id,
-                action: 'complete_task_cascade',
-                affected,
-                affected_events: [],
-                count: affected.length,
-                description: `完成项目「${task.title}」，并同时完成 ${n} 个未完成的成员任务`,
-              };
-              blocks.push(confirmBlock);
-              emit('confirm', confirmBlock);
-              if (!roundText.trim()) {
-                const hint = `项目「${task.title}」还有 ${n} 个未完成的成员任务，是否一起标记完成？`;
-                emit('text_delta', { delta: hint });
-                blocks.push({ type: 'text', text: hint });
-                finalText = hint;
-              }
-              await this.persistAssistantMessage(conversationId, finalText, blocks);
-              emit('done', { finish_reason: 'awaiting_confirmation' });
-              return;
+          } else if (!isReadTool) {
+            // v0.8.0：记录本轮项目写操作涉及的项目 id（create_project / 成员创建或移入）
+            for (const p of toolResult.projects ?? []) touchedProjectIds.add(p.id);
+            for (const g of toolResult.project_groups ?? []) touchedProjectIds.add(g.project_id);
+            for (const t of toolResult.tasks ?? []) {
+              if (t.project) touchedProjectIds.add(t.project.id);
             }
           }
 
@@ -643,7 +619,7 @@ export const chatOrchestrator = {
           const hasEvents = !!toolResult.events && toolResult.events.length > 0;
           const hasSeries = !!toolResult.series && toolResult.series.length > 0;
           const hasOccurrences = !!toolResult.occurrences && toolResult.occurrences.length > 0;
-          const hasGroups = !!toolResult.subtask_groups && toolResult.subtask_groups.length > 0;
+          const hasGroups = !!toolResult.project_groups && toolResult.project_groups.length > 0;
           if (toolResult.ok && (hasTasks || hasEvents || hasSeries || hasOccurrences || hasGroups)) {
             const cardsBlock: Extract<MessageBlock, { type: 'cards' }> = {
               type: 'cards',
@@ -651,7 +627,7 @@ export const chatOrchestrator = {
               events: toolResult.events ?? [],
               series: toolResult.series ?? [],
               occurrences: toolResult.occurrences ?? [],
-              subtask_groups: toolResult.subtask_groups ?? [],
+              project_groups: toolResult.project_groups ?? [],
             };
             if (isReadTool) {
               // 只读结果先缓冲：不 emit、不进 payload，由轮末裁决决定是否展示
@@ -662,7 +638,7 @@ export const chatOrchestrator = {
               !hasOccurrences &&
               (hasTasks || hasGroups)
             ) {
-              // 任务类写结果：缓冲到轮末做「项目结果组」聚合
+              // 任务/项目类写结果：缓冲到轮末做「项目结果组」聚合
               pendingWriteTaskCards.push(cardsBlock);
             } else {
               // 事件类写工具结果卡：仅含本次实际受影响对象（executor 已保证），即时展示
@@ -728,7 +704,7 @@ export const chatOrchestrator = {
             (b.events?.length ?? 0) +
             (b.series?.length ?? 0) +
             (b.occurrences?.length ?? 0) +
-            (b.subtask_groups?.length ?? 0),
+            (b.project_groups?.length ?? 0),
           0
         );
         // 埋点：只记卡数与项数，不记正文
@@ -740,9 +716,13 @@ export const chatOrchestrator = {
         });
       }
 
-      /* v0.6.0 任务写结果轮末聚合：项目 → 项目结果组（含云端刷新的成员与进度） */
-      if (pendingWriteTaskCards.length > 0) {
-        const aggregated = await aggregateTaskWriteCards(userId, pendingWriteTaskCards);
+      /* v0.8.0 任务/项目写结果轮末聚合：项目 → 项目结果组（含云端刷新的成员与进度） */
+      if (pendingWriteTaskCards.length > 0 || touchedProjectIds.size > 0) {
+        const aggregated = await aggregateTaskWriteCards(
+          userId,
+          pendingWriteTaskCards,
+          touchedProjectIds
+        );
         for (const card of aggregated) {
           blocks.push(card);
           emit('cards', card);
@@ -819,7 +799,7 @@ export const chatOrchestrator = {
         result.events && result.events.length > 0 ? result.events : result.tasks ? [] : affectedEvents;
       const hasSeries = !!result.series && result.series.length > 0;
       const hasOccurrences = !!result.occurrences && result.occurrences.length > 0;
-      const hasGroups = !!result.subtask_groups && result.subtask_groups.length > 0;
+      const hasGroups = !!result.project_groups && result.project_groups.length > 0;
       if (tasks.length > 0 || events.length > 0 || hasSeries || hasOccurrences || hasGroups) {
         blocks.push({
           type: 'cards',
@@ -827,7 +807,7 @@ export const chatOrchestrator = {
           events,
           series: result.series ?? [],
           occurrences: result.occurrences ?? [],
-          subtask_groups: result.subtask_groups ?? [],
+          project_groups: result.project_groups ?? [],
         });
       }
       blocks.unshift({ type: 'text', text: `${result.summary}。` });
@@ -851,13 +831,6 @@ export const chatOrchestrator = {
     const action = await pendingActionService.resolveOwned(userId, conversationId, ctx.pendingActionId);
     if (action.status === 'pending') {
       await pendingActionService.markStatus(action.id, 'canceled');
-    }
-    // 埋点：级联完成确认的取消率（系统设计文档 9.2）
-    if (action.tool_name === 'update_task_status') {
-      logger.info('task_cascade_complete_canceled', {
-        user_id: userId,
-        conversation_id: conversationId,
-      });
     }
 
     const blocks: MessageBlock[] = [{ type: 'text', text: '好的，已取消该操作，任务数据未做任何修改。' }];
@@ -896,7 +869,7 @@ export const chatOrchestrator = {
             events: block.events ?? [],
             series: block.series ?? [],
             occurrences: block.occurrences ?? [],
-            subtask_groups: block.subtask_groups ?? [],
+            project_groups: block.project_groups ?? [],
           });
           break;
         case 'clarify':

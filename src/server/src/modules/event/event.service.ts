@@ -333,7 +333,17 @@ export const eventService = {
        WHERE t.id = $1 AND t.user_id = $2`,
       [taskId, userId]
     );
-    if (res.rowCount === 0) throw AppError.notFound('任务不存在');
+    if (res.rowCount === 0) {
+      // v0.8.0：项目已不在 tasks 表 —— 命中项目时给出明确文案（I7：项目不可排期）
+      const project = await query<{ id: number }>(
+        `SELECT id FROM projects WHERE id = $1 AND user_id = $2`,
+        [taskId, userId]
+      );
+      if ((project.rowCount ?? 0) > 0) {
+        throw AppError.eventTaskNotSchedulable('项目不支持安排日程');
+      }
+      throw AppError.notFound('任务不存在');
+    }
     const task = res.rows[0];
     if (task.status === 'completed') throw AppError.eventTaskNotSchedulable();
     return task;

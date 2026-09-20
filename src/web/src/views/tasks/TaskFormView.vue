@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import * as projectApi from '@/api/projects'
 import * as taskApi from '@/api/tasks'
 import { errorText } from '@/api/client'
 import type { TaskPayload, TaskPriority } from '@/types'
@@ -25,9 +26,9 @@ const title = ref('')
 const note = ref('')
 const priority = ref<TaskPriority>('none')
 const dueAt = ref<string | null>(null)
-/** 所属项目：空串 = 无（独立任务） */
-const parentId = ref<string>('')
-const parentTitle = ref('')
+/** 所属项目：null = 无（独立任务），数字 = 项目 ID */
+const projectId = ref<number | null>(null)
+const projectName = ref('')
 
 const titleError = ref('')
 const formError = ref('')
@@ -45,39 +46,25 @@ const priorityOptions = [
 ]
 
 const projectText = computed(() =>
-  parentId.value ? parentTitle.value || '项目' : '无（独立任务）'
+  projectId.value === null ? '无（独立任务）' : projectName.value || '项目'
 )
 const canSave = computed(() => title.value.trim() !== '' && !saving.value)
 const headTitle = computed(() => (editId.value ? '编辑任务' : '新建任务'))
 const titleLabel = '标题 *'
 const titlePlaceholder = '请输入任务标题'
 
-/** 回填所属项目标题：祖先链的倒数第二项即直接父（项目） */
-async function loadProjectTitle(id: string): Promise<void> {
-  try {
-    const chain = await taskApi.fetchAncestors(id)
-    if (chain.length > 1) parentTitle.value = chain[chain.length - 2].title
-  } catch {
-    parentTitle.value = ''
-  }
-}
-
 async function loadTask(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
     const t = await taskApi.fetchTask(editId.value)
-    // v0.7.0：项目走独立编辑页，任务表单不再承载项目
-    if (t.task_type === 'project') {
-      router.replace(`/projects/${t.id}/edit`)
-      return
-    }
     title.value = t.title
     note.value = t.note || ''
     priority.value = t.priority
     dueAt.value = t.due_at
-    parentId.value = t.parent_id === null ? '' : String(t.parent_id)
-    if (parentId.value) await loadProjectTitle(editId.value)
+    // v0.8.0：任务只以可空 project_id 表达「所属项目」，无类型维度
+    projectId.value = t.project?.id ?? null
+    projectName.value = t.project?.name ?? ''
   } catch (e) {
     loadError.value = errorText(e)
   } finally {
@@ -85,18 +72,21 @@ async function loadTask(): Promise<void> {
   }
 }
 
-/** 新建时支持带入所属项目（项目详情「添加任务」） */
+/**
+ * 新建时带入来源项目（项目详情「更多字段」→ /tasks/new?project_id=<id>）。
+ * 来源项目已删除/无权限（fetchProject 失败）→ 清空所属项目并按普通新建降级（UXUI 7.2）。
+ */
 async function loadQueryPrefill(): Promise<void> {
-  const qParent = route.query.parent_id
-  if (typeof qParent === 'string' && qParent) {
-    // 挂到项目下即普通任务（成员仅一层）
-    try {
-      const parent = await taskApi.fetchTask(qParent)
-      parentId.value = String(parent.id)
-      parentTitle.value = parent.title
-    } catch (e) {
-      formError.value = errorText(e)
-    }
+  const qProject = route.query.project_id
+  if (typeof qProject !== 'string' || !qProject) return
+  try {
+    const project = await projectApi.fetchProject(qProject)
+    projectId.value = project.id
+    projectName.value = project.name
+  } catch {
+    projectId.value = null
+    projectName.value = ''
+    toast.show('原项目已不可用，已按普通任务创建')
   }
 }
 
@@ -123,26 +113,26 @@ async function save(): Promise<void> {
       note: note.value.trim() || null,
       priority: priority.value,
       due_at: dueAt.value,
-      // 显式 null = 移出项目成为独立任务；新建恒为普通任务（服务端默认 normal）
-      parent_id: parentId.value ? Number(parentId.value) : null,
+      // 显式 null = 无（独立任务）
+      project_id: projectId.value,
     }
     if (editId.value) {
-      const updated = await taskApi.updateTask(editId.value, payload)
+      await taskApi.updateTask(editId.value, payload)
       taskSync.markDirty()
-      toast.show(
-        updated.revived_parent ? `项目「${updated.revived_parent.title}」已自动恢复为未完成` : '已保存'
-      )
+      toast.show('已保存')
+      // 编辑态落点不变
       router.back()
     } else {
       const created = await taskApi.createTask(payload)
       taskSync.markDirty()
-      toast.show(
-        created.revived_parent
-          ? `项目「${created.revived_parent.title}」已自动恢复为未完成`
-          : '已保存'
-      )
-      // 保存成功回任务页并高亮新建项
-      router.replace({ path: '/tasks', query: { highlight: String(created.id) } })
+      toast.show('已保存')
+      // 回跳以最终所属项目为准：有项目回项目详情并高亮，否则回任务页（TASK-02）
+      const target = projectId.value ?? null
+      if (target === null) {
+        router.replace({ path: '/tasks', query: { highlight: String(created.id) } })
+      } else {
+        router.replace(`/projects/${target}?highlight=${String(created.id)}`)
+      }
     }
   } catch (e) {
     // 失败停留在当前页，表单内容保留在内存中
@@ -155,16 +145,16 @@ async function save(): Promise<void> {
 async function onProjectSelect(id: number | null): Promise<void> {
   projectSheetVisible.value = false
   if (id === null) {
-    if (parentId.value) toast.show('已移出项目，成为独立任务')
-    parentId.value = ''
-    parentTitle.value = ''
+    if (projectId.value !== null) toast.show('已移出项目，成为独立任务')
+    projectId.value = null
+    projectName.value = ''
     return
   }
-  if (parentId.value && String(id) === parentId.value) return
+  if (projectId.value === id) return
   try {
-    const parent = await taskApi.fetchTask(id)
-    parentId.value = String(parent.id)
-    parentTitle.value = parent.title
+    const project = await projectApi.fetchProject(id)
+    projectId.value = project.id
+    projectName.value = project.name
   } catch (e) {
     toast.show(errorText(e))
   }
@@ -242,7 +232,7 @@ onMounted(async () => {
     <ProjectPickerSheet
       :visible="projectSheetVisible"
       :task-id="editId || null"
-      :current-project-id="parentId || null"
+      :current-project-id="projectId"
       @select="onProjectSelect"
       @cancel="projectSheetVisible = false"
     />

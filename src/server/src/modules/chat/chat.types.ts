@@ -1,6 +1,23 @@
-import type { SubtaskGroup, TaskDTO } from '../task/types';
+import type { TaskDTO } from '../task/types';
 import type { EventConflictBrief, EventDTO, OccurrenceDTO, SeriesDTO } from '../event/types';
 import type { ConflictDateGroup, EventScope } from '../event/recurrence/types';
+
+/**
+ * v0.8.0：对话卡片中的项目结果组（项目 + 一层成员任务）。
+ * 由编排层按「本轮项目写操作记录的项目 id 集合」组装，云端重拉项目与成员。
+ */
+export interface ProjectGroup {
+  project_id: number;
+  name: string;
+  /** 成员任务总数 */
+  member_total: number;
+  /** 已完成成员任务数 */
+  member_completed: number;
+  nodes: TaskDTO[];
+  /** 历史卡片刷新时置位：项目已删除，整组应渲染「该项目已删除」占位 */
+  missing?: boolean;
+  missing_reason?: 'deleted';
+}
 
 /** 助手消息的结构化内容块，历史回看与实时流式复用同一套渲染模型 */
 export type MessageBlock =
@@ -13,8 +30,8 @@ export type MessageBlock =
       series?: SeriesDTO[];
       /** v0.2.0：循环实例卡片 */
       occurrences?: OccurrenceDTO[];
-      /** v0.6.0：项目结果组卡片（项目 + 直接成员，扁平节点） */
-      subtask_groups?: SubtaskGroup[];
+      /** v0.8.0：项目结果组卡片（项目 + 一层成员，扁平节点） */
+      project_groups?: ProjectGroup[];
     }
   | {
       type: 'conflict';

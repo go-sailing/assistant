@@ -9,18 +9,11 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'create_task',
-      description:
-        '创建一个新任务。task_type=normal（默认）为普通任务；task_type=project 为项目（一组相关任务的容器）。' +
-        '用户表达「提醒我做某事」用 normal；用户说「建个项目」或一件事包含 ≥2 个相关任务时用 project。',
+      description: '创建一个新任务。用户表达「提醒我做某事」时使用。',
       parameters: {
         type: 'object',
         properties: {
-          task_type: {
-            type: 'string',
-            enum: ['normal', 'project'],
-            description: '任务类型，默认 normal。project 的 parent_id 必须为空（项目为顶层）。',
-          },
-          title: { type: 'string', description: '任务标题；task_type=project 时为项目名称，必填' },
+          title: { type: 'string', description: '任务标题，必填' },
           note: { type: 'string', description: '备注，可选' },
           priority: {
             type: 'string',
@@ -32,15 +25,64 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             description:
               '截止时间，ISO8601 带时区偏移，例如 2026-09-21T10:00:00+08:00。只有日期时用 00:00:00 表示当天。无法确定时不要传。',
           },
-          parent_id: {
+          project_id: {
             type: 'number',
             description:
-              '挂载到项目下时传项目任务的真实 ID：普通任务的父只能是 project。' +
-              '创建「带成员的项目」时必须先 create_task(task_type=project) 取得返回的项目 ID，' +
-              '再以该 ID 作为 parent_id 依次创建成员；禁止猜测 ID，禁止把任务挂到普通任务下。',
+              '把任务作为成员加入某个项目时传该项目的真实 ID。该 ID 必须是真实项目 ID：' +
+              '需先调用 list_projects 确认或调用 create_project 新建并拿到返回的项目 ID；' +
+              '禁止猜测 ID。不加入项目时不要传。',
           },
         },
         required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_project',
+      description:
+        '创建一个新项目。项目是任务的容器（一组相关任务的集合），是独立实体、不是任务；' +
+        '项目没有优先级、没有截止时间，不要询问用户这两项。' +
+        '用户说「建个项目」或一件事包含 ≥2 个相关任务时使用；单一事项用 create_task。' +
+        '建好项目后用 create_task(project_id=返回的项目 ID) 逐个加入成员任务。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '项目名称，必填' },
+          note: { type: 'string', description: '备注，可选' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_projects',
+      description:
+        '查询项目列表（可选关键词）。用户说「把这件事加到某个项目」「我有哪些项目」时，' +
+        '先用它拿到真实项目 ID 与名称；需要往项目里加任务时用返回的真实 ID 调 create_task。',
+      parameters: {
+        type: 'object',
+        properties: { keyword: { type: 'string', description: '按项目名搜索的关键词，可选' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_project',
+      description:
+        '删除一个项目及其全部成员任务（成员任务的任务日程一并删除）。' +
+        '这是危险操作，调用后系统会先让用户确认，你不需要自行询问，但要向用户说明将要删除的项目与影响范围。',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'number', description: '项目 ID，必须来自查询结果的真实 ID' },
+          reason: { type: 'string', description: '删除原因的简短说明，用于向用户展示' },
+        },
+        required: ['project_id'],
       },
     },
   },
@@ -57,11 +99,11 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           note: { type: 'string' },
           priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
           due_at: { type: 'string', description: 'ISO8601 带时区偏移；传空字符串表示清除截止时间' },
-          parent_id: {
+          project_id: {
             type: 'number',
             description:
-              '所属项目（v0.6.0）：传项目任务真实 ID = 移入该项目成为成员；传 0 或 null = 移出成为独立任务。' +
-              '不能挂到普通任务下；project 任务不能移动到任何父任务下。',
+              '所属项目：传项目真实 ID = 移入该项目成为成员；传 0 或 null = 移出项目成为独立任务。' +
+              'ID 必须来自 list_projects / create_project 的真实返回，禁止猜测。',
           },
         },
         required: ['task_id'],
@@ -73,9 +115,8 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'update_task_status',
       description:
-        '把任务标记为已完成或恢复为未完成。' +
-        '完成一个还有未完成成员的项目时，系统会返回 need_cascade_confirmation 并要求用户确认后级联完成；' +
-        '取消完成只作用于该任务本身，不会影响成员任务。',
+        '把任务标记为已完成或恢复为未完成（只切换该任务自身状态）。' +
+        '任务所属项目的状态由系统根据成员完成度自动派生，不需要用户手动完成项目。',
       parameters: {
         type: 'object',
         properties: {
@@ -90,7 +131,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'get_task',
-      description: '查询单个任务的详细信息（含所属项目、任务类型与项目成员进度）。',
+      description: '查询单个任务的详细信息（含所属项目与代理执行状态）。',
       parameters: {
         type: 'object',
         properties: { task_id: { type: 'number' } },
@@ -101,16 +142,15 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
   {
     type: 'function',
     function: {
-      name: 'get_task_subtree',
+      name: 'get_project_members',
       description:
-        '查询项目的成员列表（项目 + 直接成员，成员仅一层）。普通任务没有成员，仅返回自身。',
+        '查询项目及其成员任务（成员仅一层）。用户问「这个项目里有哪些任务」「项目进度怎么样」时使用。',
       parameters: {
         type: 'object',
         properties: {
-          task_id: { type: 'number', description: '项目任务ID' },
-          depth: { type: 'number', description: '保留字段：成员仅一层，传与不传结果相同' },
+          project_id: { type: 'number', description: '项目 ID，必须来自查询结果的真实 ID' },
         },
-        required: ['task_id'],
+        required: ['project_id'],
       },
     },
   },
@@ -132,13 +172,11 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             description: '排序，默认 due_at_asc',
           },
           limit: { type: 'number', description: '返回条数上限，默认 50' },
-          task_type: {
-            type: 'string',
-            enum: ['normal', 'project'],
-            description: '按任务类型筛选：project=只看项目，normal=只看普通任务；缺省不过滤',
+          project_id: {
+            type: ['number', 'string'],
+            description:
+              '按所属项目筛选：传项目真实 ID（数字）= 只看该项目成员；传字符串 "none" = 只看未归属任何项目的任务；缺省不过滤。',
           },
-          root_only: { type: 'boolean', description: '只看根任务（项目与独立任务），默认 false' },
-          parent_id: { type: 'number', description: '只看某个项目的直接成员' },
         },
       },
     },
@@ -648,6 +686,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
 /** 需要用户在对话中确认后才会执行的危险工具 */
 export const DANGEROUS_TOOLS = new Set([
   'delete_task',
+  'delete_project',
   'batch_update_tasks',
   'delete_event',
   'batch_update_events',

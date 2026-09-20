@@ -1,86 +1,58 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { deleteProject, previewRemoveProject } from '@/api/projects'
 import * as taskApi from '@/api/tasks'
-import { ApiError, errorText } from '@/api/client'
-import type { Task } from '@/types'
-import AppButton from '@/components/AppButton.vue'
+import { errorText } from '@/api/client'
+import type { Project, Task } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
-import PriorityFlag from '@/components/PriorityFlag.vue'
 import ProgressBar from '@/components/tasks/ProgressBar.vue'
 import MemberComposer from '@/components/tasks/MemberComposer.vue'
 import MemberList from '@/components/tasks/MemberList.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
-import { dueTone, formatFull, formatShort, overdueDays } from '@/utils/time'
+import { formatShort } from '@/utils/time'
 
 /**
- * 项目详情面板（v0.6.0，UXUI 5.3）：
- * 项目头部 + 成员进度（member_*）+ 成员列表 + 快速添加成员 + 操作区；
- * 完成走 4010 级联确认；删除先经 preview-remove 明示影响范围。
+ * 项目详情面板（v0.8.0，UXUI 5.7）：
+ * 头部（名称 + 派生只读状态徽标 + 备注 + 来源）/ 进度 / 成员任务 + 快速添加成员；
+ * 底部仅「删除项目」（项目不可手工完成，优先级/截止时间行与
+ * 「安排日程」「编辑项目」「完成项目」及 4010 级联确认全部移除）。
+ * 项目状态由成员完成度派生：端上只读展示，全部完成时进度数字转 success 色。
  */
-const props = defineProps<{ task: Task }>()
+const props = defineProps<{
+  project: Project
+  /** 成员任务由容器加载后传入（变更后通过 changed 请容器重拉） */
+  members: Task[]
+}>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const router = useRouter()
 const toast = useToastStore()
 const taskSync = useTaskSyncStore()
 
-const members = ref<Task[]>([])
-const membersLoading = ref(true)
-const membersError = ref('')
 const actionLoading = ref(false)
-/** 级联完成确认（4010） */
-const cascadeCount = ref<number | null>(null)
-/** 删除级联告知 */
-const deleteCascade = ref<{ tasks: number; events: number } | null>(null)
+/** 删除前预取的影响范围（成员任务数 / 关联日程数） */
+const removeInfo = ref<{ tasks: number; events: number } | null>(null)
+const deleting = ref(false)
 
-const completed = computed(() => props.task.status === 'completed')
-const overdue = computed(() => dueTone(props.task) === 'danger')
-const overdueText = computed(() => (overdue.value ? `已逾期 ${overdueDays(props.task.due_at)} 天` : ''))
-const total = computed(() => props.task.member_total)
-const done = computed(() => props.task.member_completed)
-const allMembersDone = computed(() => total.value > 0 && done.value >= total.value)
-const sourceText = computed(() => (props.task.source === 'chat' ? '对话创建' : '手动创建'))
+const completed = computed(() => props.project.status === 'completed')
+const total = computed(() => props.project.member_total)
+const done = computed(() => props.project.member_completed)
+const allDone = computed(() => total.value > 0 && done.value >= total.value)
+const sourceText = computed(() => (props.project.source === 'chat' ? '对话创建' : '手动创建'))
 
 const deleteText = computed(() => {
-  const info = deleteCascade.value
+  const info = removeInfo.value
   if (!info) return ''
   const parts: string[] = []
   if (info.tasks > 0) parts.push(`${info.tasks} 个成员任务`)
-  if (info.events > 0) parts.push(`${info.events} 条关联日程安排`)
+  if (info.events > 0) parts.push(`${info.events} 条关联日程`)
   return parts.length ? `将同时删除 ${parts.join('及')}，且不可恢复。` : '删除后不可恢复。'
 })
 
-function incompleteCount(e: unknown): number {
-  const details = e instanceof ApiError
-    ? (e.details as { incomplete_member_count?: number; incomplete_descendant_count?: number } | null)
-    : null
-  return details?.incomplete_member_count ?? details?.incomplete_descendant_count ?? 0
-}
-
-async function loadMembers(): Promise<void> {
-  membersLoading.value = true
-  membersError.value = ''
-  try {
-    const nodes = await taskApi.fetchSubtree(props.task.id)
-    // 首个节点为项目自身
-    members.value = nodes.filter((n) => String(n.id) !== String(props.task.id))
-  } catch (e) {
-    members.value = []
-    membersError.value = errorText(e)
-  } finally {
-    membersLoading.value = false
-  }
-}
-
-/** 成员增删/勾选后：本地刷新成员并请容器重拉项目（member_* 进度） */
-async function refresh(): Promise<void> {
-  await loadMembers()
-  emit('changed')
-}
-
+/** 成员勾选完成/取消完成：项目状态由服务端派生，完成后请容器重拉 */
 async function toggleMember(m: Task): Promise<void> {
   if (actionLoading.value) return
   actionLoading.value = true
@@ -88,7 +60,7 @@ async function toggleMember(m: Task): Promise<void> {
     if (m.status === 'completed') await taskApi.uncompleteTask(m.id)
     else await taskApi.completeTask(m.id)
     taskSync.markDirty()
-    await refresh()
+    emit('changed')
   } catch (e) {
     toast.show(errorText(e))
   } finally {
@@ -100,141 +72,68 @@ function openMember(m: Task): void {
   router.push(`/tasks/${m.id}`)
 }
 
-/** 快速添加成员：响应带 revived_parent 时说明项目已自动恢复未完成 */
-async function onMemberCreated(created: Task): Promise<void> {
+/** 快速添加成员：保存后由容器重拉项目（进度/派生徽标）与成员列表 */
+function onMemberCreated(): void {
   taskSync.markDirty()
-  if (created.revived_parent) {
-    toast.show(`项目「${created.revived_parent.title}」已自动恢复为未完成`)
-  }
-  await refresh()
-}
-
-async function toggleStatus(): Promise<void> {
-  if (actionLoading.value) return
-  actionLoading.value = true
-  try {
-    if (completed.value) {
-      await taskApi.uncompleteTask(props.task.id)
-      toast.show('已恢复未完成')
-      taskSync.markDirty()
-      emit('changed')
-    } else {
-      try {
-        await taskApi.completeTask(props.task.id)
-        toast.show('已标记完成')
-        taskSync.markDirty()
-        await refresh()
-      } catch (e) {
-        if (e instanceof ApiError && e.code === 4010) {
-          cascadeCount.value = incompleteCount(e)
-          return
-        }
-        throw e
-      }
-    }
-  } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    actionLoading.value = false
-  }
-}
-
-async function confirmCascade(): Promise<void> {
-  cascadeCount.value = null
-  actionLoading.value = true
-  try {
-    await taskApi.completeTask(props.task.id, true)
-    toast.show('已标记完成')
-    taskSync.markDirty()
-    await refresh()
-  } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    actionLoading.value = false
-  }
+  emit('changed')
 }
 
 /** 删除前预取影响范围（服务端权威计数） */
 async function askDelete(): Promise<void> {
   try {
-    const preview = await taskApi.fetchPreviewRemove(props.task.id)
-    const memberTasks = Math.max(0, preview.deleted_task_count - 1)
-    if (memberTasks > 0 || preview.deleted_event_count > 0) {
-      deleteCascade.value = { tasks: memberTasks, events: preview.deleted_event_count }
-      return
+    const preview = await previewRemoveProject(props.project.id)
+    removeInfo.value = {
+      tasks: preview.deleted_task_count ?? 0,
+      events: preview.deleted_event_count ?? 0,
     }
-    // 空项目：直接二次确认
-    deleteCascade.value = { tasks: 0, events: 0 }
   } catch (e) {
     toast.show(errorText(e))
   }
 }
 
 async function remove(): Promise<void> {
-  deleteCascade.value = null
+  if (deleting.value) return
+  deleting.value = true
   try {
-    const res = await taskApi.deleteTask(props.task.id)
+    const res = await deleteProject(props.project.id)
     taskSync.markDirty()
-    const memberTasks = Math.max(0, (res.deleted_task_count ?? 1) - 1)
-    const events = res.deleted_event_count ?? 0
     const parts: string[] = []
-    if (memberTasks > 0) parts.push(`${memberTasks} 个成员任务`)
-    if (events > 0) parts.push(`${events} 条日程安排`)
+    if (res.deleted_task_count > 0) parts.push(`${res.deleted_task_count} 个成员任务`)
+    if (res.deleted_event_count > 0) parts.push(`${res.deleted_event_count} 条关联日程`)
     toast.show(parts.length ? `已删除项目及其 ${parts.join('、')}` : '已删除项目')
-    // v0.7.0：项目页与任务页分离，删除后回项目页
+    removeInfo.value = null
     router.replace('/projects')
   } catch (e) {
     toast.show(errorText(e))
+  } finally {
+    deleting.value = false
   }
 }
-
-function planEvent(): void {
-  router.push(`/calendar/task/new?task_id=${props.task.id}&from=task`)
-}
-
-onMounted(loadMembers)
-
-watch(
-  () => props.task.id,
-  () => void loadMembers()
-)
 </script>
 
 <template>
   <div class="pp">
-    <!-- 项目头部 -->
+    <!-- 项目头部：名称 + 只读状态徽标 + 备注 + 来源 -->
     <section class="pp__head">
-      <h1 class="pp__title" :class="{ 'pp__title--done': completed }">
+      <h1 class="pp__title">
         <AppIcon name="folder" :size="18" color="var(--color-primary)" class="pp__title-icon" />
-        {{ task.title }}
-      </h1>
-      <div class="pp__tags">
+        <span class="pp__name">{{ project.name }}</span>
         <span class="pp__badge" :class="completed ? 'pp__badge--done' : 'pp__badge--doing'">
           {{ completed ? '已完成' : '进行中' }}
         </span>
-        <PriorityFlag :priority="task.priority" />
-      </div>
-      <p class="pp__meta">
-        <AppIcon name="clock" :size="16" color="#6B7080" />
-        <span :class="{ 'pp__overdue': overdue }">{{ formatFull(task.due_at) }}</span>
-        <span v-if="overdueText" class="pp__overdue-hint">{{ overdueText }}</span>
-        <span class="pp__dot">·</span>
-        <span>{{ sourceText }}</span>
-      </p>
-      <p v-if="task.note" class="pp__note">{{ task.note }}</p>
+      </h1>
+      <p v-if="project.note" class="pp__note">{{ project.note }}</p>
+      <p class="pp__meta">{{ sourceText }}</p>
     </section>
 
-    <!-- 进度区：项目不自动完成 -->
+    <!-- 进度区：派生态（无手工完成入口） -->
     <section class="pp__progress">
       <div class="pp__progress-head">
-        <span class="pp__progress-text">已完成 {{ done }} / 共 {{ total }}</span>
-        <span v-if="allMembersDone" class="pp__progress-hint">成员已全部完成，可点下方完成项目</span>
+        <span class="pp__progress-text" :class="{ 'pp__progress-text--done': allDone }">
+          已完成 {{ done }} / 共 {{ total }}
+        </span>
       </div>
-      <ProgressBar
-        :total="total"
-        :completed="done"
-        :label="`项目成员进度 ${done}/${total}`"
-      />
+      <ProgressBar :total="total" :completed="done" :label="`项目成员进度 ${done}/${total}`" />
     </section>
 
     <!-- 成员区 -->
@@ -243,12 +142,7 @@ watch(
         成员任务<span v-if="total" class="pp__section-count">（{{ total }}）</span>
       </h2>
 
-      <p v-if="membersLoading" class="pp__state">加载中…</p>
-      <p v-else-if="membersError" class="pp__state pp__state--error">
-        {{ membersError }}
-        <button class="pp__retry pressable" @click="loadMembers">重试</button>
-      </p>
-      <p v-else-if="!members.length" class="pp__state">还没有成员任务，在下方添加第一个</p>
+      <p v-if="!members.length" class="pp__state">还没有成员任务，在下方添加第一个</p>
       <MemberList
         v-else
         :members="members"
@@ -257,45 +151,29 @@ watch(
         @detail="openMember"
       />
 
-      <MemberComposer :project-id="task.id" @created="onMemberCreated" />
+      <MemberComposer :project-id="project.id" @created="onMemberCreated" />
     </section>
 
     <section class="pp__times">
-      <p>创建于 {{ formatShort(task.created_at) }}</p>
-      <p v-if="task.completed_at">完成于 {{ formatShort(task.completed_at) }}</p>
+      <p>创建于 {{ formatShort(project.created_at) }}</p>
+      <p v-if="project.completed_at">完成于 {{ formatShort(project.completed_at) }}</p>
     </section>
 
-    <!-- 操作区 -->
+    <!-- 操作区：v0.8.0 仅保留「删除项目」 -->
     <div class="pp__actions">
-      <AppButton type="primary" :loading="actionLoading" @click="planEvent">安排日程</AppButton>
-      <AppButton :disabled="actionLoading" @click="router.push(`/projects/${task.id}/edit`)">
-        编辑项目
-      </AppButton>
-      <AppButton :loading="actionLoading" @click="toggleStatus">
-        {{ completed ? '取消完成' : '完成项目' }}
-      </AppButton>
-      <button class="pp__delete pressable" @click="askDelete">删除项目</button>
+      <button class="pp__delete pressable" :disabled="deleting" @click="askDelete">删除项目</button>
     </div>
 
-    <!-- 级联完成确认 -->
+    <!-- 删除级联告知（成员任务数 / 关联日程数） -->
     <AppModal
-      :visible="cascadeCount !== null"
-      :title="`完成项目「${task.title}」？`"
-      :text="cascadeCount !== null ? `还有 ${cascadeCount} 个成员任务未完成，完成项目后将一并标记完成。` : ''"
-      confirm-text="全部完成"
-      @confirm="confirmCascade"
-      @cancel="cascadeCount = null"
-    />
-
-    <!-- 删除级联告知 -->
-    <AppModal
-      :visible="!!deleteCascade"
-      title="删除项目？"
+      :visible="!!removeInfo"
+      :title="`删除项目「${project.name}」？`"
       :text="deleteText"
       confirm-text="删除"
       danger
+      :loading="deleting"
       @confirm="remove"
-      @cancel="deleteCascade = null"
+      @cancel="removeInfo = null"
     />
   </div>
 </template>
@@ -306,32 +184,31 @@ watch(
   background: var(--bg-card);
 }
 .pp__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   font-size: 20px;
   line-height: 28px;
   font-weight: 600;
   word-break: break-word;
 }
 .pp__title-icon {
-  margin-right: 4px;
+  flex-shrink: 0;
 }
-.pp__title--done {
-  color: var(--text-disabled);
-  text-decoration: line-through;
+.pp__name {
+  min-width: 0;
+  word-break: break-word;
 }
-.pp__tags {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-top: var(--sp-2);
-  flex-wrap: wrap;
-}
+/* 状态徽标：派生只读（紧邻项目名右侧，不可点） */
 .pp__badge {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   min-height: 22px;
   padding: 0 var(--sp-2);
   border-radius: 6px;
   font-size: var(--font-caption);
+  font-weight: 400;
 }
 .pp__badge--doing {
   background: var(--color-primary-light);
@@ -342,22 +219,10 @@ watch(
   color: var(--text-secondary);
 }
 .pp__meta {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
   margin-top: var(--sp-2);
   font-size: var(--font-caption);
   line-height: var(--font-caption-lh);
   color: var(--text-secondary);
-}
-.pp__dot {
-  color: var(--text-disabled);
-}
-.pp__overdue {
-  color: var(--color-danger);
-}
-.pp__overdue-hint {
-  color: var(--color-danger);
 }
 .pp__note {
   margin-top: var(--sp-2);
@@ -383,8 +248,8 @@ watch(
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
-.pp__progress-hint {
-  font-size: var(--font-caption);
+/* 全部完成：数字与文案转 success 色（派生态视觉，UXUI 7.7） */
+.pp__progress-text--done {
   color: var(--color-success);
 }
 .pp__members {
@@ -405,15 +270,6 @@ watch(
   font-size: var(--font-caption);
   color: var(--text-secondary);
 }
-.pp__state--error {
-  color: var(--color-danger);
-}
-.pp__retry {
-  min-height: 32px;
-  padding: 0 var(--sp-1);
-  font-size: var(--font-caption);
-  color: var(--color-primary);
-}
 .pp__times {
   margin-top: var(--sp-2);
   padding: var(--sp-4);
@@ -425,13 +281,10 @@ watch(
   color: var(--text-secondary);
 }
 .pp__actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--sp-3);
   padding: var(--sp-6) var(--sp-4) 0;
 }
 .pp__delete {
+  width: 100%;
   min-height: 44px;
   font-size: var(--font-body-m);
   color: var(--color-danger);

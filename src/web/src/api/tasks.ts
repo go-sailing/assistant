@@ -2,10 +2,7 @@ import { request } from './client'
 import type { AgentLog, Paged, RemovePreview, Task, TaskPayload, TaskQuery } from '@/types'
 
 /** 把布尔/null 筛选参数转成后端可解析的 query 形态 */
-function toQuery(query: TaskQuery & { root_only?: boolean; parent_id?: string | number }): Record<
-  string,
-  string | number | undefined
-> {
+function toQuery(query: TaskQuery): Record<string, string | number | undefined> {
   const out: Record<string, string | number | undefined> = {}
   Object.entries(query).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return
@@ -14,9 +11,8 @@ function toQuery(query: TaskQuery & { root_only?: boolean; parent_id?: string | 
   return out
 }
 
-export function fetchTasks(
-  query: TaskQuery & { root_only?: boolean; parent_id?: string | number } = {}
-): Promise<Paged<Task>> {
+/** 任务列表：不传 project_id 即为全部任务（含项目下的任务） */
+export function fetchTasks(query: TaskQuery = {}): Promise<Paged<Task>> {
   return request<Paged<Task>>('/tasks', { query: toQuery(query) })
 }
 
@@ -28,22 +24,7 @@ export function fetchTask(id: string | number): Promise<Task> {
   return request<Task>(`/tasks/${id}`)
 }
 
-/** v0.6.0：项目成员列表（项目 + 直接成员；普通任务仅返回自身） */
-export function fetchSubtree(id: string | number, depth?: number): Promise<Task[]> {
-  return request<Task[]>(`/tasks/${id}/subtree`, { query: { depth } })
-}
-
-/** v0.6.0：面包屑链（项目 → 成员，至多两层） */
-export function fetchAncestors(id: string | number): Promise<Task[]> {
-  return request<Task[]>(`/tasks/${id}/ancestors`)
-}
-
-/** v0.6.0：可移入的项目候选（全部项目，排除自身） */
-export function fetchParentCandidates(id: string | number): Promise<Task[]> {
-  return request<Task[]>(`/tasks/${id}/parent-candidates`)
-}
-
-/** v0.6.0：删除前预取影响范围（不写库） */
+/** 删除前预取影响范围（不写库） */
 export function fetchPreviewRemove(id: string | number): Promise<RemovePreview> {
   return request<RemovePreview>(`/tasks/${id}/preview-remove`)
 }
@@ -67,12 +48,11 @@ export function deleteTask(
 }
 
 /**
- * 完成 / 取消完成。
- * 完成含未完成成员的项目时服务端返回 4010（details.incomplete_member_count），
- * 由调用方确认后带 cascade=true 重发。
+ * 完成 / 取消完成（v0.8.0：项目不再是任务，级联完成已随模型抽离下线）。
+ * 完成含未完成成员的项目时，服务端会按其成员完成度派生项目状态；端上无级联确认。
  */
-export function completeTask(id: string | number, cascade = false): Promise<Task> {
-  return request<Task>(`/tasks/${id}/complete`, { method: 'POST', body: cascade ? { cascade: true } : {} })
+export function completeTask(id: string | number): Promise<Task> {
+  return request<Task>(`/tasks/${id}/complete`, { method: 'POST' })
 }
 
 export function uncompleteTask(id: string | number): Promise<Task> {

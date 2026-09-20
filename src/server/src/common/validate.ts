@@ -32,8 +32,12 @@ export const optionalId = z.preprocess(
 
 export const priorityEnum = z.enum(['none', 'low', 'medium', 'high']);
 export const statusEnum = z.enum(['todo', 'completed']);
-/** v0.6.0 任务类型：normal 普通任务 / project 项目任务 */
-export const taskTypeEnum = z.enum(['normal', 'project']);
+
+/**
+ * v0.8.0：所属项目筛选（决策 T4）——正整数为项目 id，
+ * 字符串 'none' 为「未归属任何项目」的哨兵值。
+ */
+export const projectIdFilter = z.union([z.coerce.number().int().positive(), z.literal('none')]);
 
 /* ---------------- v0.7.0 智能体代理 ---------------- */
 
@@ -57,6 +61,25 @@ export function rejectListParams(input: unknown, label = '参数'): void {
         `${label}校验失败：不支持 ${key}（清单功能已下线）`,
         [{ field: key, message: '不支持的参数' }]
       );
+    }
+  }
+}
+
+/**
+ * v0.8.0：口径外参数显式拒绝（携带即 1001），与清单参数同一处理策略。
+ * reasons 的键为字段名，值为错误文案中括号内的原因说明。
+ */
+export function rejectParams(
+  input: unknown,
+  label: string,
+  reasons: Record<string, string>
+): void {
+  if (!input || typeof input !== 'object') return;
+  for (const [key, reason] of Object.entries(reasons)) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) {
+      throw new AppError(1001, `${label}校验失败：不支持 ${key}（${reason}）`, [
+        { field: key, message: '不支持的参数' },
+      ]);
     }
   }
 }

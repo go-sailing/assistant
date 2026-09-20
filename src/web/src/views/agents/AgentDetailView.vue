@@ -8,7 +8,7 @@ import {
   rotateAgentToken,
   updateAgent,
 } from '@/api/agents'
-import { ApiError, BASE_URL, errorText } from '@/api/client'
+import { ApiError, errorText } from '@/api/client'
 import type { Agent, AgentStatus, Task } from '@/types'
 import { formatShort } from '@/utils/time'
 import AppButton from '@/components/AppButton.vue'
@@ -34,8 +34,8 @@ const toast = useToastStore()
 const agentToken = useAgentTokenStore()
 
 const id = computed(() => String(route.params.id))
-/** MCP 接入地址（代理对象不含该字段，按服务端基址推导） */
-const MCP_ENDPOINT = `${window.location.origin}${BASE_URL}/mcp`
+/** MCP 接入地址（代理对象不含该字段，按服务端端点推导；端点为根路径 /mcp，不带 /api/v1 前缀） */
+const MCP_ENDPOINT = `${window.location.origin}/mcp`
 
 const PAGE_SIZE = 10
 const stateTabs = [
@@ -369,17 +369,10 @@ onBeforeUnmount(() => {
             接入凭据
           </h2>
           <div class="cred">
+            <!-- v0.8.0：凭据区只读（前缀 + 复制接入地址 + 复制接入配置），重置入口唯一落在底部操作区 -->
             <div class="cred__row">
               <span class="cred__label">凭据</span>
               <span class="cred__value">{{ agent.token_prefix }}…</span>
-              <AppButton
-                size="small"
-                type="secondary"
-                :disabled="actionLoading"
-                @click="rotateOpen = true"
-              >
-                重置
-              </AppButton>
             </div>
             <CopyField label="接入地址" :value="MCP_ENDPOINT" copy-label="复制接入地址" />
             <AppButton type="secondary" block :disabled="actionLoading" @click="copyConfig">

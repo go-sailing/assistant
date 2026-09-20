@@ -1,22 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import * as taskApi from '@/api/tasks'
+import { createProject, fetchProject, updateProject } from '@/api/projects'
 import { errorText } from '@/api/client'
-import type { TaskPayload, TaskPriority } from '@/types'
+import type { ProjectPayload } from '@/types'
 import AppButton from '@/components/AppButton.vue'
 import AppInput from '@/components/AppInput.vue'
 import AppModal from '@/components/AppModal.vue'
-import DateTimeField from '@/components/DateTimeField.vue'
-import SegmentedControl from '@/components/SegmentedControl.vue'
 import StateError from '@/components/StateError.vue'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
 
 /**
- * v0.7.0 新建 / 编辑项目（UXUI 5.6）：路由 project-create 与 project-edit 复用本组件。
- * 字段与普通任务表单同构（项目名称 / 备注 / 优先级 / 截止时间），
- * 但无任务类型分段、无「所属清单」、无「所属项目」（项目不可嵌套）。
+ * v0.8.0 新建 / 编辑项目（UXUI 5.6）：路由 project-create 与 project-edit 复用本组件。
+ * 字段仅「项目名称」+「备注」（项目模型无优先级、无截止时间）；
+ * payload 仅 { name, note }。
  */
 const route = useRoute()
 const router = useRouter()
@@ -27,8 +25,6 @@ const editId = computed(() => (route.name === 'project-edit' ? String(route.para
 
 const title = ref('')
 const note = ref('')
-const priority = ref<TaskPriority>('none')
-const dueAt = ref<string | null>(null)
 
 const titleError = ref('')
 const formError = ref('')
@@ -41,13 +37,6 @@ const discardVisible = ref(false)
 /** 进入页面时的表单快照，用于「取消时是否有未保存内容」判定 */
 const initial = ref('')
 
-const priorityOptions = [
-  { label: '无', value: 'none' },
-  { label: '低', value: 'low' },
-  { label: '中', value: 'medium' },
-  { label: '高', value: 'high' },
-]
-
 const headTitle = computed(() => (editId.value ? '编辑项目' : '新建项目'))
 const canSave = computed(() => title.value.trim() !== '' && !saving.value)
 const dirty = computed(
@@ -55,8 +44,6 @@ const dirty = computed(
     JSON.stringify({
       title: title.value,
       note: note.value,
-      priority: priority.value,
-      dueAt: dueAt.value,
     }) !== initial.value
 )
 
@@ -64,8 +51,6 @@ function snapshot(): string {
   return JSON.stringify({
     title: title.value,
     note: note.value,
-    priority: priority.value,
-    dueAt: dueAt.value,
   })
 }
 
@@ -73,11 +58,9 @@ async function loadProject(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    const t = await taskApi.fetchTask(editId.value)
-    title.value = t.title
-    note.value = t.note || ''
-    priority.value = t.priority
-    dueAt.value = t.due_at
+    const p = await fetchProject(editId.value)
+    title.value = p.name
+    note.value = p.note || ''
     initial.value = snapshot()
   } catch (e) {
     loadError.value = errorText(e)
@@ -126,21 +109,17 @@ async function save(): Promise<void> {
   }
   saving.value = true
   try {
-    const payload: TaskPayload = {
-      title: title.value.trim(),
+    const payload: ProjectPayload = {
+      name: title.value.trim(),
       note: note.value.trim() || null,
-      priority: priority.value,
-      due_at: dueAt.value,
     }
     if (editId.value) {
-      await taskApi.updateTask(editId.value, payload)
+      await updateProject(editId.value, payload)
       taskSync.markDirty()
       toast.show('已保存')
       leave()
     } else {
-      // 任务类型仅创建时下发
-      payload.task_type = 'project'
-      const created = await taskApi.createTask(payload)
+      const created = await createProject(payload)
       taskSync.markDirty()
       toast.show('已保存')
       router.replace(`/projects/${created.id}`)
@@ -198,19 +177,6 @@ onMounted(async () => {
             placeholder="补充说明…"
             :maxlength="2000"
           />
-        </section>
-
-        <section class="form__group form__group--plain">
-          <p class="form__label">优先级</p>
-          <SegmentedControl
-            :model-value="priority"
-            :options="priorityOptions"
-            @update:model-value="priority = $event as TaskPriority"
-          />
-        </section>
-
-        <section class="form__group form__group--list">
-          <DateTimeField v-model="dueAt" />
         </section>
 
         <div class="form__submit">
@@ -283,13 +249,6 @@ onMounted(async () => {
   padding: var(--sp-4);
   background: var(--bg-card);
 }
-.form__group--plain {
-  padding: 0;
-  overflow: hidden;
-}
-.form__group--list {
-  padding: 0;
-}
 .form__group--shake {
   animation: shake 400ms ease;
 }
@@ -306,14 +265,6 @@ onMounted(async () => {
   80% {
     transform: translateX(6px);
   }
-}
-.form__label {
-  padding: var(--sp-4) var(--sp-4) var(--sp-2);
-  font-size: var(--font-caption);
-  color: var(--text-secondary);
-}
-.form__group--plain .form__label {
-  padding-bottom: 0;
 }
 .form__submit {
   padding: var(--sp-6) var(--sp-4) 0;

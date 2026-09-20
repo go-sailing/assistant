@@ -13,11 +13,11 @@ import type {
   EventScope,
   MessageBlock,
   Occurrence,
+  ProjectGroup,
   ProposalBlock,
   RawMessage,
   ScopeBlock,
   SeriesDetail,
-  SubtaskGroup,
   Task,
 } from '@/types'
 import { useToastStore } from './toast'
@@ -40,6 +40,43 @@ function isScope(v: unknown): v is EventScope {
   return v === 'this' || v === 'following' || v === 'series'
 }
 
+/** 历史会话（v0.7.0）卡片里的旧字段结构，仅用于兼容适配 */
+interface LegacySubtaskGroup {
+  root_task_id?: number | string
+  nodes?: Task[]
+  missing?: boolean
+  missing_reason?: 'deleted'
+}
+
+/** v0.7.0 子任务组快照 → v0.8.0 项目结果组（根任务即原项目） */
+function adaptLegacyGroup(raw: LegacySubtaskGroup): ProjectGroup {
+  const nodes = Array.isArray(raw.nodes) ? raw.nodes : []
+  const rootId = raw.root_task_id
+  const root = nodes.find((n) => String(n.id) === String(rootId))
+  const members = nodes.filter((n) => String(n.id) !== String(rootId))
+  return {
+    project_id: Number(root?.id ?? rootId ?? 0),
+    name: root?.title ?? '',
+    member_total: members.length,
+    member_completed: members.filter((n) => n.status === 'completed').length,
+    nodes: members,
+    missing: raw.missing,
+    missing_reason: raw.missing_reason,
+  }
+}
+
+/**
+ * v0.8.0：从卡片数据读取项目结果组。
+ * 主字段为 project_groups；历史消息仍是 v0.7.0 的 subtask_groups，
+ * 这里做一次兼容适配，避免历史会话里的项目卡片整块消失。
+ */
+function projectGroupsOf(cards: Record<string, unknown>): ProjectGroup[] {
+  if (Array.isArray(cards.project_groups)) return cards.project_groups as ProjectGroup[]
+  const legacy = cards.subtask_groups
+  if (!Array.isArray(legacy)) return []
+  return legacy.map((g) => adaptLegacyGroup(g as LegacySubtaskGroup))
+}
+
 /** 云端消息 → 渲染消息（历史与实时共用同一套 blocks 渲染） */
 function toChatMessage(raw: RawMessage): ChatMessage {
   const blocks: MessageBlock[] = []
@@ -48,6 +85,14 @@ function toChatMessage(raw: RawMessage): ChatMessage {
   } else if (raw.content) {
     blocks.push({ type: 'text', text: raw.content })
   }
+  // 历史卡片兼容：把旧字段适配为新字段后再交给渲染层
+  blocks.forEach((b) => {
+    if (b.type !== 'cards') return
+    const cards = b as unknown as Record<string, unknown>
+    const groups = projectGroupsOf(cards)
+    if (groups.length) cards.project_groups = groups
+    delete cards.subtask_groups
+  })
   const msg: ChatMessage = {
     id: String(raw.id),
     role: raw.role === 'user' ? 'user' : 'assistant',
@@ -294,15 +339,13 @@ export const useChatStore = defineStore('chat', () => {
             const occurrences = Array.isArray(data.occurrences)
               ? (data.occurrences as Occurrence[])
               : []
-            const subtaskGroups = Array.isArray(data.subtask_groups)
-              ? (data.subtask_groups as SubtaskGroup[])
-              : []
+            const projectGroups = projectGroupsOf(data)
             if (
               tasks.length ||
               events.length ||
               series.length ||
               occurrences.length ||
-              subtaskGroups.length
+              projectGroups.length
             ) {
               msg.blocks.push({
                 type: 'cards',
@@ -310,7 +353,7 @@ export const useChatStore = defineStore('chat', () => {
                 events,
                 series,
                 occurrences,
-                subtask_groups: subtaskGroups,
+                project_groups: projectGroups,
               })
             }
             taskSync.markDirty()

@@ -19,6 +19,7 @@ export const ErrorCode = {
   EVENT_TYPE_IMMUTABLE: 4003,
   EVENT_CONFLICT: 4009,
   // v0.2.0 循环日程 / 子任务领域
+  /** @deprecated v0.8.0 失去触发面：项目已非任务，不存在「级联完成」流程（编号保留，工厂保留） */
   TASK_CASCADE_REQUIRED: 4010,
   RECURRENCE_INVALID: 4011,
   OCCURRENCE_NOT_FOUND: 4012,
@@ -27,7 +28,9 @@ export const ErrorCode = {
   SUBTASK_CYCLE: 4015,
   RECURRENCE_NOT_SUPPORTED: 4016,
   // v0.6.0 项目领域
+  /** @deprecated v0.8.0 失去触发面：项目已独立建表，「项目任务须为顶层」不再可能出现（编号保留） */
   PROJECT_INVALID_STATE: 4017,
+  /** @deprecated v0.8.0 失去触发面：无层级概念，「普通任务不支持子任务」不再可能出现（编号保留） */
   SUBTASK_NOT_SUPPORTED: 4018,
   // v0.7.0 智能体代理领域
   AGENT_UNAUTHORIZED: 4019,
@@ -113,7 +116,7 @@ export class AppError extends Error {
   static eventTimeInvalid(message = '日程时间不合法') {
     return new AppError(ErrorCode.EVENT_TIME_INVALID, message);
   }
-  /** 关联任务不可排期（已完成任务） */
+  /** 关联任务不可排期（v0.8.0 双文案：已完成任务 / 指向项目 id） */
   static eventTaskNotSchedulable(message = '该任务已完成，请先恢复为未完成再安排日程') {
     return new AppError(ErrorCode.EVENT_TASK_NOT_SCHEDULABLE, message);
   }
@@ -141,7 +144,10 @@ export class AppError extends Error {
       ...details,
     });
   }
-  /** 项目成员完成需级联确认：details 携带未完成成员数量 */
+  /**
+   * @deprecated v0.8.0 失去触发面：项目状态由成员完成度派生（ProjectService.recalcStatus），
+   * 不存在「完成项目需级联确认」的交互；工厂保留仅为编号与历史调用兼容。
+   */
   static taskCascadeRequired(incompleteMemberCount: number) {
     return new AppError(ErrorCode.TASK_CASCADE_REQUIRED, '还有未完成的项目成员', {
       incomplete_member_count: incompleteMemberCount,
@@ -183,11 +189,11 @@ export class AppError extends Error {
       '任务日程不支持重复，只能创建单次安排'
     );
   }
-  /** 项目任务必须为顶层任务（v0.6.0） */
+  /** @deprecated v0.8.0 失去触发面：项目已独立建表，不接受挂载操作（编号保留） */
   static projectInvalidState(message = '项目任务不能挂到其他任务下，项目须为顶层任务') {
     return new AppError(ErrorCode.PROJECT_INVALID_STATE, message);
   }
-  /** 普通任务不支持子任务（v0.6.0）：父任务只能是项目 */
+  /** @deprecated v0.8.0 失去触发面：模型上无任务层级概念（编号保留） */
   static subtaskNotSupported(message = '普通任务不支持子任务，仅项目可包含任务') {
     return new AppError(ErrorCode.SUBTASK_NOT_SUPPORTED, message);
   }

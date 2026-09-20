@@ -1,57 +1,63 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import * as taskApi from '@/api/tasks'
+import { fetchProject, fetchProjectMembers } from '@/api/projects'
+import { fetchTask } from '@/api/tasks'
 import { errorText } from '@/api/client'
-import type { Task } from '@/types'
+import type { Project, Task } from '@/types'
 import StateError from '@/components/StateError.vue'
 import NormalTaskPanel from '@/components/tasks/NormalTaskPanel.vue'
 import ProjectDetailPanel from '@/components/tasks/ProjectDetailPanel.vue'
 
 /**
- * 任务/项目详情容器（v0.7.0，系统设计文档 9.1）：
- * - `/tasks/:id` 只承载普通任务；命中项目时重定向到 `/projects/:id`（query 透传）；
- * - `/projects/:id` 承载项目；命中普通任务时反向重定向到 `/tasks/:id`；
- * - 加载/错误态由容器统一承担，面板只接收已加载的 Task。
+ * 任务/项目详情容器（v0.8.0，系统设计文档 10/11）：
+ * - `/tasks/:id` 只服务任务（loadTask）；
+ * - `/projects/:id` 只服务项目（loadProject + loadMembers，成员由容器加载后传入面板）；
+ * - 已删除「按任务类型双向重定向」（模型上任务已无类型维度）；
+ * - 加载/错误态由容器统一承担，面板只接收已加载数据。
  */
 const route = useRoute()
 const router = useRouter()
 
 const task = ref<Task | null>(null)
+const project = ref<Project | null>(null)
+const members = ref<Task[]>([])
 const loading = ref(true)
 const error = ref('')
 
-const taskId = computed(() => String(route.params.id))
+const detailId = computed(() => String(route.params.id))
 const fromChat = computed(() => route.query.from === 'chat')
 const isProjectRoute = computed(() => route.name === 'project-detail')
-const isProject = computed(() => task.value?.task_type === 'project')
 
-/** 详情编辑入口：项目走项目编辑页，普通任务走任务编辑页 */
+/** 详情编辑入口：项目走项目编辑页，任务走任务编辑页 */
 const editPath = computed(() =>
-  isProject.value ? `/projects/${taskId.value}/edit` : `/tasks/${taskId.value}/edit`
+  isProjectRoute.value ? `/projects/${detailId.value}/edit` : `/tasks/${detailId.value}/edit`
 )
 
 /**
  * silent=true：面板内部写操作后的静默刷新（保留已渲染内容，不闪「加载中」）。
- * 加载完成后按 task_type 与当前路由做一次分流（不渲染错形态的面板）。
  */
 async function load(silent = false): Promise<void> {
   if (!silent) loading.value = true
   error.value = ''
   try {
-    const data = await taskApi.fetchTask(taskId.value)
-    // 形态与路由不匹配：重定向（透传 query，保留 from=chat 返回语义）
-    if (data.task_type === 'project' && !isProjectRoute.value) {
-      await router.replace({ path: `/projects/${data.id}`, query: route.query })
-      return
+    if (isProjectRoute.value) {
+      const [p, res] = await Promise.all([
+        fetchProject(detailId.value),
+        fetchProjectMembers(detailId.value, { page: 1, page_size: 200 }),
+      ])
+      project.value = p
+      members.value = res.list || []
+      task.value = null
+    } else {
+      task.value = await fetchTask(detailId.value)
+      project.value = null
+      members.value = []
     }
-    if (data.task_type !== 'project' && isProjectRoute.value) {
-      await router.replace({ path: `/tasks/${data.id}`, query: route.query })
-      return
-    }
-    task.value = data
   } catch (e) {
     task.value = null
+    project.value = null
+    members.value = []
     error.value = errorText(e)
   } finally {
     if (!silent) loading.value = false
@@ -59,6 +65,9 @@ async function load(silent = false): Promise<void> {
 }
 
 onMounted(load)
+
+// 同一组件承载两类详情：目标资源变化时重新加载
+watch([() => route.name, () => route.params.id], () => void load())
 </script>
 
 <template>
@@ -68,9 +77,9 @@ onMounted(load)
         ‹
         <span v-if="fromChat" class="detail__back-text">返回对话</span>
       </button>
-      <span class="detail__head-title">{{ isProject ? '项目详情' : '任务详情' }}</span>
+      <span class="detail__head-title">{{ isProjectRoute ? '项目详情' : '任务详情' }}</span>
       <button
-        v-if="task"
+        v-if="isProjectRoute ? project : task"
         class="detail__edit pressable"
         @click="router.push(editPath)"
       >
@@ -84,14 +93,13 @@ onMounted(load)
 
       <StateError v-else-if="error" :text="error" @retry="load" />
 
-      <template v-else-if="task">
-        <ProjectDetailPanel
-          v-if="task.task_type === 'project'"
-          :task="task"
-          @changed="load(true)"
-        />
-        <NormalTaskPanel v-else :task="task" @changed="load(true)" />
-      </template>
+      <ProjectDetailPanel
+        v-else-if="isProjectRoute && project"
+        :project="project"
+        :members="members"
+        @changed="load(true)"
+      />
+      <NormalTaskPanel v-else-if="task" :task="task" @changed="load(true)" />
     </div>
   </div>
 </template>

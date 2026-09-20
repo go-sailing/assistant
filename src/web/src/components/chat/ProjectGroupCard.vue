@@ -1,65 +1,49 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { SubtaskGroup, Task } from '@/types'
+import { useRouter } from 'vue-router'
+import type { ProjectGroup, Task } from '@/types'
 import AppIcon from '../AppIcon.vue'
 
 /**
- * 对话内项目结果组卡片（v0.6.0，UX 5.11）。
- * 自包含实现：成员仅一层，进度用「文字计数 + 4pt 进度条」双重表达，不只靠颜色。
+ * 对话内项目结果组卡片（v0.8.0，UX 5.11）。
+ * 项目与成员任务均按云端下发的快照渲染：标题取 group.name，
+ * 进度取 group.member_total / member_completed，成员直接渲染 group.nodes（扁平一层，无层级缩进），
+ * 不再依赖任务类型字段与 parent_id 过滤。
  */
-const props = defineProps<{ group: SubtaskGroup }>()
+const props = defineProps<{ group: ProjectGroup }>()
 
+/** 成员行点击沿用既有 task 事件协议（由 MessageBlocks 转发为任务详情跳转） */
 const emit = defineEmits<{ (e: 'task', task: Task): void }>()
+
+const router = useRouter()
 
 /** 折叠阈值：超过 3 个成员折叠（「查看全部 N 项」进入项目详情） */
 const FOLD = 3
-/** 成员缩进：一层，统一 14px */
-const INDENT_STEP = 14
-const MAX_LEVEL = 1
 
 const nodes = computed<Task[]>(() => props.group.nodes || [])
-
-/** 根节点（项目）：被删除时整组降级为占位 */
-const root = computed<Task | null>(
-  () => nodes.value.find((n) => String(n.id) === String(props.group.root_task_id)) || null
-)
-
-/** 直接成员（服务端未给进度时的兜底口径） */
-const directChildren = computed<Task[]>(() =>
-  nodes.value.filter((n) => String(n.parent_id) === String(props.group.root_task_id))
-)
-
-const progress = computed(() => {
-  const r = root.value
-  const total = r?.member_total ?? directChildren.value.length
-  const done =
-    r?.member_completed ?? directChildren.value.filter((n) => n.status === 'completed').length
-  return { done, total }
-})
-
+const progress = computed(() => ({
+  done: props.group.member_completed,
+  total: props.group.member_total,
+}))
 const percent = computed(() =>
   progress.value.total ? Math.round((progress.value.done / progress.value.total) * 100) : 0
 )
+/** 折叠态只展示前 3 条，其余通过「查看全部 N 项」进入项目详情 */
+const visibleRows = computed(() => nodes.value.slice(0, FOLD))
 
-/** 扁平节点 → 行（成员仅一层） */
-const rows = computed(() => {
-  const list = nodes.value
-  const r = root.value
-  return list
-    .filter((n) => (r ? String(n.id) !== String(r.id) : true))
-    .map((n) => {
-      const level = Math.min(Math.max((n.depth ?? 2) - 1, 1), MAX_LEVEL)
-      return { task: n, level, indent: (level - 1) * INDENT_STEP }
-    })
-})
+/** 整卡 /「查看全部」→ 项目详情（`from=chat` 保留「返回对话」语义） */
+function openProject(): void {
+  router.push(`/projects/${props.group.project_id}?from=chat`)
+}
 
-/** 折叠态只展示前 3 条，其余通过「查看全部 N 项」进入任务详情 */
-const visibleRows = computed(() => rows.value.slice(0, FOLD))
+function openTask(task: Task): void {
+  emit('task', task)
+}
 </script>
 
 <template>
-  <!-- 项目已被删除（服务端 missing 标记或根节点缺失）：整组渲染占位，不展示陈旧快照 -->
-  <div v-if="group.missing || !root" class="sgroup sgroup--missing">
+  <!-- 项目已被删除（服务端 missing 标记）：整组渲染占位，不展示陈旧快照 -->
+  <div v-if="group.missing" class="sgroup sgroup--missing">
     <div class="sgroup__row">
       <AppIcon name="list" :size="16" color="#B5B9C4" />
       <p class="sgroup__missing">该项目已删除</p>
@@ -70,13 +54,11 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
     <button
       type="button"
       class="sgroup__head pressable"
-      :aria-label="`查看项目 ${root.title}，成员 ${progress.done}/${progress.total}`"
-      @click="emit('task', root)"
+      :aria-label="`查看项目 ${group.name}，成员 ${progress.done}/${progress.total}`"
+      @click="openProject"
     >
       <span class="sgroup__main">
-        <span class="sgroup__title" :class="{ 'sgroup__title--done': root.status === 'completed' }">
-          {{ root.title }}
-        </span>
+        <span class="sgroup__title">{{ group.name }}</span>
         <span class="sgroup__count">成员 {{ progress.done }}/{{ progress.total }}</span>
       </span>
       <AppIcon name="chevron-right" :size="18" color="#B5B9C4" />
@@ -96,22 +78,14 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
       />
     </div>
 
-    <ul v-if="rows.length" class="sgroup__list" role="tree">
-      <li
-        v-for="row in visibleRows"
-        :key="String(row.task.id)"
-        role="treeitem"
-        :aria-level="row.level"
-        :aria-selected="false"
-      >
+    <ul v-if="nodes.length" class="sgroup__list" role="list">
+      <li v-for="task in visibleRows" :key="String(task.id)">
         <button
           type="button"
           class="sgroup__node pressable"
-          :style="{ paddingLeft: `${row.indent}px` }"
-          :aria-label="`查看任务 ${row.task.title}${row.task.status === 'completed' ? '，已完成' : ''}`"
-          @click="emit('task', row.task)"
+          :aria-label="`查看任务 ${task.title}${task.status === 'completed' ? '，已完成' : ''}`"
+          @click="openTask(task)"
         >
-          <span v-if="row.indent" class="sgroup__line" aria-hidden="true" />
           <svg class="sgroup__mark" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
             <g
               stroke="currentColor"
@@ -121,27 +95,27 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
               stroke-linejoin="round"
             >
               <rect x="4" y="4" width="16" height="16" rx="4" />
-              <path v-if="row.task.status === 'completed'" d="M8 12.5l3 3 5.5-6" />
+              <path v-if="task.status === 'completed'" d="M8 12.5l3 3 5.5-6" />
             </g>
           </svg>
           <span
             class="sgroup__node-title"
-            :class="{ 'sgroup__node-title--done': row.task.status === 'completed' }"
+            :class="{ 'sgroup__node-title--done': task.status === 'completed' }"
           >
-            {{ row.task.title }}
+            {{ task.title }}
           </span>
-          <span v-if="row.task.status === 'completed'" class="sgroup__pill">已完成</span>
+          <span v-if="task.status === 'completed'" class="sgroup__pill">已完成</span>
         </button>
       </li>
     </ul>
 
     <button
-      v-if="rows.length > FOLD"
+      v-if="nodes.length > FOLD"
       type="button"
       class="sgroup__more pressable"
-      @click="emit('task', root)"
+      @click="openProject"
     >
-      查看全部 {{ rows.length }} 项
+      查看全部 {{ nodes.length }} 项
     </button>
   </div>
 </template>
@@ -194,10 +168,6 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
   color: var(--text-primary);
   word-break: break-word;
 }
-.sgroup__title--done {
-  color: var(--text-disabled);
-  text-decoration: line-through;
-}
 .sgroup__count {
   flex-shrink: 0;
   font-size: var(--font-caption);
@@ -228,7 +198,6 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
   padding: var(--sp-2) var(--sp-3) 0;
 }
 .sgroup__node {
-  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -240,14 +209,6 @@ const visibleRows = computed(() => rows.value.slice(0, FOLD))
 }
 .sgroup__node:active {
   background: #fafbff;
-}
-.sgroup__line {
-  position: absolute;
-  left: 6px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--color-allday-bg);
 }
 .sgroup__mark {
   flex-shrink: 0;

@@ -6,9 +6,10 @@ import {
   idParam,
   parse,
   priorityEnum,
+  projectIdFilter,
   rejectListParams,
+  rejectParams,
   statusEnum,
-  taskTypeEnum,
 } from '../../common/validate';
 import { taskService } from './task.service';
 import { eventService } from '../event/event.service';
@@ -20,33 +21,36 @@ const dueAtSchema = z
     '截止时间格式不正确'
   );
 
-/** 宽容布尔：兼容 "true"/"false" 字符串（前端 query 与模型输出都可能给字符串） */
-const boolish = z.preprocess((v) => {
-  if (typeof v === 'string') {
-    if (v.toLowerCase() === 'true') return true;
-    if (v.toLowerCase() === 'false') return false;
-  }
-  return v;
-}, z.boolean());
-
 /**
- * v0.6.0：parent_id 兼容 0 表示「无父/移出项目」（与 LLM 工具口径一致），
+ * v0.6.0 的 parent_id / v0.8.0 的项目归属：兼容 0 表示「未归属项目」，
  * 其余非正整数一律 1001；字段缺省时保持 undefined（表示不改动）。
  */
-const parentIdSchema = z.preprocess(
+const projectIdSchema = z.preprocess(
   (v) => (v === null || v === '' || v === 0 || v === '0' ? null : Number(v)),
   z.union([z.number().int().positive(), z.null()])
 );
+
+/** v0.8.0：任务类型维度取消，携带旧参数一律显式拒绝（SDD 14.4） */
+const NO_TASK_TYPE = '任务类型已取消';
+
+const QUERY_REJECT: Record<string, string> = {
+  task_type: NO_TASK_TYPE,
+  root_only: '任务页已返回全部任务',
+  parent_id: '请改用 project_id 过滤',
+};
+
+const BODY_REJECT: Record<string, string> = {
+  task_type: NO_TASK_TYPE,
+  parent_id: '任务的所属项目请用 project_id 表达',
+};
 
 const createSchema = z.object({
   title: z.string().min(1, '请输入任务标题'),
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtSchema.optional(),
-  /** v0.6.0：挂到项目任务下成为成员（父必须是 project）；0/null 表示无父 */
-  parent_id: parentIdSchema.optional(),
-  /** v0.6.0：任务类型，缺省 normal */
-  task_type: taskTypeEnum.optional(),
+  /** v0.8.0：加入某个项目成为成员；0/null 表示未归属项目 */
+  project_id: projectIdSchema.optional(),
 });
 
 const updateSchema = z.object({
@@ -54,34 +58,20 @@ const updateSchema = z.object({
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtSchema.optional(),
-  /** v0.6.0：移入项目传项目 ID；显式 null/0 = 移出成为独立任务 */
-  parent_id: parentIdSchema.optional(),
-  /** v0.6.0：不接受变更，携带即由服务层拒绝（保留字段以便给出明确错误） */
-  task_type: taskTypeEnum.optional(),
+  /** v0.8.0：移入项目传项目 ID；显式 null/0 = 移出成为未归属项目的任务 */
+  project_id: projectIdSchema.optional(),
 });
 
 const listQuerySchema = z.object({
   status: statusEnum.optional(),
   priority: priorityEnum.optional(),
-  /** v0.6.0：按任务类型筛选（normal / project） */
-  task_type: taskTypeEnum.optional(),
   due_from: z.string().optional(),
   due_to: z.string().optional(),
   sort: z.string().optional(),
   page: z.coerce.number().int().positive().optional(),
   page_size: z.coerce.number().int().positive().max(100).optional(),
-  /** v0.2.0：只看根任务（任务首页默认）/ 只看某个任务的直接子任务 */
-  root_only: boolish.optional(),
-  parent_id: z.coerce.number().int().positive().optional(),
-});
-
-const subtreeQuerySchema = z.object({
-  depth: z.coerce.number().int().positive().max(5).optional(),
-});
-
-const completeSchema = z.object({
-  /** 级联完成后端二次提交标记（4010 之后带 true 重发） */
-  cascade: boolish.optional(),
+  /** v0.8.0：按所属项目筛选（正整数项目 id 或 'none' = 未归属项目） */
+  project_id: projectIdFilter.optional(),
 });
 
 const batchSchema = z.object({
@@ -92,6 +82,8 @@ const batchSchema = z.object({
       due_from: z.string().optional(),
       due_to: z.string().optional(),
       keyword: z.string().optional(),
+      /** v0.8.0：按所属项目筛选（正整数项目 id 或 'none' = 未归属项目） */
+      project_id: projectIdFilter.optional(),
     })
     .default({}),
   update: z.object({
@@ -107,6 +99,7 @@ taskRoutes.get(
   '/tasks',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
+    rejectParams(req.query, '查询参数', QUERY_REJECT);
     rejectListParams(req.query, '查询参数');
     const filter = parse(listQuerySchema, req.query, '查询参数');
     ok(res, await taskService.list(user.id, filter));
@@ -127,6 +120,7 @@ taskRoutes.post(
   '/tasks',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
+    rejectParams(req.body, '任务参数', BODY_REJECT);
     rejectListParams(req.body, '任务参数');
     const input = parse(createSchema, req.body, '任务参数');
     ok(res, await taskService.create(user.id, input));
@@ -138,6 +132,9 @@ taskRoutes.post(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const body = (req.body ?? {}) as { filter?: unknown; update?: unknown };
+    rejectParams(body, '批量更新参数', BODY_REJECT);
+    rejectParams(body.filter, '批量更新筛选参数', QUERY_REJECT);
+    rejectParams(body.update, '批量更新字段', BODY_REJECT);
     rejectListParams(body, '批量更新参数');
     rejectListParams(body.filter, '批量更新筛选参数');
     rejectListParams(body.update, '批量更新字段');
@@ -158,38 +155,7 @@ taskRoutes.get(
   })
 );
 
-/** v0.2.0 子树：扁平节点数组（depth/进度），行内展开传 depth=1 */
-taskRoutes.get(
-  '/tasks/:id/subtree',
-  asyncHandler(async (req, res) => {
-    const user = getUser(req);
-    const id = parse(idParam, req.params.id, '任务 ID');
-    const { depth } = parse(subtreeQuerySchema, req.query, '查询参数');
-    ok(res, await taskService.getSubtree(user.id, id, depth));
-  })
-);
-
-/** v0.2.0 面包屑：根 → 父 → 当前 */
-taskRoutes.get(
-  '/tasks/:id/ancestors',
-  asyncHandler(async (req, res) => {
-    const user = getUser(req);
-    const id = parse(idParam, req.params.id, '任务 ID');
-    ok(res, await taskService.getAncestorPath(user.id, id));
-  })
-);
-
-/** v0.2.0 可挂载父任务候选（排除自身与全部后代，同清单） */
-taskRoutes.get(
-  '/tasks/:id/parent-candidates',
-  asyncHandler(async (req, res) => {
-    const user = getUser(req);
-    const id = parse(idParam, req.params.id, '任务 ID');
-    ok(res, await taskService.listParentCandidates(user.id, id));
-  })
-);
-
-/** v0.6.0 删除前预取：项目成员数 + 关联日程数（不写库，供删除确认文案） */
+/** v0.6.0 删除前预取：关联日程数（不写库，供删除确认文案） */
 taskRoutes.get(
   '/tasks/:id/preview-remove',
   asyncHandler(async (req, res) => {
@@ -216,20 +182,20 @@ taskRoutes.patch(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
+    rejectParams(req.body, '任务参数', BODY_REJECT);
     rejectListParams(req.body, '任务参数');
     const patch = parse(updateSchema, req.body, '任务参数');
     ok(res, await taskService.update(user.id, id, patch));
   })
 );
 
+// v0.8.0：完成任务不再有级联语义（项目状态由成员完成度派生），cascade 参数已移除
 taskRoutes.post(
   '/tasks/:id/complete',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
-    const { cascade } = parse(completeSchema, req.body ?? {}, '任务参数');
-    // 有未完成后代且未确认级联时，服务层抛 4010，前端确认后带 cascade=true 重发
-    ok(res, await taskService.setStatus(user.id, id, 'completed', { cascade: cascade === true }));
+    ok(res, await taskService.setStatus(user.id, id, 'completed'));
   })
 );
 
@@ -247,8 +213,11 @@ taskRoutes.delete(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '任务 ID');
-    // v0.2.0：删除整棵子树，返回任务与日程的级联计数
     const result = await taskService.remove(user.id, id);
     ok(res, { id, ...result });
   })
 );
+
+// v0.8.0 下线（决议 T7）：/tasks/:id/subtree、/tasks/:id/ancestors、
+// /tasks/:id/parent-candidates 不再注册 —— 能力由 /projects/:id/members 与 /projects 承接，
+// 旧链按全局 404（1004「接口不存在」）处理。

@@ -18,8 +18,9 @@ import { useToastStore } from '@/stores/toast'
 import { dueTone, formatEventRange, formatFull, formatShort, overdueDays } from '@/utils/time'
 
 /**
- * 普通任务面板（v0.6.0）：独立单任务，无子任务分区/子树/面包屑；
- * 成员任务额外显示「所属项目」一行（可跳转项目详情）。
+ * 普通任务面板（v0.8.0）：独立单任务，无成员分区/面包屑；
+ * 归属项目时额外显示「所属项目」一行（可跳转项目详情）；
+ * 已完成态整块隐藏「智能体执行」区与「日程安排」分区（PRD 决议 12 / UXUI 5.4、7.4）。
  */
 const props = defineProps<{ task: Task }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
@@ -34,13 +35,24 @@ const actionLoading = ref(false)
 const sheetVisible = ref(false)
 /** 删除级联告知（有日程安排时先明示数量） */
 const deleteCascade = ref<{ events: number } | null>(null)
-/** 所属项目名称（成员任务展示用） */
-const projectTitle = ref('')
 
 const completed = computed(() => props.task.status === 'completed')
 const overdue = computed(() => dueTone(props.task) === 'danger')
 const overdueText = computed(() => (overdue.value ? `已逾期 ${overdueDays(props.task.due_at)} 天` : ''))
-const isMember = computed(() => props.task.parent_id !== null)
+/** v0.8.0：任务归属项目（独立任务为 null，不渲染该行） */
+const project = computed(() => props.task.project)
+
+/**
+ * v0.8.0 A11y：已完成任务不再有执行/排期入口，仅在"曾有日程或指派"时
+ * 展示一行 caption 说明，避免用户误以为功能丢失（无历史则完全不展示）。
+ */
+const hadHistory = computed(
+  () =>
+    events.value.length > 0 ||
+    (props.task.event_count ?? 0) > 0 ||
+    props.task.agent_id !== null ||
+    props.task.agent_state !== 'none'
+)
 
 const deleteText = computed(() => {
   const info = deleteCascade.value
@@ -53,19 +65,6 @@ async function loadEvents(): Promise<void> {
     events.value = await eventApi.fetchTaskEvents(props.task.id)
   } catch {
     events.value = []
-  }
-}
-
-async function loadProjectTitle(): Promise<void> {
-  if (props.task.parent_id === null) {
-    projectTitle.value = ''
-    return
-  }
-  try {
-    const p = await taskApi.fetchTask(props.task.parent_id)
-    projectTitle.value = p.title
-  } catch {
-    projectTitle.value = ''
   }
 }
 
@@ -128,20 +127,20 @@ function openEvent(ev: CalendarEvent): void {
   router.push(`/calendar/${ev.id}`)
 }
 
+/** v0.8.0：跳转所属项目详情（独立任务无该行） */
 function goProject(): void {
-  if (props.task.parent_id !== null) router.push(`/tasks/${props.task.parent_id}`)
+  const p = project.value
+  if (p) router.push(`/projects/${p.id}`)
 }
 
 onMounted(() => {
   void loadEvents()
-  void loadProjectTitle()
 })
 
 watch(
   () => props.task.id,
   () => {
     void loadEvents()
-    void loadProjectTitle()
   }
 )
 </script>
@@ -168,11 +167,18 @@ watch(
         <span :class="{ 'np__overdue': overdue }">{{ formatFull(task.due_at) }}</span>
         <span v-if="overdueText" class="np__overdue-hint">{{ overdueText }}</span>
       </li>
-      <!-- 成员任务：可跳转所属项目 -->
-      <li v-if="isMember" class="np__meta-row pressable" role="button" tabindex="0" @click="goProject" @keydown.enter="goProject">
-        <AppIcon name="list" :size="18" color="var(--color-primary)" />
+      <!-- v0.8.0：归属项目时展示，可跳转项目详情；独立任务不渲染该行 -->
+      <li
+        v-if="project"
+        class="np__meta-row pressable"
+        role="button"
+        tabindex="0"
+        @click="goProject"
+        @keydown.enter="goProject"
+      >
+        <AppIcon name="folder" :size="18" color="var(--color-primary)" />
         <span class="np__meta-label">所属项目</span>
-        <span class="np__meta-value ellipsis">{{ projectTitle || `#${task.parent_id}` }}</span>
+        <span class="np__meta-value ellipsis">{{ project.name }}</span>
         <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
       </li>
     </ul>
@@ -182,11 +188,11 @@ watch(
       <p class="np__note-text">{{ task.note || '暂无备注' }}</p>
     </section>
 
-    <!-- 智能体执行分区（v0.7.0）：指派 / 状态 / 执行记录 -->
-    <AgentExecutionPanel :task="task" @changed="emit('changed')" />
+    <!-- 智能体执行分区（v0.7.0）：指派 / 状态 / 执行记录；已完成态整块不渲染（PRD 决议 12） -->
+    <AgentExecutionPanel v-if="!completed" :task="task" @changed="emit('changed')" />
 
-    <!-- 日程安排分区：任务日程作为该任务的执行时段载体，同一任务可有多条 -->
-    <section class="np__schedule">
+    <!-- 日程安排分区：任务日程作为该任务的执行时段载体，同一任务可有多条；已完成态整块不渲染 -->
+    <section v-if="!completed" class="np__schedule">
       <div class="np__schedule-head">
         <h2 class="np__schedule-title">
           日程安排<span v-if="events.length" class="np__schedule-count">（{{ events.length }}）</span>
@@ -215,6 +221,9 @@ watch(
       </ul>
       <p v-else class="np__schedule-empty">还没有安排执行时段</p>
     </section>
+
+    <!-- v0.8.0 A11y：已完成态入口去向说明（仅"曾有日程或指派"时展示一行 caption） -->
+    <p v-if="completed && hadHistory" class="np__hidden-hint">取消完成后可重新指派/安排日程</p>
 
     <section class="np__times">
       <p>创建于 {{ formatShort(task.created_at) }}</p>
@@ -382,6 +391,15 @@ watch(
   flex-direction: column;
   gap: var(--sp-1);
   font-size: var(--font-caption);
+  color: var(--text-secondary);
+}
+/* 已完成态的入口去向说明（一行 caption，不占位、无历史时不渲染） */
+.np__hidden-hint {
+  margin-top: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--bg-card);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
   color: var(--text-secondary);
 }
 .np__actions {

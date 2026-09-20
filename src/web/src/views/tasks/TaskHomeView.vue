@@ -1,24 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import * as projectApi from '@/api/projects'
 import * as taskApi from '@/api/tasks'
-import { ApiError, errorText } from '@/api/client'
-import type { Task, TaskSort, TaskStatus } from '@/types'
+import { errorText } from '@/api/client'
+import type { Project, Task, TaskSort, TaskStatus } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppIcon from '@/components/AppIcon.vue'
-import AppModal from '@/components/AppModal.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
 import TaskListItem from '@/components/TaskListItem.vue'
+import ProjectFilter from '@/components/tasks/ProjectFilter.vue'
+import { currentAxis, isHorizontalLocked, isVerticalLocked, lockAxis, resetAxis, resolveAxis } from '@/utils/gesture'
 import { useTaskSyncStore } from '@/stores/taskSync'
 import { useToastStore } from '@/stores/toast'
 
 /**
- * v0.7.0 任务页（UXUI 5.2）：只列普通任务（root_only + task_type=normal）。
- * 筛选区 = 状态分段（全部/未完成/已完成）+ 排序胶囊；类型与清单能力已下线。
+ * v0.8.0 任务页（UXUI 5.1，TASK-01）：列表为**全部任务**（含项目下任务）。
+ * 筛选区 = 左「项目筛选器」+ 右「排序胶囊」，其下为状态分段；
+ * 三者正交（可叠加），任一变化仅重新拉取列表。
  */
 const router = useRouter()
 const route = useRoute()
@@ -28,6 +31,10 @@ const taskSync = useTaskSyncStore()
 const tasks = ref<Task[]>([])
 const status = ref<TaskStatus | 'all'>('all')
 const sort = ref<TaskSort>('due_at_asc')
+/** 项目筛选：null = 全部；'none' = 未归属项目；number = 具体项目 */
+const projectFilter = ref<number | 'none' | null>(null)
+/** 筛选器候选（进入页面时一次性取回） */
+const projects = ref<Project[]>([])
 const loading = ref(true)
 const error = ref('')
 const refreshing = ref(false)
@@ -36,12 +43,6 @@ const highlightId = ref<string>('')
 const sortSheetVisible = ref(false)
 const actionTask = ref<Task | null>(null)
 const deleteSheetVisible = ref(false)
-const cascadeDeleteVisible = ref(false)
-
-/* v0.4.0 根任务扁平列表：不再有树展开、行内添加，层级管理全部在详情页 */
-
-/** 级联完成确认（项目带未完成成员任务） */
-const cascade = ref<{ task: Task; count: number } | null>(null)
 
 const statusOptions = [
   { label: '全部', value: 'all' },
@@ -57,18 +58,19 @@ const sortItems = [
 ]
 
 /** 是否处于筛选态（用于区分首次空态与筛选空态） */
-const filtered = computed(() => status.value !== 'all')
+const filtered = computed(() => status.value !== 'all' || projectFilter.value !== null)
+
+/** 命中「具体项目」筛选：空态用项目专属文案与新建入口 */
+const isProjectFiltered = computed(() => typeof projectFilter.value === 'number')
 
 async function loadTasks(): Promise<void> {
   error.value = ''
   try {
-    // v0.4.0：首页只列根任务（每行一条扁平行，项目成员仅在项目详情管理）
-    // v0.7.0：任务页固定只列普通任务，类型与清单筛选已下线
+    // v0.8.0：不传 project_id 即全部任务（含项目下任务），不再有 task_type / root_only
     const res = await taskApi.fetchTasks({
       status: status.value === 'all' ? undefined : status.value,
-      task_type: 'normal',
+      project_id: projectFilter.value === null ? undefined : projectFilter.value,
       sort: sort.value,
-      root_only: true,
       page: 1,
       page_size: 50,
     })
@@ -80,6 +82,24 @@ async function loadTasks(): Promise<void> {
   }
 }
 
+/** 项目筛选器候选：与列表并发加载，失败时静默降级（筛选器只剩「全部」） */
+async function loadProjects(): Promise<void> {
+  try {
+    projects.value = await projectApi.fetchProjectOptions()
+  } catch {
+    projects.value = []
+  }
+}
+
+/** 当前选中项目已被删除 → 回落「全部」、提示并同步列表（UXUI 7.1） */
+async function validateProjectFilter(): Promise<void> {
+  if (typeof projectFilter.value !== 'number') return
+  if (projects.value.some((p) => p.id === projectFilter.value)) return
+  projectFilter.value = null
+  toast.show('所选项目已删除')
+  await loadTasks()
+}
+
 async function loadAll(): Promise<void> {
   loading.value = true
   await loadTasks()
@@ -88,11 +108,13 @@ async function loadAll(): Promise<void> {
 
 async function refresh(): Promise<void> {
   refreshing.value = true
-  await loadTasks()
+  // 刷新时一并校验项目候选（项目被删除则回落「全部」）
+  await Promise.all([loadTasks(), loadProjects()])
+  await validateProjectFilter()
   refreshing.value = false
 }
 
-/** 切换排序/状态后重新拉取列表 */
+/** 切换筛选/状态/排序后重新拉取列表（不重置其它两个控件的值） */
 function reloadTasks(): void {
   loading.value = true
   void loadTasks().finally(() => {
@@ -112,6 +134,12 @@ function onStatusChange(v: string): void {
   reloadTasks()
 }
 
+function onProjectChange(v: number | 'none' | null): void {
+  if (v === projectFilter.value) return
+  projectFilter.value = v
+  reloadTasks()
+}
+
 function goDetail(task: Task): void {
   router.push(`/tasks/${task.id}`)
 }
@@ -120,19 +148,17 @@ function goCreate(): void {
   router.push('/tasks/new')
 }
 
+/** 项目筛选空态：新建任务并预设所属项目为本项目 */
+function goCreateForProject(): void {
+  router.push(`/tasks/new?project_id=${String(projectFilter.value)}`)
+}
+
 function replaceRoot(task: Task): void {
   const i = tasks.value.findIndex((t) => String(t.id) === String(task.id))
   if (i >= 0) tasks.value[i] = task
 }
 
-function incompleteCount(e: unknown): number {
-  const details = e instanceof ApiError
-    ? (e.details as { incomplete_member_count?: number; incomplete_descendant_count?: number } | null)
-    : null
-  return details?.incomplete_member_count ?? details?.incomplete_descendant_count ?? 0
-}
-
-/** 勾选完成：乐观更新，失败回弹；项目带未完成成员任务时走级联确认 */
+/** 勾选完成：乐观更新，失败回弹（v0.8.0 已无级联完成） */
 async function onToggle(task: Task): Promise<void> {
   const index = tasks.value.findIndex((t) => String(t.id) === String(task.id))
   if (index < 0) return
@@ -158,53 +184,24 @@ async function onToggle(task: Task): Promise<void> {
     taskSync.markDirty()
   } catch (e) {
     replaceRoot(original)
-    if (!completed && e instanceof ApiError && e.code === 4010) {
-      cascade.value = { task: original, count: incompleteCount(e) }
-      return
-    }
     toast.show(errorText(e) || '操作失败，请重试')
-  }
-}
-
-/** 级联完成：一并标记全部未完成后代 */
-async function confirmCascade(): Promise<void> {
-  const target = cascade.value
-  if (!target) return
-  cascade.value = null
-  try {
-    const updated = await taskApi.completeTask(target.task.id, true)
-    replaceRoot(updated)
-    taskSync.markDirty()
-    toast.show('已标记完成')
-  } catch (e) {
-    toast.show(errorText(e))
   }
 }
 
 function askDelete(task: Task): void {
   actionTask.value = task
-  if (task.member_total > 0) {
-    cascadeDeleteVisible.value = true
-    return
-  }
   deleteSheetVisible.value = true
 }
 
 async function confirmDelete(): Promise<void> {
   const task = actionTask.value
   deleteSheetVisible.value = false
-  cascadeDeleteVisible.value = false
   if (!task) return
   try {
     const res = await taskApi.deleteTask(task.id)
     tasks.value = tasks.value.filter((t) => String(t.id) !== String(task.id))
-    // 级联计数来自服务端响应：任务数含自身，成员数需减 1
-    const members = Math.max(0, (res.deleted_task_count ?? 1) - 1)
     const events = res.deleted_event_count ?? 0
-    const parts: string[] = []
-    if (members > 0) parts.push(`${members} 个成员任务`)
-    if (events > 0) parts.push(`${events} 条日程安排`)
-    toast.show(parts.length ? `已删除任务及其 ${parts.join('、')}` : '已删除')
+    toast.show(events > 0 ? `已删除任务及其 ${events} 条日程安排` : '已删除')
     actionTask.value = null
     taskSync.markDirty()
   } catch (e) {
@@ -212,36 +209,62 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
-/* ---- 下拉刷新 ---- */
+/* ---- 下拉刷新（纵向）与行内左滑（横向）互斥：GES-01 / SDD 12.2 ---- */
 const scroller = ref<HTMLElement | null>(null)
 const pullDistance = ref(0)
+let startX = 0
 let startY = 0
 let pullActive = false
 
 function onTouchStart(e: TouchEvent): void {
   const el = scroller.value
-  if (!el || el.scrollTop > 0 || refreshing.value) return
+  // 仅列表顶部起手才参与下拉（既有口径）
+  if (!el || el.scrollTop > 0 || refreshing.value) {
+    pullActive = false
+    return
+  }
+  startX = e.touches[0].clientX
   startY = e.touches[0].clientY
   pullActive = true
 }
 
 function onTouchMove(e: TouchEvent): void {
   if (!pullActive) return
+  // 横向已锁定（行内左滑占用）：本次手势立即取消下拉，不累计、不显示提示
+  if (isHorizontalLocked()) {
+    pullDistance.value = 0
+    return
+  }
+  const dx = e.touches[0].clientX - startX
   const dy = e.touches[0].clientY - startY
+  if (currentAxis() === null) {
+    const axis = resolveAxis(dx, dy)
+    // 斜向但未达任一主导：本次手势只滚动列表（既不下拉也不左滑）
+    if (axis === null) return
+    lockAxis(axis)
+    if (axis === 'h') {
+      pullDistance.value = 0
+      return
+    }
+  }
+  if (!isVerticalLocked()) return
   if (dy > 0) pullDistance.value = Math.min(72, dy * 0.5)
 }
 
 async function onTouchEnd(): Promise<void> {
-  if (!pullActive) return
+  // 仅纵向锁定且过阈才刷新；手势结束统一复位方向锁（行组件不单独复位）
+  const shouldRefresh = pullActive && isVerticalLocked() && pullDistance.value >= 36
   pullActive = false
-  const shouldRefresh = pullDistance.value >= 36
   pullDistance.value = 0
+  resetAxis()
   if (shouldRefresh) await refresh()
 }
 
 onMounted(async () => {
   taskSync.consumeDirty()
-  await loadAll()
+  // 列表与筛选器候选并发加载
+  await Promise.all([loadAll(), loadProjects()])
+  await validateProjectFilter()
   const h = route.query.highlight
   if (typeof h === 'string' && h) {
     highlightId.value = h
@@ -266,7 +289,13 @@ onMounted(async () => {
       </template>
     </AppNavBar>
 
+    <!-- 筛选区：左项目筛选器 + 右排序胶囊（两端布局） -->
     <div class="home__filter">
+      <ProjectFilter
+        :model-value="projectFilter"
+        :projects="projects"
+        @update:model-value="onProjectChange"
+      />
       <button class="home__sort-btn pressable" @click="sortSheetVisible = true">
         {{ sortLabel }}
         <AppIcon name="chevron-down" :size="14" color="#B5B9C4" />
@@ -292,9 +321,17 @@ onMounted(async () => {
       <StateError v-else-if="error" :text="error" @retry="loadAll" />
 
       <StateEmpty
+        v-else-if="!tasks.length && isProjectFiltered"
+        title="该项目下还没有任务"
+        text="点右上 ＋ 新建（预设所属项目为本项目）"
+        action-text="＋ 新建任务"
+        @action="goCreateForProject"
+      />
+
+      <StateEmpty
         v-else-if="!tasks.length && filtered"
         title="当前筛选下没有任务"
-        text="换个状态试试"
+        text="换个状态或项目试试"
       />
 
       <StateEmpty
@@ -306,7 +343,7 @@ onMounted(async () => {
       />
 
       <ul v-else class="home__list">
-        <!-- 只列普通任务：单任务行，点击唯一语义是进详情 -->
+        <!-- 全部任务（含项目下任务）：行内带项目标识，点击行进详情 -->
         <TaskListItem
           v-for="t in tasks"
           :key="String(t.id)"
@@ -333,27 +370,6 @@ onMounted(async () => {
       @select="confirmDelete"
       @cancel="deleteSheetVisible = false"
     />
-
-    <!-- 带成员的项目：删除前明示级联后果 -->
-    <AppModal
-      :visible="cascadeDeleteVisible"
-      title="删除项目？"
-      text="该项目下还有成员任务，将一并删除成员任务及其关联的日程安排，且不可恢复。"
-      confirm-text="删除"
-      danger
-      @confirm="confirmDelete"
-      @cancel="cascadeDeleteVisible = false"
-    />
-
-    <!-- 级联完成确认 -->
-    <AppModal
-      :visible="!!cascade"
-      :title="cascade ? `标记「${cascade.task.title}」完成？` : ''"
-      :text="cascade ? `还有 ${cascade.count} 个成员任务未完成，标记后将一并标记完成。` : ''"
-      confirm-text="全部完成"
-      @confirm="confirmCascade"
-      @cancel="cascade = null"
-    />
   </div>
 </template>
 
@@ -372,8 +388,8 @@ onMounted(async () => {
 .home__filter {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  padding: var(--sp-2) var(--sp-4);
+  justify-content: space-between;
+  padding: 0 var(--page-padding) var(--sp-2);
   background: var(--bg-card);
 }
 .home__sort-btn {

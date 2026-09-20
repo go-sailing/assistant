@@ -6,10 +6,10 @@ import type {
   ConfirmBlock,
   EventScope,
   Occurrence,
+  ProjectGroup,
   ProposalBlock,
   ScopeBlock as ScopeBlockType,
   SeriesDetail,
-  SubtaskGroup,
   Task,
 } from '@/types'
 import TaskCard from '../TaskCard.vue'
@@ -18,9 +18,9 @@ import ConfirmBar from './ConfirmBar.vue'
 import ConflictBlock from './ConflictBlock.vue'
 import EventCard from './EventCard.vue'
 import MarkdownText from './MarkdownText.vue'
+import ProjectGroupCard from './ProjectGroupCard.vue'
 import ProposalCard from './ProposalCard.vue'
 import ScopeBlock from './ScopeBlock.vue'
-import SubtaskGroupCard from './SubtaskGroupCard.vue'
 import { CARD_COLLAPSE_THRESHOLD } from '@/utils/constants'
 
 const props = defineProps<{ message: ChatMessage }>()
@@ -55,7 +55,7 @@ interface CardsLike {
   events?: CalendarEvent[]
   series?: SeriesDetail[]
   occurrences?: Occurrence[]
-  subtask_groups?: SubtaskGroup[]
+  project_groups?: ProjectGroup[]
 }
 
 function totalCards(block: CardsLike): number {
@@ -64,7 +64,7 @@ function totalCards(block: CardsLike): number {
     (block.events?.length ?? 0) +
     (block.series?.length ?? 0) +
     (block.occurrences?.length ?? 0) +
-    (block.subtask_groups?.length ?? 0)
+    (block.project_groups?.length ?? 0)
   )
 }
 
@@ -109,7 +109,7 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
         @adjust="emit('proposal-adjust', $event)"
       />
 
-      <!-- 任务卡片组 + 日程卡片组 + 循环系列/实例卡片 + 子任务组（可同时出现）
+      <!-- 任务卡片组 + 日程卡片组 + 循环系列/实例卡片 + 项目结果组（可同时出现）
            v0.5.0：>10 项时由 CardsCollapse 包裹并默认折叠，折叠态不挂载卡片节点 -->
       <component
         :is="cardsContainerIs(block as CardsLike)"
@@ -146,9 +146,9 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
           :occurrence="o"
           @occurrence-restore="emit('occurrence-restore', $event)"
         />
-        <SubtaskGroupCard
-          v-for="g in block.subtask_groups || []"
-          :key="`g-${g.root_task_id}`"
+        <ProjectGroupCard
+          v-for="g in block.project_groups || []"
+          :key="`g-${g.project_id}`"
           :group="g"
           @task="emit('detail', $event)"
         />

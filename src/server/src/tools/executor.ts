@@ -3,10 +3,13 @@ import { query } from '../db/pool';
 import { AppError } from '../common/errors';
 import { logger } from '../common/logger';
 import { taskService } from '../modules/task/task.service';
+import { projectService } from '../modules/project/project.service';
 import { agentService } from '../modules/agent/agent.service';
 import type { AgentDTO } from '../modules/agent/types';
 import { eventService } from '../modules/event/event.service';
-import type { SubtaskGroup, TaskDTO, TaskFilter } from '../modules/task/types';
+import type { TaskDTO, TaskFilter } from '../modules/task/types';
+import type { ProjectDTO } from '../modules/project/types';
+import type { ProjectGroup } from '../modules/chat/chat.types';
 import type { EventDTO, OccurrenceDTO, SeriesDTO } from '../modules/event/types';
 import type { ConflictDateGroup } from '../modules/event/recurrence/types';
 import {
@@ -24,16 +27,27 @@ const priorityEnum = z.enum(['none', 'low', 'medium', 'high']);
 const statusEnum = z.enum(['todo', 'completed']);
 /** 模型给出的时间可能是带时区的 ISO，也可能是空串（表示清除） */
 const dueAtField = z.union([z.string(), z.null()]).optional();
-/** 模型可能用 0 表示「移出为根任务」 */
-const parentIdField = z.union([z.number().int().min(0), z.null()]).optional();
+/** 模型可能用 0 表示「移出项目成为独立任务」 */
+const projectIdField = z.union([z.number().int().min(0), z.null()]).optional();
 
 const createTaskArgs = z.object({
-  task_type: z.enum(['normal', 'project']).nullish(),
   title: z.string().min(1),
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtField,
-  parent_id: z.number().int().positive().nullish(),
+  project_id: z.number().int().positive().nullish(),
+});
+
+const createProjectArgs = z.object({
+  name: z.string().min(1),
+  note: z.string().nullish(),
+});
+
+const listProjectsArgs = z.object({ keyword: z.string().nullish() });
+
+const deleteProjectArgs = z.object({
+  project_id: z.number().int().positive(),
+  reason: z.string().optional(),
 });
 
 const updateTaskArgs = z.object({
@@ -42,7 +56,7 @@ const updateTaskArgs = z.object({
   note: z.string().nullish(),
   priority: priorityEnum.optional(),
   due_at: dueAtField,
-  parent_id: parentIdField,
+  project_id: projectIdField,
 });
 
 const updateStatusArgs = z.object({
@@ -52,9 +66,8 @@ const updateStatusArgs = z.object({
 
 const getTaskArgs = z.object({ task_id: z.number().int().positive() });
 
-const getTaskSubtreeArgs = z.object({
-  task_id: z.number().int().positive(),
-  depth: z.number().int().positive().max(5).optional(),
+const getProjectMembersArgs = z.object({
+  project_id: z.number().int().positive(),
 });
 
 const listTasksArgs = z.object({
@@ -64,9 +77,7 @@ const listTasksArgs = z.object({
   due_to: z.string().nullish(),
   sort: z.string().optional(),
   limit: z.number().int().positive().max(200).optional(),
-  task_type: z.enum(['normal', 'project']).nullish(),
-  root_only: z.boolean().optional(),
-  parent_id: z.number().int().positive().nullish(),
+  project_id: z.union([z.number().int().positive(), z.literal('none')]).nullish(),
 });
 
 const searchTasksArgs = z.object({ keyword: z.string().min(1) });
@@ -150,10 +161,12 @@ export interface ToolResult {
   events?: EventDTO[];
   /** v0.2.0：循环系列卡片 */
   series?: SeriesDTO[];
-  /** v0.2.0：循环实例卡片 */
+  /** v0.2.0 循环实例卡片 */
   occurrences?: OccurrenceDTO[];
-  /** v0.2.0 子任务组卡片 */
-  subtask_groups?: SubtaskGroup[];
+  /** v0.8.0：项目结果组卡片（项目 + 一层成员任务） */
+  project_groups?: ProjectGroup[];
+  /** v0.8.0：项目实体（create_project / list_projects / get_project_members 等返回） */
+  projects?: ProjectDTO[];
   /** v0.7.0：智能体代理数据（列表/指派结果展示） */
   agents?: AgentDTO[];
   summary: string;
@@ -410,151 +423,157 @@ export const toolExecutor = {
         const task = await taskService.create(
           userId,
           {
-            task_type: parsed.task_type ?? undefined,
             title: parsed.title,
             note: parsed.note ?? null,
             priority: parsed.priority,
             due_at: parsed.due_at ?? null,
-            parent_id: parsed.parent_id ?? null,
+            project_id: parsed.project_id ?? null,
           },
           'chat'
         );
-        const parentHint =
-          task.parent_id !== null ? `，已作为项目成员加入项目 #${task.parent_id}` : '';
-        const projectHint = task.task_type === 'project' ? '（项目）' : '';
-        const reviveHint = task.revived_parent
-          ? `。项目「${task.revived_parent.title}」原为已完成，已自动恢复为未完成`
-          : '';
         return {
           ok: true,
           tool: toolName,
           tasks: [task],
-          summary: `已创建${projectHint}任务「${task.title}」${parentHint}${reviveHint}`,
-          data: task.revived_parent ? { revived_parent: task.revived_parent } : undefined,
+          summary: task.project
+            ? `已创建任务「${task.title}」，并已作为项目成员加入「${task.project.name}」`
+            : `已创建任务「${task.title}」`,
+        };
+      }
+
+      case 'create_project': {
+        const parsed = safeParseArgs(createProjectArgs, args, toolName);
+        const project = await projectService.create(
+          userId,
+          { name: parsed.name, note: parsed.note ?? null },
+          'chat'
+        );
+        return {
+          ok: true,
+          tool: toolName,
+          projects: [project],
+          summary: `已创建项目「${project.name}」，可以往里加任务`,
+        };
+      }
+
+      case 'list_projects': {
+        const parsed = safeParseArgs(listProjectsArgs, args, toolName);
+        const keyword = (parsed.keyword ?? '').trim();
+        const projects = keyword
+          ? (await projectService.list(userId, { keyword })).list
+          : await projectService.listAll(userId);
+        return {
+          ok: true,
+          tool: toolName,
+          projects,
+          summary: projects.length
+            ? `共 ${projects.length} 个项目：${projects
+                .map((p) => `${p.name}(ID ${p.id}，成员 ${p.member_completed}/${p.member_total})`)
+                .join('、')}`
+            : keyword
+              ? `没有找到名称包含「${keyword}」的项目`
+              : '还没有项目',
         };
       }
 
       case 'update_task': {
         const parsed = safeParseArgs(updateTaskArgs, args, toolName);
-        // 0 / null 都表示移到顶层成为根任务
-        const parentId =
-          parsed.parent_id === undefined
+        // 0 / null 都表示移出项目成为独立任务
+        const projectId =
+          parsed.project_id === undefined
             ? undefined
-            : parsed.parent_id === null || parsed.parent_id === 0
+            : parsed.project_id === null || parsed.project_id === 0
               ? null
-              : parsed.parent_id;
+              : parsed.project_id;
         const task = await taskService.update(userId, parsed.task_id, {
           title: parsed.title,
           note: parsed.note === undefined ? undefined : parsed.note ?? null,
           priority: parsed.priority,
           due_at: parsed.due_at === undefined ? undefined : parsed.due_at || null,
-          parent_id: parentId,
+          project_id: projectId,
         });
-        const reviveHint = task.revived_parent
-          ? `。项目「${task.revived_parent.title}」原为已完成，已自动恢复为未完成`
-          : '';
+        const projectHint =
+          projectId === undefined
+            ? ''
+            : projectId === null
+              ? '，已移出项目成为独立任务'
+              : `，已移入项目「${task.project?.name ?? `#${projectId}`}」`;
         return {
           ok: true,
           tool: toolName,
           tasks: [task],
-          summary: `已更新任务「${task.title}」${reviveHint}`,
-          data: task.revived_parent ? { revived_parent: task.revived_parent } : undefined,
+          summary: `已更新任务「${task.title}」${projectHint}`,
         };
       }
 
       case 'update_task_status': {
         const parsed = safeParseArgs(updateStatusArgs, args, toolName);
-        if (parsed.status === 'completed') {
-          const task = await taskService.get(userId, parsed.task_id);
-          if (task.status !== 'completed' && task.task_type === 'project') {
-            const incomplete = await taskService.countIncompleteMembers(userId, parsed.task_id);
-            if (incomplete > 0) {
-              // 不写库：交给编排层落 pending_actions 并出确认条（系统设计文档 6.3 / 8.4）
-              const nodes = await taskService.getSubtree(userId, parsed.task_id);
-              const pendingMembers = nodes.filter((n) => n.status === 'todo' && n.id !== task.id);
-              return {
-                ok: true,
-                tool: toolName,
-                tasks: [task],
-                summary:
-                  `项目「${task.title}」还有 ${incomplete} 个未完成的成员任务，需要用户确认后才能一起标记完成。` +
-                  '尚未写入任何数据，请先询问用户是否全部完成。',
-                data: {
-                  need_cascade_confirmation: true,
-                  incomplete_member_count: incomplete,
-                  incomplete_descendant_count: incomplete,
-                  task,
-                  incomplete_members: pendingMembers,
-                },
-              };
-            }
-          }
-        }
         const task = await taskService.setStatus(userId, parsed.task_id, parsed.status);
         const verb = parsed.status === 'completed' ? '已完成' : '已恢复为未完成';
-        const isProject = task.task_type === 'project';
+        // v0.8.0：项目不再是任务，完成成员任务只会触发项目状态自动派生
+        const projectHint = task.project ? '，所属项目状态已自动更新' : '';
         return {
           ok: true,
           tool: toolName,
           tasks: [task],
-          summary: `${isProject ? '项目' : '任务'}「${task.title}」${verb}`,
+          summary: `任务「${task.title}」${verb}${projectHint}`,
         };
       }
 
       case 'get_task': {
         const parsed = safeParseArgs(getTaskArgs, args, toolName);
         const task = await taskService.get(userId, parsed.task_id);
-        const kind = task.task_type === 'project' ? '项目' : '任务';
-        let ownerHint: string;
-        if (task.parent_id !== null) {
-          ownerHint =
-            `，属于项目 #${task.parent_id}` +
-            (await taskService
-              .get(userId, task.parent_id)
-              .then((p) => `「${p.title}」`)
-              .catch(() => ''));
-        } else {
-          ownerHint = task.task_type === 'project' ? '，是顶层项目' : '，是独立任务';
-        }
-        const progressHint =
-          task.member_total > 0
-            ? `，成员进度 ${task.member_completed}/${task.member_total}`
-            : '';
+        const ownerHint = task.project
+          ? `，属于项目「${task.project.name}」(ID ${task.project.id})`
+          : '，是未归属项目的独立任务';
         return {
           ok: true,
           tool: toolName,
           tasks: [task],
-          summary: `${kind}「${task.title}」详情已获取${ownerHint}${progressHint}`,
+          summary: `任务「${task.title}」详情已获取${ownerHint}`,
         };
       }
 
-      case 'get_task_subtree': {
-        const parsed = safeParseArgs(getTaskSubtreeArgs, args, toolName);
-        const nodes = await taskService.getSubtree(userId, parsed.task_id, parsed.depth);
-        const root = nodes.find((n) => n.id === parsed.task_id);
-        const isProject = root?.task_type === 'project';
+      case 'get_project_members': {
+        const parsed = safeParseArgs(getProjectMembersArgs, args, toolName);
+        const project = await projectService.get(userId, parsed.project_id);
+        const { list: members } = await projectService.listMembers(userId, project.id, {});
+        const group: ProjectGroup = {
+          project_id: project.id,
+          name: project.name,
+          member_total: project.member_total,
+          member_completed: project.member_completed,
+          nodes: members,
+        };
         return {
           ok: true,
           tool: toolName,
-          tasks: nodes,
-          subtask_groups: [<SubtaskGroup>{ root_task_id: parsed.task_id, nodes }],
-          summary: isProject
-            ? `项目「${root?.title ?? parsed.task_id}」共有 ${nodes.length - 1} 个成员任务`
-            : `「${root?.title ?? parsed.task_id}」是普通任务，没有成员任务`,
+          tasks: members,
+          projects: [project],
+          project_groups: [group],
+          summary: members.length
+            ? `项目「${project.name}」成员 ${project.member_total} 个（已完成 ${project.member_completed} 个）：${members
+                .map((m) => `${m.title}（${m.status === 'completed' ? '已完成' : '待办'}）`)
+                .join('、')}`
+            : `项目「${project.name}」还没有成员任务`,
         };
       }
 
       case 'list_tasks': {
         const parsed = safeParseArgs(listTasksArgs, args, toolName);
+        const projectFilter: number | 'none' | undefined =
+          parsed.project_id === 'none'
+            ? 'none'
+            : typeof parsed.project_id === 'number'
+              ? parsed.project_id
+              : undefined;
         const filter: TaskFilter = {
           status: parsed.status,
           priority: parsed.priority,
-          task_type: parsed.task_type ?? undefined,
           due_from: parsed.due_from || undefined,
           due_to: parsed.due_to || undefined,
           sort: parsed.sort,
-          root_only: parsed.root_only,
-          parent_id: parsed.parent_id ?? undefined,
+          project_id: projectFilter,
         };
         const tasks = await taskService.listAll(userId, filter, parsed.limit ?? 50);
         return {
@@ -1108,19 +1127,34 @@ export const toolExecutor = {
       case 'delete_task': {
         const parsed = safeParseArgs(deleteTaskArgs, args, toolName);
         const task = await taskService.get(userId, parsed.task_id);
-        // 删除项目会级联删除全部成员任务及其日程，确认文案必须明示计数
+        // 任务维度：仅自身与其任务日程（项目级联删除走 delete_project）
         const counts = await taskService.previewRemove(userId, task.id);
-        const memberCount = counts.deleted_task_count - 1;
-        const parts: string[] = [];
-        if (memberCount > 0) parts.push(`${memberCount} 个成员任务`);
-        if (counts.deleted_event_count > 0) parts.push(`${counts.deleted_event_count} 条日程安排`);
-        const cascadeHint = parts.length > 0 ? `，并同时删除${parts.join('及')}` : '';
-        const kind = task.task_type === 'project' ? '项目' : '任务';
+        const eventHint =
+          counts.deleted_event_count > 0
+            ? `，并同时删除 ${counts.deleted_event_count} 条日程安排`
+            : '';
         return {
           tool: toolName,
           resolvedParams: { task_id: task.id },
           affected: [task],
-          description: `删除${kind}「${task.title}」${cascadeHint}，删除后不可恢复`,
+          description: `删除任务「${task.title}」${eventHint}，删除后不可恢复`,
+        };
+      }
+
+      case 'delete_project': {
+        const parsed = safeParseArgs(deleteProjectArgs, args, toolName);
+        const project = await projectService.get(userId, parsed.project_id);
+        // 删除项目会级联删除全部成员任务及其日程，确认文案必须明示计数
+        const counts = await projectService.previewRemove(userId, project.id);
+        const parts: string[] = [];
+        if (counts.deleted_task_count > 0) parts.push(`${counts.deleted_task_count} 个成员任务`);
+        if (counts.deleted_event_count > 0) parts.push(`${counts.deleted_event_count} 条日程安排`);
+        const cascadeHint = parts.length > 0 ? `，并同时删除${parts.join('及')}` : '';
+        return {
+          tool: toolName,
+          resolvedParams: { project_id: project.id },
+          affected: [],
+          description: `删除项目「${project.name}」${cascadeHint}，删除后不可恢复`,
         };
       }
 
@@ -1273,13 +1307,28 @@ export const toolExecutor = {
             const task = await taskService.get(userId, taskId);
             const counts = await taskService.remove(userId, taskId);
             const extra: string[] = [];
-            if (counts.deleted_task_count > 1) extra.push(`${counts.deleted_task_count - 1} 个成员任务`);
             if (counts.deleted_event_count > 0) extra.push(`${counts.deleted_event_count} 条日程`);
             return {
               ok: true,
               tool: toolName,
               tasks: [task],
               summary: `已删除任务「${task.title}」${
+                extra.length ? `（同时删除${extra.join('与')}）` : ''
+              }`,
+            };
+          }
+
+          case 'delete_project': {
+            const projectId = Number(resolvedParams.project_id);
+            const project = await projectService.get(userId, projectId);
+            const counts = await projectService.remove(userId, projectId);
+            const extra: string[] = [];
+            if (counts.deleted_task_count > 0) extra.push(`${counts.deleted_task_count} 个成员任务`);
+            if (counts.deleted_event_count > 0) extra.push(`${counts.deleted_event_count} 条日程`);
+            return {
+              ok: true,
+              tool: toolName,
+              summary: `已删除项目「${project.name}」${
                 extra.length ? `（同时删除${extra.join('与')}）` : ''
               }`,
             };
@@ -1298,23 +1347,6 @@ export const toolExecutor = {
               tool: toolName,
               tasks,
               summary: `已更新 ${tasks.length} 个任务`,
-            };
-          }
-
-          case 'update_task_status': {
-            // 级联完成：确认后带 cascade 执行（系统设计文档 6.3）
-            const taskId = Number(resolvedParams.task_id);
-            const task = await taskService.setStatus(userId, taskId, 'completed', { cascade: true });
-            const nodes = await taskService.getSubtree(userId, taskId);
-            const isProject = task.task_type === 'project';
-            return {
-              ok: true,
-              tool: toolName,
-              tasks: [task],
-              subtask_groups: [<SubtaskGroup>{ root_task_id: taskId, nodes }],
-              summary: isProject
-                ? `已完成项目「${task.title}」及其全部成员任务`
-                : `已完成任务「${task.title}」`,
             };
           }
 

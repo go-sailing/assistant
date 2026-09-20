@@ -28,6 +28,7 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
     .trim();
 
   const referenced: TaskDTO[] = [];
+  const referencedProjects: Array<{ id: number; name: string }> = [];
   const referencedEvents: EventDTO[] = [];
   const referencedSeries: SeriesDTO[] = [];
   const referencedOccurrences: OccurrenceDTO[] = [];
@@ -39,7 +40,10 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
       referencedEvents.push(...(block.events ?? []));
       referencedSeries.push(...(block.series ?? []));
       referencedOccurrences.push(...(block.occurrences ?? []));
-      for (const group of block.subtask_groups ?? []) referenced.push(...group.nodes);
+      for (const group of block.project_groups ?? []) {
+        referenced.push(...group.nodes);
+        referencedProjects.push({ id: group.project_id, name: group.name });
+      }
     } else if (block.type === 'clarify') {
       referenced.push(...block.candidates);
       referencedEvents.push(...(block.events ?? []));
@@ -64,9 +68,15 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
         .map(
           (t) =>
             `#${t.id} ${t.title}（${t.status === 'completed' ? '已完成' : '待办'}${
-              t.parent_id ? `，父任务 #${t.parent_id}` : ''
+              t.project ? `，属于项目「${t.project.name}」#${t.project.id}` : ''
             }）`
         )
+        .join('；')}`
+    : '';
+  // v0.8.0：项目 id 锚点必须回灌，否则模型无法正确调 get_project_members / create_task(project_id)
+  const projectHint = referencedProjects.length
+    ? `\n[本轮涉及的项目] ${referencedProjects
+        .map((p) => `#${p.id} ${p.name}`)
         .join('；')}`
     : '';
   // 把日程 ID 一并喂给模型，使「把它改到下午4点」这类指代能在多轮中解析到真实 event_id
@@ -119,7 +129,7 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
         .join('；')}（用户确认后按这些参数执行）`
     : '';
 
-  return `${text}${taskHint}${eventHint}${seriesHint}${occurrenceHint}${scopeHint}${proposalHint}`.trim();
+  return `${text}${taskHint}${projectHint}${eventHint}${seriesHint}${occurrenceHint}${scopeHint}${proposalHint}`.trim();
 }
 
 /** 消息行 → 给 LLM 阅读的紧凑转录（保持传入顺序） */

@@ -52,8 +52,44 @@ export interface UserSettings {
 
 export type TaskStatus = 'todo' | 'completed'
 export type TaskPriority = 'none' | 'low' | 'medium' | 'high'
-/** v0.6.0：任务类型（普通任务 / 项目任务） */
-export type TaskType = 'normal' | 'project'
+
+/* ---------------- v0.8.0 项目（独立实体，无优先级 / 无截止时间） ---------------- */
+
+/** 项目状态：派生只读（成员任务全部完成 → completed；空项目恒 todo） */
+export type ProjectStatus = 'todo' | 'completed'
+
+export interface Project {
+  id: number
+  name: string
+  note: string | null
+  status: ProjectStatus
+  completed_at: string | null
+  source: 'manual' | 'chat'
+  created_at: string
+  updated_at: string
+  /** 成员任务总数 */
+  member_total: number
+  /** 成员任务已完成数 */
+  member_completed: number
+}
+
+export interface ProjectPayload {
+  name: string
+  note?: string | null
+}
+
+export interface ProjectQuery {
+  keyword?: string
+  status?: ProjectStatus
+  page?: number
+  page_size?: number
+}
+
+/** 任务上内嵌的项目摘要 */
+export interface TaskProjectBrief {
+  id: number
+  name: string
+}
 
 /* ---------------- v0.7.0 智能体代理 ---------------- */
 
@@ -122,23 +158,9 @@ export interface Task {
   source?: 'manual' | 'chat'
   /** 该任务关联的任务日程数量（详情接口返回，v0.1.0） */
   event_count?: number
-  /* ----- v0.6.0 任务类型与项目 ----- */
-  /** 任务类型：normal 普通任务 / project 项目任务 */
-  task_type: TaskType
-  /** 所属项目 ID（null = 独立任务 / 项目本身） */
-  parent_id: number | null
-  /** 相对本次查询根的深度（项目 = 1，成员 = 2） */
-  depth: number
-  /** 项目直接成员总数（普通任务恒为 0） */
-  member_total: number
-  /** 项目直接成员已完成数（普通任务恒为 0） */
-  member_completed: number
-  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
-  subtask_total: number
-  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
-  subtask_completed: number
-  /** 写操作响应：被自动恢复为未完成的项目 */
-  revived_parent?: { id: number; title: string } | null
+  /* ----- v0.8.0 所属项目（模型上不再有任务类型维度） ----- */
+  /** 所属项目摘要（null = 独立任务） */
+  project: TaskProjectBrief | null
   /* ----- v0.7.0 代理执行维度（与任务完成状态正交） ----- */
   agent_id: number | null
   agent_name: string | null
@@ -157,11 +179,14 @@ export interface RemovePreview {
   deleted_event_count: number
 }
 
-/** 对话卡片中的项目结果组（项目 + 直接成员，扁平节点） */
-export interface SubtaskGroup {
-  root_task_id: number
+/** 对话卡片中的项目结果组（项目 + 成员任务，扁平节点，v0.8.0 取代 subtask_groups） */
+export interface ProjectGroup {
+  project_id: number
+  name: string
+  member_total: number
+  member_completed: number
   nodes: Task[]
-  /** 历史卡片刷新时置位：根任务已删除，整组渲染「该任务已删除」占位 */
+  /** 历史卡片刷新时置位：项目已删除，整组渲染「该项目已删除」占位 */
   missing?: boolean
   missing_reason?: 'deleted'
 }
@@ -414,8 +439,8 @@ export interface ConflictDetail {
 export interface TaskQuery {
   status?: TaskStatus
   priority?: TaskPriority
-  /** v0.6.0：按任务类型筛选 */
-  task_type?: TaskType
+  /** v0.8.0：按项目筛选（项目 ID；'none' = 未归属项目；不传 = 全部任务） */
+  project_id?: number | 'none'
   due_from?: string
   due_to?: string
   sort?: TaskSort
@@ -432,10 +457,8 @@ export interface TaskPayload {
   priority?: TaskPriority
   due_at?: string | null
   status?: TaskStatus
-  /** v0.6.0：仅创建时有效；编辑携带会被服务端拒绝 */
-  task_type?: TaskType
-  /** v0.6.0：所属项目（移入传项目 ID，移出传 null） */
-  parent_id?: string | number | null
+  /** v0.8.0：所属项目（移入传项目 ID；移出传 null 或 0） */
+  project_id?: string | number | null
 }
 
 export interface Conversation {
@@ -494,8 +517,8 @@ export interface CardsBlock {
   series?: SeriesDetail[]
   /** v0.2.0：循环实例卡片 */
   occurrences?: Occurrence[]
-  /** v0.6.0：项目结果组卡片 */
-  subtask_groups?: SubtaskGroup[]
+  /** v0.8.0：项目结果组卡片 */
+  project_groups?: ProjectGroup[]
 }
 
 export interface ClarifyBlock {

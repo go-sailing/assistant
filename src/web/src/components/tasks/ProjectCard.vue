@@ -1,20 +1,19 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { Task } from '@/types'
-import { dueTone, formatDue } from '@/utils/time'
-import AppCheckbox from '../AppCheckbox.vue'
+import type { Project } from '@/types'
+import { lockAxis, resolveAxis } from '@/utils/gesture'
 import AppIcon from '../AppIcon.vue'
-import PriorityFlag from '../PriorityFlag.vue'
 import ProgressBar from './ProgressBar.vue'
 
 /**
- * 项目卡片行（v0.6.0，UXUI 5.1）：
- * 完成勾选（走 4010 级联确认）/ 项目图标 / 名称 / 成员进度条 + 计数；
- * 左滑露出「完成 / 删除」，与普通任务行同一交互结构。
+ * 项目卡片行（v0.8.0，UXUI 5.5）：
+ * 项目图标 / 名称 / 状态徽标（派生只读）/ 成员进度条 + 计数；
+ * 左滑操作区只剩「删除」（ACTION_WIDTH 收为 74）；无勾选框、无副行
+ * （项目模型已无优先级与截止时间）。
  */
 const props = withDefaults(
   defineProps<{
-    project: Task
+    project: Project
     /** 新建后高亮 2s */
     highlight?: boolean
   }>(),
@@ -22,22 +21,21 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  (e: 'toggle', task: Task): void
-  (e: 'detail', task: Task): void
-  (e: 'remove', task: Task): void
+  (e: 'detail', project: Project): void
+  (e: 'remove', project: Project): void
 }>()
 
-const ACTION_WIDTH = 148
+/** v0.8.0：仅「删除」一个按钮，宽度 74pt（UXUI 6.2） */
+const ACTION_WIDTH = 74
 const offset = ref(0)
 let startX = 0
 let startY = 0
 let startOffset = 0
 let dragging = false
+/** 起手不在右半区：本行不参与左滑（左边缘让给浏览器返回手势） */
 let locked = false
 
 const completed = computed(() => props.project.status === 'completed')
-const tone = computed(() => dueTone(props.project))
-const timeText = computed(() => formatDue(props.project.due_at))
 const hasMembers = computed(() => props.project.member_total > 0)
 const allDone = computed(
   () => hasMembers.value && props.project.member_completed >= props.project.member_total
@@ -69,8 +67,14 @@ function onTouchMove(e: TouchEvent): void {
   const dx = t.clientX - startX
   const dy = t.clientY - startY
   if (!dragging) {
-    if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) return
-    dragging = true
+    // 8px 观察期后与滚动容器共用方向锁：纵向已锁定（下拉刷新）时本行不进入拖动
+    const axis = resolveAxis(dx, dy)
+    if (axis === 'h' && lockAxis('h')) {
+      dragging = true
+    } else {
+      if (axis) lockAxis(axis)
+      return
+    }
   }
   offset.value = Math.min(0, Math.max(-ACTION_WIDTH, startOffset + dx))
 }
@@ -88,11 +92,6 @@ function close(): void {
   offset.value = 0
 }
 
-function onToggle(): void {
-  close()
-  emit('toggle', props.project)
-}
-
 function onRemove(): void {
   close()
   emit('remove', props.project)
@@ -104,9 +103,6 @@ defineExpose({ close })
 <template>
   <li class="project-item" :class="{ 'project-item--highlight': highlight }">
     <div class="project-item__actions">
-      <button class="project-item__action" @click="onToggle">
-        {{ completed ? '恢复' : '完成' }}
-      </button>
       <button class="project-item__action project-item__action--danger" @click="onRemove">删除</button>
     </div>
     <div
@@ -114,7 +110,7 @@ defineExpose({ close })
       :style="style"
       role="button"
       tabindex="0"
-      :aria-label="`项目 ${project.title}，成员 ${project.member_completed}/${project.member_total}`"
+      :aria-label="`项目 ${project.name}，成员 ${project.member_completed}/${project.member_total}`"
       @click="emit('detail', project)"
       @keydown.enter="emit('detail', project)"
       @touchstart.passive="onTouchStart"
@@ -122,27 +118,16 @@ defineExpose({ close })
       @touchend="onTouchEnd"
       @touchcancel="onTouchEnd"
     >
-      <AppCheckbox
-        :checked="completed"
-        :label="`标记项目「${project.title}」完成`"
-        @toggle="onToggle"
-      />
       <div class="project-item__main">
-        <p class="project-item__title" :class="{ 'project-item__title--done': completed }">
+        <p class="project-item__title">
           <AppIcon name="folder" :size="16" color="var(--color-primary)" class="project-item__icon" />
-          <span class="ellipsis">{{ project.title }}</span>
-        </p>
-        <p class="project-item__sub">
+          <span class="ellipsis">{{ project.name }}</span>
           <span
-            v-if="project.due_at"
-            class="project-item__time"
-            :class="{
-              'project-item__time--danger': tone === 'danger',
-              'project-item__time--warning': tone === 'warning',
-            }"
-            >{{ timeText }}</span
+            class="project-item__badge"
+            :class="completed ? 'project-item__badge--done' : 'project-item__badge--doing'"
           >
-          <PriorityFlag :priority="project.priority" />
+            {{ completed ? '已完成' : '进行中' }}
+          </span>
         </p>
         <span v-if="hasMembers" class="project-item__progress">
           <ProgressBar
@@ -232,23 +217,23 @@ defineExpose({ close })
   flex-shrink: 0;
   margin-right: 4px;
 }
-.project-item__title--done {
-  color: var(--text-disabled);
-  text-decoration: line-through;
-}
-.project-item__sub {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+/* 状态徽标：派生只读（进行中 primary-light / 已完成 bg-page + 次级色） */
+.project-item__badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 var(--sp-2);
+  border-radius: 6px;
   font-size: var(--font-caption);
   line-height: var(--font-caption-lh);
+  font-weight: 400;
+}
+.project-item__badge--doing {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+.project-item__badge--done {
+  background: var(--bg-page);
   color: var(--text-secondary);
-}
-.project-item__time--danger {
-  color: var(--color-danger);
-}
-.project-item__time--warning {
-  color: var(--color-warning);
 }
 .project-item__progress {
   display: block;

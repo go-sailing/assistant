@@ -13,13 +13,13 @@ import {
   type AgentTaskBriefRow,
 } from './types';
 
-/** 代理可见任务字段（最小化；项目名由父任务带出，避免代理侧二次查询） */
+/** 代理可见任务字段（最小化；项目名由所属项目带出，避免代理侧二次查询） */
 const BRIEF_SELECT = `
   SELECT t.id, t.title, t.note, t.priority, t.due_at,
          t.agent_state, t.agent_queued_at, t.agent_claimed_at,
-         p.title AS project_title
+         p.name AS project_title
   FROM tasks t
-  LEFT JOIN tasks p ON p.id = t.parent_id
+  LEFT JOIN projects p ON p.id = t.project_id
 `;
 
 const NOT_ASSIGNED = '任务不存在或未指派给你';

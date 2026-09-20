@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import * as eventApi from '@/api/events'
 import { errorText } from '@/api/client'
 import type { CalendarEvent, MonthDayCount, Occurrence } from '@/types'
+import { resetAxis } from '@/utils/gesture'
 import {
   buildMonthGrid,
   diffDays,
@@ -54,10 +55,22 @@ const dayEvents = ref<CalendarEvent[]>([])
 const loadedDayKey = ref('')
 const loading = ref(true)
 const dayLoading = ref(false)
+/**
+ * v0.8.0（CAL-04 / SDD 13.2 的 collapsedLoading，折叠与展开共用）：
+ * 形态切换（折叠/展开）后的数据加载期。形态切换不改变选中日，列表内容与形态无关，
+ * 故此期间列表区沿用已渲染内容（不留白），超 300ms 未返回再由骨架接管；
+ * 翻月/翻周/点格等会换数据的路径不走本标记（仍由 loading 置空，避免旧数据错位）。
+ */
+const collapsedLoading = ref(false)
 const error = ref('')
 /** 骨架 >300ms 才出现（避免快请求下的闪烁） */
 const showSkeleton = ref(false)
 let skeletonTimer = 0
+
+/** 列表区「无内容可渲染」的加载窗口（形态切换期间有内容可沿用时不算空白） */
+const listPending = computed(
+  () => (loading.value || dayLoading.value) && !(collapsedLoading.value && dayEvents.value.length)
+)
 
 /* ---------------- 折叠动画与竖向空间度量 ---------------- */
 
@@ -272,6 +285,7 @@ async function loadExpanded(): Promise<void> {
     error.value = errorText(e)
   } finally {
     loading.value = false
+    collapsedLoading.value = false
     endSkeleton()
     void nextTick(measureLayout)
   }
@@ -302,29 +316,34 @@ async function loadDayOnly(): Promise<void> {
 async function loadCollapsed(): Promise<void> {
   loading.value = true
   beginSkeleton()
-  const primaryKey = cacheKey(year.value, month.value)
-  const [dayRes, primaryRes] = await Promise.allSettled([
-    fetchDay(),
-    ensureCounts(year.value, month.value),
-  ])
-  await ensureNeighborCounts()
+  try {
+    const primaryKey = cacheKey(year.value, month.value)
+    const [dayRes, primaryRes] = await Promise.allSettled([
+      fetchDay(),
+      ensureCounts(year.value, month.value),
+    ])
+    await ensureNeighborCounts()
 
-  if (primaryRes.status === 'rejected') {
-    delete countsCache[primaryKey]
-    dayEvents.value = []
-    loadedDayKey.value = ''
-    error.value = errorText(primaryRes.reason)
-  } else if (dayRes.status === 'rejected') {
-    dayEvents.value = []
-    loadedDayKey.value = ''
-    error.value = errorText(dayRes.reason)
-  } else {
-    dayEvents.value = dayRes.value
-    error.value = ''
+    if (primaryRes.status === 'rejected') {
+      delete countsCache[primaryKey]
+      dayEvents.value = []
+      loadedDayKey.value = ''
+      error.value = errorText(primaryRes.reason)
+    } else if (dayRes.status === 'rejected') {
+      dayEvents.value = []
+      loadedDayKey.value = ''
+      error.value = errorText(dayRes.reason)
+    } else {
+      dayEvents.value = dayRes.value
+      error.value = ''
+    }
+  } finally {
+    // 数据已落地（或已进入错误态）：形态加载期结束，列表区不再需要沿用旧内容
+    loading.value = false
+    collapsedLoading.value = false
+    endSkeleton()
+    void nextTick(measureLayout)
   }
-  loading.value = false
-  endSkeleton()
-  void nextTick(measureLayout)
 }
 
 /** 形态已定型后的加载分发（重试 / 翻周 / 翻月 / 点格） */
@@ -390,10 +409,19 @@ function onSelect(date: string): void {
 
 /* ---- v0.6.0 折叠/展开手势化：删除开关行，改为列表顶部上滑折叠、下拉展开 ---- */
 
-/** 折叠：先按整月内容播放高度/位移过渡，动画结束后只渲染选中周 */
-async function collapseCalendar(): Promise<void> {
-  animating.value = true
+/**
+ * 折叠（v0.8.0 CAL-04 即时化）：
+ * 形态切换必须与动画启动在同一帧完成——同步置 collapsed / animating 并在本帧
+ * measureLayout()（位移与格高换算依赖最新度量），随后立即开始 250ms 高度过渡；
+ * 数据加载并行发起（不 await，不得出现在动画启动之前）；renderWeek 仍在动画
+ * 结束后置位（避免一周行回弹），与数据加载互不阻塞。
+ */
+function collapseCalendar(): void {
   collapsed.value = true
+  animating.value = true
+  measureLayout()
+  // 形态已切换但内容未到：列表区沿用既有内容并由骨架兜底，不出现空白停顿
+  collapsedLoading.value = true
   void loadCollapsed()
   window.setTimeout(() => {
     renderWeek.value = true
@@ -401,16 +429,17 @@ async function collapseCalendar(): Promise<void> {
   }, SHAPE_ANIMATION_MS)
 }
 
-/** 展开：恢复整月渲染并定位到选中日所在月份 */
-async function expandCalendar(): Promise<void> {
-  animating.value = true
-  collapsed.value = false
-  renderWeek.value = false
+/** 展开：同样同步切形态并测量、数据并行加载（展开态先渲染既有/骨架，再以整月数据替换） */
+function expandCalendar(): void {
+  // 展开到选中日所在月份（补位日可能已跨月）
   const d = fromDateKey(selectedDate.value)
   year.value = d.getFullYear()
   month.value = d.getMonth() + 1
-  await nextTick()
+  collapsed.value = false
+  renderWeek.value = false
+  animating.value = true
   measureLayout()
+  collapsedLoading.value = true
   void loadExpanded()
   window.setTimeout(() => {
     animating.value = false
@@ -428,6 +457,15 @@ interface ShapeGesture {
    * 折叠分支将永不可达（v0.6.0 缺陷）；改为以起手时刻为准。
    */
   startAtTop: boolean
+  /**
+   * v0.8.0（CAL-04）：折叠态展开判定的锚点。
+   * - null = 列表尚未回到顶部，本帧不参与展开判定（展开位移还不可信）；
+   * - number = 列表回到顶部那一帧的 clientY（**冻结**一次，手势内不再变），
+   *   此后下划位移从该点起算，使"先回顶、再继续下划"能在同一次手势内展开。
+   * 之所以必须冻结（而不是持续跟随当帧 clientY）：跟随会让每帧 dy 归零，
+   * 32px 阈值永不可达；冻结后累计位移才单调增长。
+   */
+  expandAnchorY: number | null
 }
 let shapeGesture: ShapeGesture | null = null
 
@@ -437,20 +475,25 @@ function onShapeTouchStart(e: TouchEvent): void {
     return
   }
   const list = listEl.value
-  // 非列表顶部不接管：手势只用于滚动
-  if (!list || list.scrollTop > LIST_TOP_TOLERANCE) {
+  const t = e.touches[0]
+  if (!list || !t) {
     shapeGesture = null
     return
   }
-  const t = e.touches[0]
-  if (!t) return
+  const atTop = list.scrollTop <= LIST_TOP_TOLERANCE
+  // 展开态沿用 v0.7.0（CAL-03）：折叠必须起手于列表顶部，非顶部起手只交给原生滚动
+  if (!collapsed.value && !atTop) {
+    shapeGesture = null
+    return
+  }
   shapeGesture = {
     startX: t.clientX,
     startY: t.clientY,
     lock: 'none',
     fired: false,
-    // 能进入本分支即代表起手时列表在顶部
-    startAtTop: true,
+    startAtTop: atTop,
+    // 折叠态起手已在顶部：锚点即起手 Y；否则等列表回顶那一帧再冻结（见 onShapeTouchMove）
+    expandAnchorY: collapsed.value && atTop ? t.clientY : null,
   }
 }
 
@@ -467,20 +510,38 @@ function onShapeTouchMove(e: TouchEvent): void {
     g.lock = Math.abs(dy) > DIRECTION_RATIO * Math.abs(dx) ? 'vertical' : 'horizontal'
   }
   if (g.lock !== 'vertical') return
-  // v0.7.0：以起手快照判定，不再读取实时 scrollTop（避免被原生滚动取消判定）
-  if (!g.startAtTop) return
 
-  if (!collapsed.value && dy <= -SHAPE_THRESHOLD_PX) {
+  if (!collapsed.value) {
+    // 展开态（v0.7.0 CAL-03）：以起手快照判定，不再读取实时 scrollTop
+    // （上滑时原生滚动会先把 scrollTop 推离顶部，实时判定会让折叠分支永不可达）
+    if (!g.startAtTop) return
+    if (dy <= -SHAPE_THRESHOLD_PX) {
+      g.fired = true
+      collapseCalendar()
+    }
+    return
+  }
+
+  // 折叠态：展开**不要求**起手在列表顶部——用户已把列表滚到中部时，
+  // 若在此直接放弃本次手势，就只能靠第二次下划展开（"需要下滑两次"根因）。
+  // 因此先让列表按原生滚动回顶，把锚点冻结在"回到顶部的那一帧"，
+  // 同一次手势内继续累计的下划位移达阈值即展开。
+  if (g.expandAnchorY === null) {
+    const list = listEl.value
+    // 尚未回顶（或容器已卸载）：本帧只滚动列表，不参与展开判定
+    if (!list || list.scrollTop > LIST_TOP_TOLERANCE) return
+    g.expandAnchorY = t.clientY
+  }
+  if (t.clientY - g.expandAnchorY >= SHAPE_THRESHOLD_PX) {
     g.fired = true
-    void collapseCalendar()
-  } else if (collapsed.value && dy >= SHAPE_THRESHOLD_PX) {
-    g.fired = true
-    void expandCalendar()
+    expandCalendar()
   }
 }
 
 function onShapeTouchEnd(): void {
+  // 结束/取消：清理判定期状态（含锚点），并复位与列表手势（GES-01）共用的方向锁
   shapeGesture = null
+  resetAxis()
 }
 
 function goNew(): void {
@@ -658,8 +719,11 @@ onBeforeUnmount(() => {
 
       <StateError v-else-if="error" :text="error" @retry="load" />
 
-      <!-- 数据到达前（<300ms 的骨架延迟窗口）既不出骨架也不出空态，避免空态闪烁 -->
-      <template v-else-if="loading || dayLoading" />
+      <!--
+        数据到达前（<300ms 的骨架延迟窗口）既不出骨架也不出空态，避免空态闪烁；
+        但折叠/展开的数据加载期（collapsedLoading）沿用既有列表内容，不留白（CAL-04）。
+      -->
+      <template v-else-if="listPending" />
 
       <p v-else-if="!dayEvents.length" class="month__empty">这天还没有安排</p>
 

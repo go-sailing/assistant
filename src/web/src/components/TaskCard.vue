@@ -6,7 +6,6 @@ import AppCheckbox from './AppCheckbox.vue'
 import AppIcon from './AppIcon.vue'
 import PriorityFlag from './PriorityFlag.vue'
 import AgentStatusTag from './agents/AgentStatusTag.vue'
-import ProgressBar from './tasks/ProgressBar.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -15,10 +14,8 @@ const props = withDefaults(
     clickable?: boolean
     /** 候选卡片等场景隐藏右侧箭头 */
     showArrow?: boolean
-    /** v0.6.0 项目进度展示：bar 含进度条 / count 仅计数 */
-    subtaskDisplay?: 'bar' | 'count'
   }>(),
-  { clickable: true, showArrow: true, subtaskDisplay: 'bar' }
+  { clickable: true, showArrow: true }
 )
 
 const emit = defineEmits<{
@@ -29,12 +26,8 @@ const emit = defineEmits<{
 const completed = computed(() => props.task.status === 'completed')
 const tone = computed(() => dueTone(props.task))
 const timeText = computed(() => formatDue(props.task.due_at))
-/** 仅项目任务有成员进度；普通任务恒为 0 */
-const isProject = computed(() => props.task.task_type === 'project')
-const total = computed(() => props.task.member_total)
-const doneCount = computed(() => props.task.member_completed)
-const hasMembers = computed(() => isProject.value && total.value > 0)
-const allMembersDone = computed(() => hasMembers.value && doneCount.value >= total.value)
+/** v0.8.0：所属项目（null = 独立任务，不显示项目标识与名称） */
+const project = computed(() => props.task.project)
 /** v0.7.0：已指派代理时展示代理形态（代理名 + 执行状态胶囊） */
 const hasAgent = computed(() => props.task.agent_id !== null && props.task.agent_id !== undefined)
 const agentNameText = computed(() => props.task.agent_name || '代理已删除')
@@ -59,10 +52,12 @@ const agentNameText = computed(() => props.task.agent_name || '代理已删除')
       />
       <div class="card__main">
         <p class="card__title" :class="{ 'card__title--done': completed }">
-          <AppIcon v-if="isProject" name="folder" :size="14" color="var(--color-primary)" />
+          <AppIcon v-if="project" name="folder" :size="14" color="var(--color-primary)" />
           {{ task.title }}
         </p>
         <p class="card__sub">
+          <!-- v0.8.0 所属项目弱化副信息：独立任务不渲染 -->
+          <span v-if="project" class="card__project ellipsis">{{ project.name }}</span>
           <span
             v-if="task.due_at"
             :class="{
@@ -78,15 +73,6 @@ const agentNameText = computed(() => props.task.agent_name || '代理已删除')
         <p v-if="hasAgent" class="card__sub card__agent">
           <span class="card__agent-name ellipsis">{{ agentNameText }}</span>
           <AgentStatusTag kind="exec" :state="task.agent_state" />
-        </p>
-
-        <!-- 项目成员进度：全部完成时进度条转 success 色 -->
-        <p v-if="hasMembers" class="card__progress">
-          <span class="card__progress-text">
-            <template v-if="allMembersDone">成员已全部完成</template>
-            <template v-else>成员 {{ doneCount }}/{{ total }}</template>
-          </span>
-          <ProgressBar v-if="subtaskDisplay === 'bar'" :total="total" :completed="doneCount" />
         </p>
       </div>
       <AppIcon v-if="showArrow && clickable" name="chevron-right" :size="18" color="#B5B9C4" />
@@ -151,22 +137,12 @@ const agentNameText = computed(() => props.task.agent_name || '代理已删除')
 .card__agent-name {
   min-width: 0;
 }
-.card__progress {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-top: 2px;
-}
-.card__progress-text {
+.card__project {
+  flex-shrink: 0;
+  max-width: 45%;
   font-size: var(--font-caption);
   line-height: var(--font-caption-lh);
   color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.card__progress :deep(.progress) {
-  flex: 1;
-  min-width: 40px;
 }
 .card__footer {
   display: flex;

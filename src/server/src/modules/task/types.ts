@@ -2,9 +2,13 @@ import { deriveConnection, type AgentConnection, type AgentState } from '../agen
 
 export type Priority = 'none' | 'low' | 'medium' | 'high';
 export type TaskStatus = 'todo' | 'completed';
-/** v0.6.0：普通任务（独立单任务）/ 项目任务（可拥有一层成员任务的容器） */
-export type TaskType = 'normal' | 'project';
 export type SortKey = 'due_at_asc' | 'due_at_desc' | 'created_at_asc' | 'created_at_desc';
+
+/** v0.8.0：任务随列表带出的所属项目摘要（无项目时为 null） */
+export interface TaskProjectBrief {
+  id: number;
+  name: string;
+}
 
 export interface TaskRow {
   id: number;
@@ -19,20 +23,8 @@ export interface TaskRow {
   source: string;
   created_at: Date;
   updated_at: Date;
-  /** v0.2.0：父任务 id（NULL = 根任务）；v0.6.0 起父任务只可能是项目 */
-  parent_id: number | null;
-  /** v0.6.0：任务类型 */
-  task_type: string;
-  /** v0.2.0：子树查询时的相对深度（根=1），普通查询缺省 1 */
-  depth?: number;
-  /** v0.6.0：项目直接成员数（聚合字段） */
-  member_total?: number;
-  /** v0.6.0：项目直接成员已完成数（聚合字段） */
-  member_completed?: number;
-  /** @deprecated v0.6.0：兼容别名，与 member_* 同值 */
-  subtask_total?: number;
-  /** @deprecated v0.6.0：兼容别名，与 member_* 同值 */
-  subtask_completed?: number;
+  /** v0.8.0：所属项目 id（NULL = 未归属项目）；项目不可再作为任务容器，无层级概念 */
+  project_id: number | null;
   /* ----- v0.7.0：代理执行维度（LEFT JOIN agents 带出代理名与最近活跃） ----- */
   agent_id: number | null;
   agent_state: string;
@@ -44,6 +36,8 @@ export interface TaskRow {
   agent_name?: string | null;
   /** 聚合字段：代理最近活跃时间（用于派生连接状态） */
   agent_last_seen_at?: Date | null;
+  /** 聚合字段：所属项目名（LEFT JOIN projects，未归属时为 NULL） */
+  project_name?: string | null;
 }
 
 export interface TaskDTO {
@@ -58,19 +52,8 @@ export interface TaskDTO {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
-  /** v0.2.0：父任务 id（null = 根任务）；v0.6.0 起父任务只可能是项目 */
-  parent_id: number | null;
-  /** v0.6.0：任务类型 */
-  task_type: TaskType;
-  /** v0.2.0：相对本次子树查询根的深度（根=1） */
-  depth: number;
-  /** v0.6.0：项目直接成员总数 / 已完成数（普通任务恒为 0） */
-  member_total: number;
-  member_completed: number;
-  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
-  subtask_total: number;
-  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
-  subtask_completed: number;
+  /** v0.8.0：所属项目摘要（进度与状态归项目 DTO） */
+  project: TaskProjectBrief | null;
   /* ----- v0.7.0：代理执行维度（与任务完成状态正交） ----- */
   agent_id: number | null;
   agent_name: string | null;
@@ -83,11 +66,6 @@ export interface TaskDTO {
   agent_connection: AgentConnection | null;
 }
 
-/** 写操作结果：可能顺带恢复了被自动唤醒的父任务（项目） */
-export interface TaskWriteResult extends TaskDTO {
-  revived_parent?: { id: number; title: string } | null;
-}
-
 export interface TaskFilter {
   status?: TaskStatus;
   priority?: Priority;
@@ -97,12 +75,11 @@ export interface TaskFilter {
   sort?: string;
   page?: number;
   page_size?: number;
-  /** v0.2.0：只看根任务（任务首页默认） */
-  root_only?: boolean;
-  /** v0.2.0：只看某个任务的直接子任务（v0.6.0 起即项目成员） */
-  parent_id?: number;
-  /** v0.6.0：按任务类型筛选（normal / project） */
-  task_type?: TaskType;
+  /**
+   * v0.8.0：按所属项目筛选。
+   * 数字 = 该项目成员；字符串 'none' = 未归属项目的任务（决策 T4 的哨兵值）。
+   */
+  project_id?: number | 'none';
   /** v0.7.0：按指派代理筛选（代理详情「绑定任务」） */
   agent_id?: number;
   /** v0.7.0：按代理执行状态筛选 */
@@ -114,10 +91,8 @@ export interface CreateTaskInput {
   note?: string | null;
   priority?: Priority;
   due_at?: string | null;
-  /** v0.6.0：挂到项目任务下成为成员（父任务必须是 project） */
-  parent_id?: number | null;
-  /** v0.6.0：任务类型，缺省 normal */
-  task_type?: TaskType;
+  /** v0.8.0：加入某个项目成为成员；缺省/null 为未归属项目 */
+  project_id?: number | null;
 }
 
 export interface UpdateTaskInput {
@@ -125,18 +100,15 @@ export interface UpdateTaskInput {
   note?: string | null;
   priority?: Priority;
   due_at?: string | null;
-  /** v0.6.0：移入项目传项目 ID；显式 null = 移出成为独立任务 */
-  parent_id?: number | null;
-  /** v0.6.0：仅用于「携带即报错」判定，非合法更新字段 */
-  task_type?: TaskType;
+  /** v0.8.0：移入项目传项目 ID；显式 null/0 = 移出成为未归属项目的任务 */
+  project_id?: number | null;
 }
 
-/** v0.2.0：子树查询节点（扁平数组，前端据此还原）；v0.6.0 起仅项目返回成员 */
-export interface TaskSubtreeNode extends TaskDTO {
-  depth: number;
-}
-
-/** 对话卡片中的项目/任务组（根任务 + 扁平节点；v0.6.0 起 root 为项目，nodes 为项目 + 成员） */
+/**
+ * 对话卡片中的项目/任务组（根 id + 扁平节点）。
+ * v0.8.0 由编排层改为「项目 id 集合」组装，本类型仅保留结构供卡片渲染；
+ * 具体字段名（project_groups）的切换由对话编排改造承担。
+ */
 export interface SubtaskGroup {
   root_task_id: number;
   nodes: TaskDTO[];
@@ -147,6 +119,7 @@ export interface SubtaskGroup {
 
 export function toTaskDTO(row: TaskRow): TaskDTO {
   const agentId = row.agent_id ?? null;
+  const projectId = row.project_id ?? null;
   return {
     id: row.id,
     title: row.title,
@@ -158,13 +131,11 @@ export function toTaskDTO(row: TaskRow): TaskDTO {
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
     completed_at: row.completed_at ? row.completed_at.toISOString() : null,
-    parent_id: row.parent_id ?? null,
-    task_type: row.task_type === 'project' ? 'project' : 'normal',
-    depth: row.depth ?? 1,
-    member_total: Number(row.member_total ?? row.subtask_total ?? 0),
-    member_completed: Number(row.member_completed ?? row.subtask_completed ?? 0),
-    subtask_total: Number(row.member_total ?? row.subtask_total ?? 0),
-    subtask_completed: Number(row.member_completed ?? row.subtask_completed ?? 0),
+    // 未带出 project_name（如仅按 id 回读）时按未归属处理，避免出现只有 id 的半个摘要
+    project:
+      projectId !== null && row.project_name != null
+        ? { id: projectId, name: row.project_name }
+        : null,
     agent_id: agentId,
     agent_name: row.agent_name ?? null,
     agent_state: (row.agent_state as AgentState) ?? 'none',

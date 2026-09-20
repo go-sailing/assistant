@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import * as taskApi from '@/api/tasks'
+import { fetchProjectOptions } from '@/api/projects'
 import { errorText } from '@/api/client'
-import type { Task } from '@/types'
+import type { Project } from '@/types'
 import AppIcon from '../AppIcon.vue'
 
 /**
- * 选择所属项目弹层（v0.6.0，取代旧「父任务」选择）：
- * - 编辑/移动：候选来自 fetchParentCandidates(id)（服务端已排除自身）
- * - 新建任务：无 id，候选来自项目列表
- * - 第一项固定为「移出项目」，选择后成为独立任务
+ * 选择所属项目弹层（v0.8.0）：
+ * - 候选一律来自 fetchProjectOptions()（项目独立实体，服务端已无 parent-candidates）；
+ * - 第一项固定为「无（独立任务）」，选中即移出项目；
+ * - 任务是项目的成员，项目之间不可嵌套。
  */
 const props = withDefaults(
   defineProps<{
     visible: boolean
     title?: string
-    /** 编辑/移动场景下的任务 id；新建场景传 null */
+    /** 编辑/移动场景下的任务 id；新建场景传 null（v0.8.0 候选不再依赖，保留入参兼容） */
     taskId?: number | string | null
     /** 当前所属项目（用于回显选中态） */
     currentProjectId?: number | string | null
@@ -30,34 +30,25 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const error = ref('')
-const candidates = ref<Task[]>([])
+const candidates = ref<Project[]>([])
 const keyword = ref('')
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   if (!kw) return candidates.value
-  return candidates.value.filter((t) => t.title.toLowerCase().includes(kw))
+  return candidates.value.filter((p) => p.name.toLowerCase().includes(kw))
 })
 
 const detached = computed(
   () => props.currentProjectId === null || props.currentProjectId === undefined
 )
 
+/** 候选来源统一为项目列表（新建/编辑/移动同源） */
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    if (props.taskId !== null && props.taskId !== undefined) {
-      candidates.value = await taskApi.fetchParentCandidates(props.taskId)
-    } else {
-      const res = await taskApi.fetchTasks({
-        task_type: 'project',
-        root_only: true,
-        page: 1,
-        page_size: 100,
-      })
-      candidates.value = res.list || []
-    }
+    candidates.value = await fetchProjectOptions()
   } catch (e) {
     candidates.value = []
     error.value = errorText(e)
@@ -67,7 +58,7 @@ async function load(): Promise<void> {
 }
 
 watch(
-  () => [props.visible, props.taskId],
+  () => props.visible,
   () => {
     if (!props.visible) return
     keyword.value = ''
@@ -75,11 +66,11 @@ watch(
   }
 )
 
-function isCurrent(task: Task): boolean {
+function isCurrent(project: Project): boolean {
   return (
     props.currentProjectId !== null &&
     props.currentProjectId !== undefined &&
-    String(props.currentProjectId) === String(task.id)
+    String(props.currentProjectId) === String(project.id)
   )
 }
 
@@ -114,7 +105,7 @@ function pick(projectId: number | null): void {
           />
         </div>
 
-        <p class="picker__tip">普通任务不能作为父级</p>
+        <p class="picker__tip">任务是项目的成员，项目之间不可嵌套</p>
 
         <div class="picker__list">
           <p v-if="loading" class="picker__state">加载中…</p>
@@ -126,11 +117,11 @@ function pick(projectId: number | null): void {
             {{ keyword.trim() ? '没有匹配的项目' : '暂无项目，可先新建一个项目' }}
           </p>
           <ul v-else class="picker__items">
-            <li v-for="t in filtered" :key="String(t.id)">
-              <button class="picker__item pressable" type="button" @click="pick(Number(t.id))">
-                <span class="picker__radio" :class="{ 'picker__radio--on': isCurrent(t) }" aria-hidden="true" />
-                <span class="picker__item-title ellipsis">{{ t.title }}</span>
-                <span v-if="isCurrent(t)" class="picker__note">当前项目</span>
+            <li v-for="p in filtered" :key="String(p.id)">
+              <button class="picker__item pressable" type="button" @click="pick(Number(p.id))">
+                <span class="picker__radio" :class="{ 'picker__radio--on': isCurrent(p) }" aria-hidden="true" />
+                <span class="picker__item-title ellipsis">{{ p.name }}</span>
+                <span v-if="isCurrent(p)" class="picker__note">当前项目</span>
               </button>
             </li>
           </ul>

@@ -3,6 +3,7 @@ import cors from 'cors';
 import { authMiddleware, errorHandler, traceMiddleware } from './middleware/auth';
 import { authRoutes } from './modules/auth/auth.routes';
 import { taskRoutes } from './modules/task/task.routes';
+import { projectRoutes } from './modules/project/project.routes';
 import { eventRoutes } from './modules/event/event.routes';
 import { chatRoutes } from './modules/chat/chat.routes';
 import { memoryRoutes } from './modules/memory/memory.routes';
@@ -41,6 +42,8 @@ export function createApp() {
   // 需要登录：按受保护的业务前缀挂载鉴权中间件，
   // 这样未被任何路由匹配的 /api/v1 路径会走到下面的 404 处理（而不是先被判未登录）
   app.use('/api/v1/tasks', authMiddleware);
+  // v0.8.0：项目从任务中抽离，独立资源路径
+  app.use('/api/v1/projects', authMiddleware);
   app.use('/api/v1/events', authMiddleware);
   app.use('/api/v1/conversations', authMiddleware);
   // v0.4.0：个人信息与设置
@@ -51,6 +54,7 @@ export function createApp() {
   // v0.7.0：智能体代理（清单接口已随 LIST-01 下线，不再挂载）
   app.use('/api/v1/agents', authMiddleware);
   app.use('/api/v1', taskRoutes);
+  app.use('/api/v1', projectRoutes);
   app.use('/api/v1', eventRoutes);
   app.use('/api/v1', chatRoutes);
   app.use('/api/v1', memoryRoutes);

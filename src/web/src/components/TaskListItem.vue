@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import type { Task } from '@/types'
+import { lockAxis, resolveAxis } from '@/utils/gesture'
 import { dueTone, formatDue } from '@/utils/time'
 import AppCheckbox from './AppCheckbox.vue'
+import AppIcon from './AppIcon.vue'
 import PriorityFlag from './PriorityFlag.vue'
 
-/** 普通任务行（v0.6.0）：普通任务为独立单任务，不再有子任务/进度展示 */
+/**
+ * 任务行（v0.8.0）：副行最前带「所属项目」chip（有项目才渲染，点击直达项目）；
+ * 左滑与列表下拉刷新的方向互斥由 utils/gesture 方向锁承担（GES-01）。
+ */
 const props = withDefaults(
   defineProps<{
     task: Task
@@ -24,6 +30,8 @@ const emit = defineEmits<{
   (e: 'remove', task: Task): void
   (e: 'detail', task: Task): void
 }>()
+
+const router = useRouter()
 
 const ACTION_WIDTH = 148
 const offset = ref(0)
@@ -93,7 +101,21 @@ function onTouchMove(e: TouchEvent): void {
   const dx = t.clientX - startX
   const dy = t.clientY - startY
   if (!dragging) {
-    if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) return
+    // 8px 观察期后按主导方向判定：横向主导且锁定成功才进入拖动
+    const axis = resolveAxis(dx, dy)
+    // 斜向但未达任一主导：本行不拖动、不锁（本次手势仅滚动列表）
+    if (axis === null) return
+    if (axis === 'v') {
+      // 纵向主导：方向归下拉刷新，本行不拖动
+      lockAxis('v')
+      locked = true
+      return
+    }
+    // 已被纵向锁定（lockAxis 返回 false）时同样不拖动
+    if (!lockAxis('h')) {
+      locked = true
+      return
+    }
     dragging = true
   }
   const next = Math.min(0, Math.max(-ACTION_WIDTH, startOffset + dx))
@@ -111,6 +133,13 @@ function onTouchEnd(): void {
 
 function close(): void {
   offset.value = 0
+}
+
+/** 点击项目 chip：直达项目详情（stopPropagation，不进入任务详情） */
+function openProject(): void {
+  const project = props.task.project
+  if (!project) return
+  router.push(`/projects/${project.id}`)
 }
 
 function onToggle(): void {
@@ -171,6 +200,17 @@ defineExpose({ close })
           </span>
         </p>
         <p class="task-item__sub">
+          <!-- v0.8.0 所属项目 chip：无项目时不渲染、不占位 -->
+          <button
+            v-if="task.project"
+            type="button"
+            class="task-item__chip"
+            :aria-label="`查看项目 ${task.project.name}`"
+            @click.stop="openProject"
+          >
+            <AppIcon name="folder" :size="12" />
+            <span class="task-item__chip-name ellipsis">{{ task.project.name }}</span>
+          </button>
           <span v-if="path" class="task-item__path ellipsis">{{ path }}</span>
           <span v-if="path && task.due_at" class="task-item__dot">·</span>
           <span
@@ -296,6 +336,30 @@ defineExpose({ close })
 }
 .task-item__path {
   max-width: 50%;
+}
+/* v0.8.0 所属项目 chip（高 20pt / 圆角 6 / primary-light 底） */
+.task-item__chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+}
+/* 可点击元素扩热区（视觉 20pt + ::after，UXUI 8） */
+.task-item__chip::after {
+  content: '';
+  position: absolute;
+  inset: -11px -4px;
+}
+.task-item__chip-name {
+  max-width: 140px;
 }
 .task-item__time--danger {
   color: var(--color-danger);

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import * as projectApi from '@/api/projects'
 import * as taskApi from '@/api/tasks'
 import { errorText } from '@/api/client'
-import type { Task } from '@/types'
+import type { Project, Task } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
 import StateEmpty from '@/components/StateEmpty.vue'
 import StateError from '@/components/StateError.vue'
@@ -11,64 +12,48 @@ import SkeletonList from '@/components/SkeletonList.vue'
 import TaskListItem from '@/components/TaskListItem.vue'
 import { useToastStore } from '@/stores/toast'
 
+/** 搜索结果项（v0.8.0）：任务与项目合并为一个本地列表，用 kind 判别 */
+type SearchItem =
+  | { kind: 'task'; key: string; task: Task }
+  | { kind: 'project'; key: string; project: Project }
+
 const router = useRouter()
 const toast = useToastStore()
 
 const keyword = ref('')
-const results = ref<Task[]>([])
+const items = ref<SearchItem[]>([])
 const searched = ref(false)
 const loading = ref(false)
 const error = ref('')
 const inputRef = ref<HTMLInputElement | null>(null)
-/** 祖先节点表：id → 任务，用于本地拼父子路径 */
-const taskMap = ref<Record<string, Task>>({})
 let timer: number | undefined
-
-/** 命中子任务时按需拉取其祖先链（用 /tasks/:id/ancestors，避免拉全量任务） */
-async function ensureTaskMap(): Promise<void> {
-  const need = results.value.filter((t) => t.parent_id !== null && t.parent_id !== undefined)
-  if (!need.length) return
-  const chains = await Promise.all(
-    need.map((t) => taskApi.fetchAncestors(t.id).catch(() => [] as Task[]))
-  )
-  const map: Record<string, Task> = { ...taskMap.value }
-  chains.forEach((chain) => chain.forEach((n) => (map[String(n.id)] = n)))
-  taskMap.value = map
-}
-
-function parentOf(id: number | null): Task | null {
-  if (id === null) return null
-  return taskMap.value[String(id)] ?? null
-}
-
-/** 父子路径：根 / 父（当前项不重复展示） */
-function pathOf(task: Task): string {
-  const parts: string[] = []
-  let cur = parentOf(task.parent_id)
-  let guard = 5
-  while (cur && guard > 0) {
-    parts.unshift(cur.title)
-    cur = parentOf(cur.parent_id)
-    guard -= 1
-  }
-  return parts.join(' / ')
-}
 
 async function runSearch(): Promise<void> {
   const kw = keyword.value.trim()
   if (!kw) {
-    results.value = []
+    items.value = []
     searched.value = false
     return
   }
   loading.value = true
   error.value = ''
   try {
-    results.value = await taskApi.searchTasks(kw)
+    // 任务与项目并发搜索后合并（任务在前，项目在后）
+    const [tasks, projects] = await Promise.all([
+      taskApi.searchTasks(kw),
+      projectApi.fetchProjects({ keyword: kw, page_size: 20 }),
+    ])
+    items.value = [
+      ...(tasks || []).map(
+        (t): SearchItem => ({ kind: 'task', key: `task-${t.id}`, task: t })
+      ),
+      ...(projects.list || []).map(
+        (p): SearchItem => ({ kind: 'project', key: `project-${p.id}`, project: p })
+      ),
+    ]
     searched.value = true
-    if (results.value.some((t) => t.parent_id !== null)) await ensureTaskMap()
   } catch (e) {
-    results.value = []
+    items.value = []
     searched.value = true
     error.value = errorText(e)
   } finally {
@@ -85,15 +70,18 @@ function onInput(): void {
 
 function clearKeyword(): void {
   keyword.value = ''
-  results.value = []
+  items.value = []
   searched.value = false
   inputRef.value?.focus()
 }
 
-function goDetail(task: Task): void {
-  // v0.7.0：项目与普通任务在页面层分离
-  if (task.task_type === 'project') router.push(`/projects/${task.id}`)
-  else router.push(`/tasks/${task.id}`)
+/** 点击结果：任务进任务详情，项目进项目详情（均带 from=search） */
+function openItem(item: SearchItem): void {
+  if (item.kind === 'project') {
+    router.push({ path: `/projects/${item.project.id}`, query: { from: 'search' } })
+    return
+  }
+  router.push({ path: `/tasks/${item.task.id}`, query: { from: 'search' } })
 }
 
 async function onToggle(task: Task): Promise<void> {
@@ -102,8 +90,9 @@ async function onToggle(task: Task): Promise<void> {
       task.status === 'completed'
         ? await taskApi.uncompleteTask(task.id)
         : await taskApi.completeTask(task.id)
-    const i = results.value.findIndex((t) => String(t.id) === String(task.id))
-    if (i >= 0) results.value[i] = updated
+    items.value = items.value.map((it) =>
+      it.kind === 'task' && String(it.task.id) === String(task.id) ? { ...it, task: updated } : it
+    )
   } catch (e) {
     toast.show(errorText(e))
   }
@@ -112,7 +101,9 @@ async function onToggle(task: Task): Promise<void> {
 async function onRemove(task: Task): Promise<void> {
   try {
     await taskApi.deleteTask(task.id)
-    results.value = results.value.filter((t) => String(t.id) !== String(task.id))
+    items.value = items.value.filter(
+      (it) => !(it.kind === 'task' && String(it.task.id) === String(task.id))
+    )
     toast.show('已删除')
   } catch (e) {
     toast.show(errorText(e))
@@ -135,8 +126,8 @@ onMounted(() => {
           v-model="keyword"
           class="search__input"
           type="search"
-          placeholder="搜索任务…"
-          aria-label="搜索任务"
+          placeholder="搜索任务或项目…"
+          aria-label="搜索任务或项目"
           @input="onInput"
           @keydown.enter="runSearch"
         />
@@ -158,23 +149,41 @@ onMounted(() => {
 
       <StateEmpty
         v-else-if="!searched"
-        title="搜索任务"
-        text="输入关键词搜索标题或备注"
+        title="搜索任务与项目"
+        text="输入关键词搜索任务标题、备注或项目名称"
       />
 
-      <StateEmpty v-else-if="!results.length" title="没有找到相关任务" text="换个关键词试试" />
+      <StateEmpty v-else-if="!items.length" title="没有找到相关内容" text="换个关键词试试" />
 
       <ul v-else class="search__list">
-        <TaskListItem
-          v-for="t in results"
-          :key="String(t.id)"
-          :task="t"
-          :keyword="keyword.trim()"
-          :path="pathOf(t)"
-          @detail="goDetail"
-          @toggle="onToggle"
-          @remove="onRemove"
-        />
+        <template v-for="it in items" :key="it.key">
+          <TaskListItem
+            v-if="it.kind === 'task'"
+            :task="it.task"
+            :keyword="keyword.trim()"
+            @detail="openItem(it)"
+            @toggle="onToggle"
+            @remove="onRemove"
+          />
+          <!-- 项目结果行：点击直达项目详情 -->
+          <li
+            v-else
+            class="search__row pressable"
+            role="button"
+            tabindex="0"
+            @click="openItem(it)"
+            @keydown.enter="openItem(it)"
+          >
+            <AppIcon name="folder" :size="20" color="#3D5AFE" />
+            <div class="search__row-main">
+              <p class="search__row-title ellipsis">{{ it.project.name }}</p>
+              <p class="search__row-sub">
+                项目 · 成员 {{ it.project.member_completed }}/{{ it.project.member_total }}
+              </p>
+            </div>
+            <AppIcon name="chevron-right" :size="18" color="#B5B9C4" />
+          </li>
+        </template>
       </ul>
     </div>
   </div>
@@ -225,5 +234,31 @@ onMounted(() => {
 }
 .search__list {
   background: var(--bg-card);
+}
+.search__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 56px;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+}
+.search__row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search__row-title {
+  font-size: var(--font-body-l);
+  line-height: var(--font-body-l-lh);
+  color: var(--text-primary);
+}
+.search__row-sub {
+  font-size: var(--font-caption);
+  line-height: var(--font-caption-lh);
+  color: var(--text-secondary);
 }
 </style>

@@ -5,6 +5,7 @@ import { logger } from '../../common/logger';
 import { config } from '../../config';
 import type { TaskDTO } from '../task/types';
 import { taskService } from '../task/task.service';
+import { projectService } from '../project/project.service';
 import { toSeriesDTO, type EventDTO, type EventRow, type OccurrenceDTO, type SeriesDTO } from '../event/types';
 import { eventService } from '../event/event.service';
 import { occurrenceService } from '../event/occurrence.service';
@@ -18,6 +19,7 @@ import {
   type MessagePayload,
   type MessageRow,
   type PendingActionRow,
+  type ProjectGroup,
 } from './chat.types';
 
 const TITLE_MAX = 30;
@@ -40,7 +42,7 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
   const taskIdSet = new Set<number>();
   const eventIdSet = new Set<number>();
   const seriesIdSet = new Set<number>();
-  const groupRootIds = new Set<number>();
+  const projectIdSet = new Set<number>();
 
   const collectEvents = (events?: EventDTO[]) => {
     for (const e of events ?? []) {
@@ -57,9 +59,8 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
     for (const block of msg.payload?.blocks ?? []) {
       if (block.type === 'cards') {
         block.tasks.forEach((t) => taskIdSet.add(Number(t.id)));
-        (block.subtask_groups ?? []).forEach((g) => {
-          taskIdSet.add(Number(g.root_task_id));
-          groupRootIds.add(Number(g.root_task_id));
+        (block.project_groups ?? []).forEach((g) => {
+          projectIdSet.add(Number(g.project_id));
           g.nodes.forEach((n) => taskIdSet.add(Number(n.id)));
         });
         collectEvents(block.events);
@@ -74,7 +75,14 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
       }
     }
   }
-  if (taskIdSet.size === 0 && eventIdSet.size === 0 && seriesIdSet.size === 0) return;
+  if (
+    taskIdSet.size === 0 &&
+    eventIdSet.size === 0 &&
+    seriesIdSet.size === 0 &&
+    projectIdSet.size === 0
+  ) {
+    return;
+  }
 
   const tz = eventService.defaultTz();
   const [latestTasks, latestEvents, latestSeries] = await Promise.all([
@@ -86,16 +94,23 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
   ]);
 
   /**
-   * 项目成员组按 root 重新拉取：他端新增/删除成员后重开会话要能看到最新结构
-   * （只刷新已有节点的字段会漏掉新增节点）。拉取失败（如超节点上限）时退回字段刷新。
+   * v0.8.0 项目结果组按项目重新拉取：他端新增/删除成员后重开会话要能看到最新结构
+   * 与最新进度（只刷新已有节点的字段会漏掉新增节点）。项目已删除时保持快照并标 missing。
    */
-  const freshSubtrees = new Map<number, TaskDTO[]>();
-  for (const rootId of groupRootIds) {
-    if (!latestTasks.has(rootId)) continue;
+  const freshProjects = new Map<number, ProjectGroup>();
+  for (const projectId of projectIdSet) {
     try {
-      freshSubtrees.set(rootId, await taskService.getSubtree(userId, rootId));
+      const project = await projectService.get(userId, projectId);
+      const { list: members } = await projectService.listMembers(userId, projectId, {});
+      freshProjects.set(projectId, {
+        project_id: project.id,
+        name: project.name,
+        member_total: project.member_total,
+        member_completed: project.member_completed,
+        nodes: members,
+      });
     } catch {
-      // 保持快照，交给字段级刷新
+      // 项目已删除/越权：保持快照，交给下面的 missing 占位
     }
   }
 
@@ -125,16 +140,15 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
         block.occurrences = (block.occurrences ?? []).map((o) =>
           refreshOccurrence(o, latestSeries, tz)
         );
-        block.subtask_groups = (block.subtask_groups ?? []).map((g) => {
-          // 根任务被删 → 整组渲染「该任务已删除」占位（TC-CHAT-111）
-          const rootAlive = latestTasks.has(Number(g.root_task_id));
+        block.project_groups = (block.project_groups ?? []).map((g) => {
+          // 项目被删 → 整组渲染「该项目已删除」占位（TC-CHAT-111）
+          const fresh = freshProjects.get(Number(g.project_id));
+          if (fresh) return fresh;
           return {
             ...g,
-            nodes: rootAlive
-              ? freshSubtrees.get(Number(g.root_task_id)) ?? applyTasks(g.nodes)
-              : applyTasks(g.nodes),
-            missing: !rootAlive,
-            missing_reason: rootAlive ? undefined : ('deleted' as const),
+            nodes: applyTasks(g.nodes),
+            missing: true,
+            missing_reason: 'deleted' as const,
           };
         });
       } else if (block.type === 'clarify') {

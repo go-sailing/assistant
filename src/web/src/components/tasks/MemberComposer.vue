@@ -7,7 +7,7 @@ import type { Task } from '@/types'
 import AppIcon from '@/components/AppIcon.vue'
 
 /**
- * 项目内快速添加成员（v0.6.0）：输入标题即创建（parent_id = 项目 ID）；
+ * 项目内快速添加成员（v0.8.0）：输入标题即创建（project_id = 项目 ID）；
  * 「更多字段」跳到任务表单并预填所属项目。
  */
 const props = defineProps<{
@@ -31,8 +31,7 @@ async function add(): Promise<void> {
   try {
     const created = await taskApi.createTask({
       title: value,
-      parent_id: Number(props.projectId),
-      task_type: 'normal',
+      project_id: Number(props.projectId),
     })
     title.value = ''
     emit('created', created)
@@ -43,11 +42,11 @@ async function add(): Promise<void> {
   }
 }
 
-/** 需要备注/优先级/截止时间时进入完整表单 */
+/** 需要备注/优先级/截止时间时进入完整表单（带上来源项目） */
 function moreFields(): void {
   router.push({
     path: '/tasks/new',
-    query: { parent_id: String(props.projectId) },
+    query: { project_id: String(props.projectId) },
   })
 }
 </script>

@@ -117,17 +117,15 @@ async function loadAssignTarget(
 ): Promise<{
   id: number;
   status: string;
-  task_type: string;
   agent_id: number | null;
   agent_state: string;
 }> {
   const res = await query<{
     id: number;
     status: string;
-    task_type: string;
     agent_id: number | null;
     agent_state: string;
-  }>(`SELECT id, status, task_type, agent_id, agent_state FROM tasks WHERE id = $1 AND user_id = $2`, [
+  }>(`SELECT id, status, agent_id, agent_state FROM tasks WHERE id = $1 AND user_id = $2`, [
     taskId,
     userId,
   ]);
@@ -390,9 +388,6 @@ export const agentService = {
     if (task.status === 'completed') {
       throw AppError.agentTaskInvalidState('任务已完成，如需执行请先取消完成');
     }
-    if (task.task_type === 'project') {
-      throw AppError.agentTaskInvalidState('项目不支持指派给智能体');
-    }
     if (task.agent_state !== 'none') {
       if (!opts.replace) {
         throw AppError.agentTaskInvalidState('该任务已指派代理，请先取消指派或选择更换代理');
@@ -426,7 +421,7 @@ export const agentService = {
          SET agent_id = $3, agent_state = 'pending', agent_queued_at = now(),
              agent_claimed_at = NULL, agent_finished_at = NULL, agent_result = NULL,
              updated_at = now()
-         WHERE id = $1 AND user_id = $2 AND status = 'todo' AND task_type = 'normal'
+         WHERE id = $1 AND user_id = $2 AND status = 'todo'
          RETURNING id`,
         [taskId, userId, agentId]
       );

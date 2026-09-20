@@ -33,6 +33,9 @@ export async function runMigrations(): Promise<void> {
     .filter((f) => f.endsWith('.sql'))
     .sort();
 
+  /** 本次真正执行的迁移文件（用于输出迁移摘要，如 v0.8.0 的项目抽离埋点） */
+  const executed: string[] = [];
+
   for (const file of files) {
     if (appliedSet.has(file)) continue;
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
@@ -43,6 +46,7 @@ export async function runMigrations(): Promise<void> {
       await client.query(sql);
       await client.query('INSERT INTO schema_migrations(name) VALUES ($1)', [file]);
       await client.query('COMMIT');
+      executed.push(file);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -51,6 +55,20 @@ export async function runMigrations(): Promise<void> {
     }
   }
   logger.info('数据库迁移完成', { total: files.length, skipped: appliedSet.size });
+
+  // v0.8.0 项目模型抽离的迁移摘要（埋点 project_extract_migrated）。
+  // 只在本次真正执行 014 时记录：转正日程数与丢弃的项目 priority/due_at 行数在迁移后
+  // 已不可回溯，以演练清单与 SQL 断言为准，故此处只记录可查询的项目数与成员关系数。
+  if (executed.includes('014_project_extract.sql')) {
+    const summary = await pool.query<{ project_count: string; member_count: string }>(
+      `SELECT (SELECT count(*) FROM projects) AS project_count,
+              (SELECT count(*) FROM tasks WHERE project_id IS NOT NULL) AS member_count`
+    );
+    logger.info('project_extract_migrated', {
+      project_count: Number(summary.rows[0]?.project_count ?? 0),
+      member_count: Number(summary.rows[0]?.member_count ?? 0),
+    });
+  }
 }
 
 if (require.main === module) {
