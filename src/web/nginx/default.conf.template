@@ -43,6 +43,22 @@ server {
         proxy_send_timeout ${API_PROXY_TIMEOUT}s;
     }
 
+    # MCP 接入端点（智能体代理，v0.7.0）：代理凭据鉴权、与 /api 同源
+    # wait_agent_task 长轮询最长 25s，读超时须 ≥ 60s（默认 300s 满足）
+    location = /mcp {
+        proxy_pass         ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+
+        proxy_buffering    off;
+        proxy_read_timeout ${API_PROXY_TIMEOUT}s;
+        proxy_send_timeout ${API_PROXY_TIMEOUT}s;
+    }
+
     # 容器/编排健康检查直通后端（含数据库探测）
     location = /healthz {
         proxy_pass       ${API_UPSTREAM};
