@@ -34,7 +34,7 @@ function deriveTitle(content: string): string {
  * v0.2.0 扩展：循环系列卡片按 series_id 回查主记录；实例卡片用 occurrence_key
  * 在当前规则下重新物化（规则变更导致该次不再发生时渲染"已不再发生"占位）。
  *
- * v0.8.0：任务 / 项目对象刷新逻辑已删除，历史中的旧卡片交由渲染层页面占位。
+ * v0.9.0：任务 / 项目对象刷新逻辑已删除，历史中的旧卡片交由渲染层页面占位。
  */
 async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): Promise<void> {
   const eventIdSet = new Set<number>();
@@ -321,7 +321,7 @@ export const pendingActionService = {
   }): Promise<PendingActionRow> {
     // 过期时间在应用侧计算，避免 SQL 中的参数类型推断问题
     const expiresAt = new Date(Date.now() + config.pendingActionTtlSeconds * 1000);
-    // v0.8.0：影响对象只剩日程（affected 列仍为通用 JSONB，键保留 events）
+    // v0.9.0：影响对象只剩日程（affected 列仍为通用 JSONB，键保留 events）
     const snapshot = JSON.stringify({ events: params.affectedEvents ?? [] });
     const res = await query<PendingActionRow>(
       `INSERT INTO pending_actions(id, conversation_id, user_id, tool_name, params, affected, expires_at)

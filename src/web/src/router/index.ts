@@ -34,7 +34,7 @@ router.beforeEach(async (to) => {
   return true
 })
 
-// v0.8.0：旧链重定向命中观测（端上开发期日志，见 router/legacyRedirect.ts）
+// v0.9.0：旧链重定向命中观测（端上开发期日志，见 router/legacyRedirect.ts）
 observeLegacyRedirects(router)
 
 export default router

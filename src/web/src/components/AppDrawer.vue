@@ -28,7 +28,7 @@ const ITEMS = [
 
 const open = computed(() => drawer.open)
 
-/** 按路由前缀高亮一级入口（v0.8.0：只剩日程与助手） */
+/** 按路由前缀高亮一级入口（v0.9.0：只剩日程与助手） */
 const activeKey = computed(() => {
   const path = route.path
   if (path.startsWith('/calendar')) return 'calendar'

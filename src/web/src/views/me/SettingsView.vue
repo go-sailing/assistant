@@ -18,7 +18,7 @@ import { useToastStore } from '@/stores/toast'
  *
  * - 开关「切换即保存」：先乐观更新控件，失败**回拨**并 Toast「保存失败，请重试」；
  * - 关闭农历时服务端会一并关闭节气，本地乐观呈现同结果；
- * - v0.8.0：删除「默认启动页」设置行（冷启动固定落 /calendar）；
+ * - v0.9.0：删除「默认启动页」设置行（冷启动固定落 /calendar）；
  * - 不提供深色模式/字号/推送/多语言等入口。
  */
 const router = useRouter()
@@ -155,7 +155,7 @@ async function confirmClear(): Promise<void> {
         </ul>
       </section>
 
-      <!-- v0.8.0：默认启动页设置行已删除（冷启动固定落 /calendar） -->
+      <!-- v0.9.0：默认启动页设置行已删除（冷启动固定落 /calendar） -->
 
       <!-- 对话 -->
       <section class="settings__group">
@@ -187,7 +187,7 @@ async function confirmClear(): Promise<void> {
           <li>
             <button class="settings__row pressable" @click="aboutOpen = true">
               <span class="settings__label">关于</span>
-              <span class="settings__value">v0.8.0</span>
+              <span class="settings__value">v0.9.0</span>
               <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
             </button>
           </li>
@@ -209,7 +209,7 @@ async function confirmClear(): Promise<void> {
     >
       <div class="about">
         <p class="about__row"><span>应用名称</span><span>个人助手</span></p>
-        <p class="about__row"><span>版本</span><span>v0.8.0</span></p>
+        <p class="about__row"><span>版本</span><span>v0.9.0</span></p>
         <p class="about__tip">日历与助手一体化；长期未使用（30 天）需重新登录。</p>
       </div>
     </AppModal>

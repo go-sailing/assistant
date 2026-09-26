@@ -130,7 +130,7 @@ eventRoutes.post(
   '/events',
   asyncHandler(async (req, res) => {
     const user = getUser(req);
-    // v0.8.0：任务日程已下线，携带 event_type / task_id 的旧客户端请求显式拒绝（1001）
+    // v0.9.0：任务日程已下线，携带 event_type / task_id 的旧客户端请求显式拒绝（1001）
     rejectRetiredParams(req.body, '日程参数');
     const input = parse(createEventSchema, req.body, '日程参数');
     const result = await eventService.create(user.id, input, 'manual', {
@@ -160,7 +160,7 @@ eventRoutes.patch(
   asyncHandler(async (req, res) => {
     const user = getUser(req);
     const id = parse(idParam, req.params.id, '日程 ID');
-    // v0.8.0：编辑不再接受 event_type / task_id（携带即拒绝 1001）
+    // v0.9.0：编辑不再接受 event_type / task_id（携带即拒绝 1001）
     rejectRetiredParams(req.body, '日程参数');
     const patch = parse(updateEventSchema, req.body, '日程参数');
     const result = await eventService.update(user.id, id, patch, {

@@ -114,7 +114,7 @@ export class AppError extends Error {
     return new AppError(ErrorCode.EVENT_TIME_INVALID, message);
   }
   /**
-   * v0.8.0：任务 / 项目 / 智能体能力已下线，下列错误码保留编号与 HTTP 映射
+   * v0.9.0：任务 / 项目 / 智能体能力已下线，下列错误码保留编号与 HTTP 映射
    * （兼容旧客户端解析），但失去触发面，对应 AppError 工厂已删除：
    * 4002 / 4003 / 4010 / 4013 / 4014 / 4015 / 4016 / 4017 / 4018 / 4019 / 4020 / 4021 / 4022。
    */

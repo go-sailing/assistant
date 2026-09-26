@@ -266,7 +266,7 @@ export const toolExecutor = {
       /* ------------------- v0.1.0 / v0.2.0 日程工具 ------------------- */
 
       case 'create_event': {
-        // v0.8.0：任务日程已下线，携带旧字段（event_type / task_id）的模型输出显式拒绝
+        // v0.9.0：任务日程已下线，携带旧字段（event_type / task_id）的模型输出显式拒绝
         rejectRetiredParams(args, `工具 ${toolName} 参数`);
         const parsed = safeParseArgs(createEventSchema, args, toolName);
         const offset = ctx.tzOffsetMinutes ?? 0;
@@ -354,7 +354,7 @@ export const toolExecutor = {
       }
 
       case 'update_event': {
-        // v0.8.0：编辑不再接受 event_type / task_id（携带即拒绝 1001）
+        // v0.9.0：编辑不再接受 event_type / task_id（携带即拒绝 1001）
         rejectRetiredParams(args, `工具 ${toolName} 参数`);
         const parsed = safeParseArgs(updateEventArgs, args, toolName);
         const offset = ctx.tzOffsetMinutes ?? 0;

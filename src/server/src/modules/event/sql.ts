@@ -11,7 +11,7 @@ import type { ConflictLevel, EventRow } from './types';
 
 /**
  * 日程查询公共 SELECT。
- * v0.8.0：任务日程已下线，不再 JOIN tasks（EVENT_SELECT 收敛为单表查询）。
+ * v0.9.0：任务日程已下线，不再 JOIN tasks（EVENT_SELECT 收敛为单表查询）。
  */
 export const EVENT_SELECT = `
   SELECT e.*

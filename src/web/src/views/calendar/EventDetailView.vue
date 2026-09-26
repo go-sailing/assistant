@@ -229,7 +229,7 @@ onMounted(load)
           {{ conflictText }}
         </p>
 
-        <!-- 日程主体：仅普通日程（v0.8.0） -->
+        <!-- 日程主体：仅普通日程（v0.9.0） -->
         <section class="detail__main">
           <div class="detail__main-text">
             <h1 class="detail__title" :class="{ 'detail__title--done': isCancelled }">

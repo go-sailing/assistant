@@ -22,13 +22,13 @@ interface SqlRunner {
 }
 
 /* ============================================================
- * v0.8.0：迁移观测（TC-AUDIT-081 / TC-AUDIT-091 / SDD 13.2 / 13.3）
+ * v0.9.0：迁移观测（TC-AUDIT-081 / TC-AUDIT-091 / SDD 13.2 / 13.3）
  *
  * 口径：只记 ID / 枚举 / **计数**，不记录日程标题、备注等任何正文；
  * 计数按用户与全库均可聚合（`users` 为涉及用户数，明细可用 `eventShapeStats()` 复核）。
  * ============================================================ */
 
-/** 014 迁移期间的基线（迁移前采集；迁移后任务日程已不可区分，故必须前采） */
+/** 015 迁移期间的基线（迁移前采集；迁移后任务日程已不可区分，故必须前采） */
 export interface LegacyTaskEventBaseline {
   /** 需要转换的任务日程条数 */
   task_events: number;
@@ -38,7 +38,7 @@ export interface LegacyTaskEventBaseline {
   users: number;
 }
 
-/** 014 迁移后的 events 形态核对（残留与空标题必须为 0） */
+/** 015 迁移后的 events 形态核对（残留与空标题必须为 0） */
 export interface EventShapeStats {
   normal_total: number;
   fallback_titles: number;
@@ -97,8 +97,8 @@ export async function eventShapeStats(runner: SqlRunner): Promise<EventShapeStat
   };
 }
 
-/** 014 汇总日志（迁移提交后执行）：条数 + 耗时 + 尝试/重试次数，不含标题正文 */
-async function logMigration014(
+/** 015 汇总日志（迁移提交后执行）：条数 + 耗时 + 尝试/重试次数，不含标题正文 */
+async function logMigration015(
   client: SqlRunner,
   baseline: Baseline,
   ctx: MigrationContext
@@ -106,7 +106,7 @@ async function logMigration014(
   const shape = await eventShapeStats(client);
   const converted = baseline.task_events ?? 0;
   const fallback = baseline.blank_title ?? 0;
-  logger.info('migration_014_converted', {
+  logger.info('migration_015_converted', {
     file: ctx.file,
     /** 转换条数（任务日程 → 普通日程） */
     converted,
@@ -125,7 +125,7 @@ async function logMigration014(
     duration_ms: ctx.durationMs,
   });
   if (shape.remaining > 0 || shape.empty_titles > 0) {
-    logger.warn('migration_014_residual_rows', {
+    logger.warn('migration_015_residual_rows', {
       file: ctx.file,
       remaining: shape.remaining,
       empty_titles: shape.empty_titles,
@@ -145,9 +145,9 @@ const MIGRATION_OBSERVERS: Record<
     after: (client: SqlRunner, baseline: Baseline, ctx: MigrationContext) => Promise<void>;
   }
 > = {
-  '014_retire_task_project_agent.sql': {
+  '015_retire_task_project_agent.sql': {
     before: async (client) => ({ ...(await captureLegacyTaskEventBaseline(client)) }),
-    after: logMigration014,
+    after: logMigration015,
   },
 };
 
@@ -196,6 +196,9 @@ export async function runMigrations(): Promise<void> {
     .filter((f) => f.endsWith('.sql'))
     .sort();
 
+  /** 本次真正执行的迁移文件（用于输出迁移摘要，如 v0.8.0 的项目抽离埋点） */
+  const executed: string[] = [];
+
   for (const file of files) {
     if (appliedSet.has(file)) continue;
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
@@ -223,6 +226,8 @@ export async function runMigrations(): Promise<void> {
         await client.query(sql);
         await client.query('INSERT INTO schema_migrations(name) VALUES ($1)', [file]);
         await client.query('COMMIT');
+        // 只在真正提交后登记（瞬时故障重试到成功的那一次才会记入）
+        executed.push(file);
         if (observer) {
           try {
             await observer.after(client, baseline, {
@@ -260,6 +265,21 @@ export async function runMigrations(): Promise<void> {
     }
   }
   logger.info('数据库迁移完成', { total: files.length, skipped: appliedSet.size });
+
+  // v0.8.0（远程）项目模型抽离的迁移摘要（埋点 project_extract_migrated）——历史迁移观测，
+  // v0.9.0 已下线项目域（projects 表保留在库、停止读写），此处只在本次真正执行 014 时记录：
+  // 转正日程数与丢弃的项目 priority/due_at 行数在迁移后已不可回溯，以演练清单与 SQL 断言为准，
+  // 故只记录可查询的项目数与成员关系数。
+  if (executed.includes('014_project_extract.sql')) {
+    const summary = await pool.query<{ project_count: string; member_count: string }>(
+      `SELECT (SELECT count(*) FROM projects) AS project_count,
+              (SELECT count(*) FROM tasks WHERE project_id IS NOT NULL) AS member_count`
+    );
+    logger.info('project_extract_migrated', {
+      project_count: Number(summary.rows[0]?.project_count ?? 0),
+      member_count: Number(summary.rows[0]?.member_count ?? 0),
+    });
+  }
 }
 
 if (require.main === module) {

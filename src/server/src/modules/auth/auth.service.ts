@@ -85,7 +85,7 @@ async function issuePair(user: { id: number; email: string; nickname?: string | 
 
 export const authService = {
   /**
-   * 注册：事务内创建用户（v0.8.0 起不再创建默认清单，任务域已下线）
+   * 注册：事务内创建用户（v0.9.0 起不再创建默认清单，任务域已下线）
    * MVP 无验证码、无邮箱激活（PRD 6.3）
    */
   async register(email: string, password: string) {

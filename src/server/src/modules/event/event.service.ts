@@ -486,7 +486,7 @@ export const eventService = {
       sets.push(`location = $${index++}`);
       params.push(normalizeLocation(patch.location));
     }
-    // v0.8.0：只剩普通日程，title 可自由编辑
+    // v0.9.0：只剩普通日程，title 可自由编辑
     if (patch.title !== undefined) {
       sets.push(`title = $${index++}`);
       params.push(normalizeTitle(patch.title));

@@ -5,7 +5,7 @@ import { config } from '../../config';
  * 日程参数校验：REST 路由与 LLM 工具执行器共用同一套 schema，
  * 保证「能力对等」下两条路径的校验行为完全一致。
  *
- * v0.8.0：任务日程已下线，创建/编辑不再接受 event_type / task_id；
+ * v0.9.0：任务日程已下线，创建/编辑不再接受 event_type / task_id；
  * 携带旧字段的请求显式拒绝 1001（比静默剥离更早暴露旧客户端，SDD 8.2 / T5）。
  */
 
@@ -118,7 +118,7 @@ export const recurrenceSchema = z.discriminatedUnion('end_type', [
 ]);
 
 /**
- * 创建日程（v0.8.0：普通日程为唯一类型）。
+ * 创建日程（v0.9.0：普通日程为唯一类型）。
  */
 const createEventBase = z.object({
   title: z.string().nullish(),
@@ -136,7 +136,7 @@ export const createEventSchema = createEventBase;
 
 /**
  * 编辑日程。
- * v0.8.0：不再接受 event_type / task_id（携带即在路由/执行器层拒绝 1001）。
+ * v0.9.0：不再接受 event_type / task_id（携带即在路由/执行器层拒绝 1001）。
  * v0.2.0：新增 scope（series 默认 / this / following）、occurrence_key、recurrence。
  */
 export const updateEventSchema = z.object({

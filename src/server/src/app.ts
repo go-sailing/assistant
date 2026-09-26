@@ -11,8 +11,17 @@ import { query } from './db/pool';
 import { logger } from './common/logger';
 import { config } from './config';
 
-/** v0.8.0 已下线的前缀：命中 404 兜底时落 legacy_api_hit 埋点（观测旧客户端占比，不记正文） */
-const RETIRED_PREFIXES = ['/api/v1/tasks', '/api/v1/agents', '/mcp'];
+/**
+ * 已下线的前缀：命中 404 兜底时落 legacy_api_hit 埋点（观测旧客户端占比，不记正文）。
+ * - `/api/v1/tasks`、`/api/v1/agents`、`/mcp`：v0.9.0 下线（任务 / 智能体 / MCP 接入面）；
+ * - `/api/v1/projects`：v0.8.0 新增、v0.9.0 随项目域一并下线（合并远程 v0.8.0 后补入观测面）。
+ */
+const RETIRED_PREFIXES = [
+  '/api/v1/tasks',
+  '/api/v1/projects',
+  '/api/v1/agents',
+  '/mcp',
+];
 
 export function createApp() {
   const app = express();
@@ -48,7 +57,7 @@ export function createApp() {
   app.use('/api/v1', memoryRoutes);
   app.use('/api/v1', settingsRoutes);
 
-  // v0.8.0：任务 / 项目 / 智能体 / MCP 能力已下线，命中统一 404（1004）
+  // v0.9.0：任务 / 项目 / 智能体 / MCP 能力已下线，命中统一 404（1004）
   app.use((req, res) => {
     if (RETIRED_PREFIXES.some((p) => req.path.startsWith(p))) {
       logger.info('legacy_api_hit', { path: req.path, method: req.method });

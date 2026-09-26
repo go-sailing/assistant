@@ -40,19 +40,19 @@ export interface UserProfile {
   created_at: string
 }
 
-/** v0.4.0 偏好设置（GET/PUT /settings）；v0.8.0 home_route 收敛为 '/calendar' */
+/** v0.4.0 偏好设置（GET/PUT /settings）；v0.9.0 home_route 收敛为 '/calendar' */
 export interface UserSettings {
   /** 显示农历（关闭后全站农历文案隐藏，法定「休/班」角标不受影响） */
   lunar_enabled: boolean
   /** 二十四节气（仅在 lunar_enabled 时可为 true） */
   solar_terms_enabled: boolean
-  /** 默认启动页：v0.8.0 只剩日程一个有效值 */
+  /** 默认启动页：v0.9.0 只剩日程一个有效值 */
   home_route: '/calendar'
 }
 
-/* ---------------- 日程（v0.1.0 / v0.8.0） ---------------- */
+/* ---------------- 日程（v0.1.0 / v0.9.0） ---------------- */
 
-/** v0.8.0：只剩普通日程（日程为唯一时间事务载体） */
+/** v0.9.0：只剩普通日程（日程为唯一时间事务载体） */
 export type EventType = 'normal'
 export type EventSource = 'manual' | 'chat'
 export type ConflictLevel = 'none' | 'overlap' | 'all_day'
@@ -195,7 +195,7 @@ export interface EventConflictBrief {
   occurrence_key?: string | null
 }
 
-/** 月视图聚合项（v0.8.0：去掉 task 计数） */
+/** 月视图聚合项（v0.9.0：去掉 task 计数） */
 export interface MonthDayCount {
   date: string
   normal: number
@@ -324,7 +324,7 @@ export interface TextBlock {
 }
 
 /**
- * v0.8.0 历史消息占位对象：旧版本落库的任务卡 / 子任务组 / 任务候选 / 任务影响对象
+ * v0.9.0 历史消息占位对象：旧版本落库的任务卡 / 子任务组 / 任务候选 / 任务影响对象
  * 字段不再刷新，仅用于渲染层「该能力已下线」灰态占位（标题取快照）。
  */
 export interface LegacyCard {
@@ -340,9 +340,9 @@ export interface CardsBlock {
   series?: SeriesDetail[]
   /** v0.2.0：循环实例卡片 */
   occurrences?: Occurrence[]
-  /** @deprecated v0.8.0 历史遗留：任务卡快照，仅作灰态占位 */
+  /** @deprecated v0.9.0 历史遗留：任务卡快照，仅作灰态占位 */
   tasks?: LegacyCard[]
-  /** @deprecated v0.8.0 历史遗留：项目结果组快照，仅作灰态占位 */
+  /** @deprecated v0.9.0 历史遗留：项目结果组快照，仅作灰态占位 */
   subtask_groups?: Array<{ root_task_id: number; nodes: LegacyCard[] }>
 }
 
@@ -351,9 +351,9 @@ export interface ClarifyBlock {
   question: string
   /** 候选日程 */
   events?: CalendarEvent[]
-  /** @deprecated v0.8.0 历史遗留：任务候选快照，仅作灰态占位 */
+  /** @deprecated v0.9.0 历史遗留：任务候选快照，仅作灰态占位 */
   kind?: 'task' | 'event'
-  /** @deprecated v0.8.0 历史遗留：任务候选快照，仅作灰态占位 */
+  /** @deprecated v0.9.0 历史遗留：任务候选快照，仅作灰态占位 */
   candidates?: LegacyCard[]
 }
 
@@ -381,7 +381,7 @@ export interface ScopeBlock {
   recommended: EventScope
 }
 
-/** 确认条动作类型（v0.8.0：任务/项目类动作随能力下线移除） */
+/** 确认条动作类型（v0.9.0：任务/项目类动作随能力下线移除） */
 export type ConfirmAction =
   | 'delete_event'
   | 'batch_update_events'
@@ -397,7 +397,7 @@ export interface ConfirmBlock {
   affected_events?: CalendarEvent[]
   count: number
   description?: string
-  /** @deprecated v0.8.0 历史遗留：任务影响对象快照，仅作灰态占位 */
+  /** @deprecated v0.9.0 历史遗留：任务影响对象快照，仅作灰态占位 */
   affected?: LegacyCard[]
 }
 

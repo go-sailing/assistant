@@ -11,7 +11,7 @@ import type { MessageBlock, MessageRow } from './chat.types';
  *
  * 工具原始 JSON、cards 完整 DTO 不参与转录：防止陈旧快照污染摘要与长期记忆。
  *
- * v0.8.0：任务 / 项目对象锚点已删除，只保留日程 / 系列 / 实例 / 作用域 / 方案锚点。
+ * v0.9.0：任务 / 项目对象锚点已删除，只保留日程 / 系列 / 实例 / 作用域 / 方案锚点。
  */
 
 export interface TranscriptItem {

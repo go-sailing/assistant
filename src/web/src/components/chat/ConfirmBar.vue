@@ -27,14 +27,14 @@ const isDelete = computed(
 )
 
 /**
- * v0.8.0：历史消息里的任务/项目类确认条已随能力下线，
+ * v0.9.0：历史消息里的任务/项目类确认条已随能力下线，
  * 不再渲染按钮，统一渲染为「该能力已下线」灰态占位（只读）。
  */
 const LEGACY_ACTIONS = ['delete_task', 'batch_update_tasks', 'complete_task_cascade']
 const isLegacy = computed(() => LEGACY_ACTIONS.includes(String(props.block.action)))
 
 /**
- * v0.8.0（D-09 / TC-AUDIT-084）：历史确认条占位命中观测。
+ * v0.9.0（D-09 / TC-AUDIT-084）：历史确认条占位命中观测。
  * 只记对象类型与动作枚举，**不含任何正文**（历史消息不被改写）。
  * 以 `immediate` 监听在组件建立时即落日志（SSR/首帧渲染均为同一路径）。
  */
@@ -109,7 +109,7 @@ const restCount = computed(() => Math.max(0, props.block.count - preview.value.l
 
 <template>
   <div class="confirm" :class="{ 'confirm--done': state !== 'pending' && state !== 'loading' }">
-    <!-- v0.8.0：已下线能力的确认条只作灰态占位，不可点击、不请求接口 -->
+    <!-- v0.9.0：已下线能力的确认条只作灰态占位，不可点击、不请求接口 -->
     <template v-if="isLegacy">
       <p class="confirm__title">{{ block.description || '该操作' }}</p>
       <p class="confirm__legacy">该能力已下线</p>

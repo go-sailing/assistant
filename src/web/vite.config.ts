@@ -18,6 +18,11 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
       },
+      // 开发环境把 /mcp（智能体代理 MCP 端点）转发到后端服务，与生产 nginx 一致
+      '/mcp': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
     },
   },
   build: {

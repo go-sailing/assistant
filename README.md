@@ -16,7 +16,8 @@
 | **v0.5.0** | **上下文自动压缩 + 归档聊天记录与长期记忆 + 全天日程冲突降噪 + 账号入口收敛 + 聊天卡片收敛** | **已交付**（详见 [测试报告](docs/v0.5.0/测试报告-个人助手v0.5.0.md)：248 项用例 / 386 项断言全部通过，10 个缺陷全部处理） |
 | **v0.6.0** | **项目管理（项目/成员，普通任务取消子任务）+ 日程主页手势化与浮动「今日」+ 普通/任务日程表单拆分 + 详情与入口收敛 + 取消右滑与助手 FAB** | **已交付**（详见 [测试报告](docs/v0.6.0/测试报告-个人助手v0.6.0.md)：270 项用例，通过 197 / 部分 7 / 未执行 66；197/204 可执行项通过，2 个 P1 缺陷已修复复测） |
 | **v0.7.0** | **智能体代理（MCP 接入 + 自动执行闭环）+ 项目页独立（项目/任务页面分离）+ 清单功能下线 + 日程主页手势缺陷修复（CAL-03）** | **已交付**（详见 [测试报告](docs/v0.7.0/测试报告-个人助手v0.7.0.md)：四层 146 项断言全部通过，未发现产品缺陷；真机手势/真实 MCP 工具接入等待发布前补验） |
-| **v0.8.0** | **任务 / 项目 / 智能体能力下线（数据保留在库） + 日程主页折叠展开跟手联动（CAL-04）** | **已交付**（详见 [系统设计文档](docs/v0.8.0/系统设计文档-个人助手v0.8.0.md)、[UXUI 设计文档](docs/v0.8.0/UXUI设计文档-个人助手v0.8.0.md)、[PRD](docs/v0.8.0/PRD-个人助手v0.8.0.md)） |
+| **v0.8.0** | **项目模型抽离（项目独立建表 · 任务取消类型维度 · 项目无优先级/截止时间）+ 任务页全量任务与项目筛选器 + 项目页/项目详情精简 + 列表左滑与下拉刷新互斥修复（GES-01）+ 已完成任务入口收敛 + 日程主页折叠/展开修复（CAL-04）** | **已交付**（详见 [测试报告](docs/v0.8.0/测试报告-个人助手v0.8.0.md)：249 项用例，自动化可验证范围内 **131/131 通过、142 项断言 0 失败**；测试期发现并修复 **2 个缺陷**（D-001 手势观察期 P1、D-002 迁移埋点 P2）；真机手势/浏览器走查/生产级迁移与压测为发布前待补项） |
+| **v0.9.0** | **任务 / 项目 / 智能体能力下线（数据保留在库 · 在 v0.8.0 项目模型抽离之上）+ 日程主页折叠展开跟手联动（CAL-04）** | **已交付**（详见 [系统设计文档](docs/v0.9.0/系统设计文档-个人助手v0.9.0.md)、[UXUI 设计文档](docs/v0.9.0/UXUI设计文档-个人助手v0.9.0.md)、[PRD](docs/v0.9.0/PRD-个人助手v0.9.0.md)、[测试用例文档](docs/v0.9.0/测试用例文档-个人助手v0.9.0.md)、[测试报告](docs/v0.9.0/测试报告-个人助手v0.9.0.md)、[测试问题修复记录](docs/v0.9.0/测试问题修复记录-个人助手v0.9.0.md)、[版本合并记录](docs/v0.9.0/版本合并记录-个人助手v0.9.0.md)；**本版为与远程 v0.8.0 合并后的版本，迁移号由 014 顺延为 015**） |
 
 ---
 
@@ -39,24 +40,26 @@
 
 ## 功能范围
 
-> **v0.8.0 口径**：产品的唯一时间事务载体是**日程**。任务 / 待办 / 项目 / 成员 / 清单 / 智能体（代理）能力均已下线，下方「任务管理」「项目管理与任务类型」两节为历史能力留档（**已在 v0.8.0 下线**，相关页面、接口、组件与用户可见入口全部移除，数据保留在库不再读写）。
+> **v0.9.0 口径**：产品的唯一时间事务载体是**日程**。任务 / 待办 / 项目 / 成员 / 清单 / 智能体（代理）能力均已下线，下方「任务管理」「项目管理与任务类型」两节为历史能力留档（**已在 v0.9.0 下线**，相关页面、接口、组件与用户可见入口全部移除，数据保留在库不再读写）。
+>
+> **版本沿革**：v0.8.0（远程主线的同名版本）做过「项目模型抽离」（`projects` 独立建表、任务取消类型维度），本版 v0.9.0 在该基线上继续做减法，把任务 / 项目 / 智能体整体下线——因此 `projects` 表随项目域一起退出读写（结构保留、迁移 014 建出、不再增删改），任务日程的转普通日程动作顺延到迁移 **015**。
 
-### 日程（唯一领域，v0.8.0）
+### 日程（唯一领域，v0.9.0）
 
-- **唯一类型**：日程不再区分「普通 / 任务」两类，`event_type` 恒为 `normal`；存量任务日程已由迁移 014 逐条转为普通日程（标题快照）
+- **唯一类型**：日程不再区分「普通 / 任务」两类，`event_type` 恒为 `normal`；存量任务日程已由迁移 015 逐条转为普通日程（标题快照）
 - **日历视图**：月视图（公历数字 + 农历副字 + 法定「休/班」角标 + 标记点）+ 主页当日列表（全天分组置顶、按开始时间升序）；三段固定布局，列表区独立滚动
 - **折叠/展开跟手联动（CAL-04）**：由「阈值触发的一次性切换」升级为**位移连续驱动**——起手区域扩展为「日历区 ∪ 列表顶部」，8px 观察期后接管，手指一动日历即动；跟手期间阻止列表滚动（非 passive `touchmove` + `preventDefault`），两端吸附（行程 ≥50% 或速度 ≥0.3px/ms，≤250ms ease-out），到端点后残余位移**无缝交还**给列表脚本滚动，列表中部起手只滚动不改形态
 - 字段：标题、开始/结束时间、全天、地点、备注；跨日与全天按日期左闭右开存储；循环、冲突检测、农历/法定工作日、月计数全部保持 v0.7.0 语义
 - **编辑入口收敛**：`/calendar/:id/edit` 直达唯一普通表单（不再按类型分流、无「加载中→跳转」闪烁）
 - **月历标记点**：只剩单次实心点与循环空心环（去掉任务紫点与「含任务日程」aria）
 - **旧链重定向**：`/tasks*`、`/projects*`、`/agents*`、`/search`、`/lists`、`/calendar/task/new`、`/calendar/tasks` 一律静默落 `/calendar`；`/calendar/:id/edit/task` 保留 id 与 query 转到 `/calendar/:id/edit`
-- **接口收缩**：`/api/v1/tasks*`、`/api/v1/agents*`、`/mcp` 全部 404（`1004`，落 `legacy_api_hit` 埋点）；events 入参携带 `event_type` / `task_id` 显式拒绝（`1001`）
+- **接口收缩**：`/api/v1/tasks*`、`/api/v1/projects*`、`/api/v1/agents*`、`/mcp` 全部 404（`1004`，落 `legacy_api_hit` 埋点）；events 入参携带 `event_type` / `task_id` 显式拒绝（`1001`）
 - **助手能力收敛**：工具白名单只剩 11 个日程工具；用户提到任务/项目/代理时如实说明已下线并给出日程替代方案；卡片只含 `events / series / occurrences`，历史中的任务/项目卡渲染为「该能力已下线」灰态占位
-- **数据迁移 014**：任务日程 → 普通日程（标题快照 + `task_id=NULL`），重建 CHECK 约束（`ck_events_normal_only` / `ck_events_title`）并回收失效索引；`tasks`/`task_lists`/`agents`/`agent_task_logs` 表与列保留在库、停止读写
+- **数据迁移 015**：任务日程 → 普通日程（标题快照 + `task_id=NULL`），重建 CHECK 约束（`ck_events_normal_only` / `ck_events_title`）并回收失效索引；`tasks`/`task_lists`/`agents`/`agent_task_logs`/`projects` 表与列保留在库、停止读写
 
 ---
 
-## 历史能力留档（v0.8.0 已下线）
+## 历史能力留档（v0.9.0 已下线）
 
 ### 任务管理（MVP）
 
@@ -134,9 +137,9 @@
 - 邮箱 + 密码注册与登录，**不做验证码、不做邮箱激活、不做自助找回密码**
 - **登录态续期**：access 凭证（JWT，2h）+ refresh 凭证（不透明串，30 天滑动、每次使用轮转），前端静默续期与 401 自动重放，长时间使用不再被突兀踢回登录页
 - **个人信息页**（`/me`）：昵称（≤20 字符，可空）、邮箱（只读）、注册时间、修改密码、退出登录、注销账号（v0.5.0 起**移除「清除聊天记录」**；v0.6.0 起左上角为**抽屉菜单按钮**，且是**退出登录与注销账号的唯一入口**）
-- **系统设置页**（`/settings`）：显示农历、二十四节气、**长期记忆（条数 + 入口）**、清除聊天记录、关于（v0.5.0 起**移除「修改密码」**；v0.6.0 起**整组移除危险区**（退出登录/注销账号）并改左上角为菜单按钮；v0.8.0 起**移除「默认启动页」**）
+- **系统设置页**（`/settings`）：显示农历、二十四节气、**长期记忆（条数 + 入口）**、清除聊天记录、关于（v0.5.0 起**移除「修改密码」**；v0.6.0 起**整组移除危险区**（退出登录/注销账号）并改左上角为菜单按钮；v0.9.0 起**移除「默认启动页」**）
 
-### v0.8.0 体验改动
+### v0.9.0 体验改动
 
 **能力下线（DEL-01 ~ DEL-06：任务 / 项目 / 智能体 + MCP）**
 
@@ -144,7 +147,7 @@
 - **智能体 / MCP 下线**：删除 `mcp/`（JSON-RPC、8 工具、长轮询 waiter）、`modules/agent/`、`middleware/agentAuth.ts`；`/api/v1/agents*`、`/mcp` 全部 404；代理凭据不再可用
 - **助手收敛**：工具白名单由 23 → **11**（仅日程）；`DANGEROUS_TOOLS` 收缩为 `delete_event` / `batch_update_events`；提示词重写，新增「任务/项目/代理能力已下线」口径与日程替代建议
 - **设置收敛**：`home_route` 收敛为常量 `/calendar`，**删除「默认启动页」设置行**，冷启动固定落 `/calendar`
-- **数据保留**：`tasks` / `task_lists` / `agents` / `agent_task_logs` 表与列**保留在库、停止读写**；迁移 014 仅动 `events`（幂等可重放）
+- **数据保留**：`tasks` / `task_lists` / `agents` / `agent_task_logs` / `projects` 表与列**保留在库、停止读写**；迁移 015 仅动 `events`（幂等可重放）
 
 **日程主页折叠展开跟手联动（CAL-04）**
 
@@ -360,7 +363,7 @@ cd src/server
 cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY
 npm install
-npm run dev          # 启动在 http://localhost:3000，首次启动自动执行数据库迁移（001~013）
+npm run dev          # 启动在 http://localhost:3000，首次启动自动执行数据库迁移（001~015）
 ```
 
 验证后端与模型连通性：
@@ -447,7 +450,7 @@ npm run dev          # 启动在 http://localhost:5173，/api 已代理到后端
 | 镜像 | Dockerfile | 基础镜像 | 说明 |
 | --- | --- | --- | --- |
 | server | [src/server/Dockerfile](src/server/Dockerfile) | `node:22-alpine` | 多阶段构建：`tsc` 编译 → 仅拷贝产物 + 生产依赖 + 迁移 SQL（`dist/db/migrations`），以非 root 用户 `node` 运行；启动时按 `DB_AUTO_MIGRATE` 自动迁移；健康检查走 `/healthz`（含数据库探测） |
-| web | [src/web/Dockerfile](src/web/Dockerfile) | `nginx:1.27-alpine` | 多阶段构建：`vue-tsc + vite build` → nginx 托管静态产物；同源反向代理 `/api` 到后端（**已关闭 proxy_buffering**，保证对话 SSE 正常流式返回）；SPA 路由回落 `index.html`，带内容指纹的 `/assets/*` 强缓存 |
+| web | [src/web/Dockerfile](src/web/Dockerfile) | `nginx:1.27-alpine` | 多阶段构建：`vue-tsc + vite build` → nginx 托管静态产物；同源反向代理 `/api` 到后端（**已关闭 proxy_buffering**，保证对话 SSE 正常流式返回）；**保留 `/mcp` 同源转发**（v0.8.0 修正的开发/生产一致化配置；v0.9.0 起 `/mcp` 已下线，转发只为让旧客户端命中服务端 `404 + 1004` 并落 `legacy_api_hit`，不再构成任何能力）；SPA 路由回落 `index.html`，带内容指纹的 `/assets/*` 强缓存 |
 
 ### compose 一键起（使用 CI 镜像）
 
@@ -462,7 +465,7 @@ docker compose pull && docker compose up -d    # 更新到 CI 最新镜像
 ```
 
 - `latest` 可换成 CI 产出的任意标签：分支名、`v0.4.0`、`sha-xxxxxxx`；包为私有时需先 `echo <PAT> | docker login ghcr.io -u <用户名> --password-stdin`
-- 容器内 `DATABASE_URL` 指向 compose 服务名 `postgres`（不是 `localhost`），`DB_AUTO_MIGRATE` 默认开启，首次启动自动迁移 001~013
+- 容器内 `DATABASE_URL` 指向 compose 服务名 `postgres`（不是 `localhost`），`DB_AUTO_MIGRATE` 默认开启，首次启动自动迁移 001~015
 - `server` 的宿主端口 `3000` 便于直接 curl；本机若已在跑 `npm run dev` 需错开或先停掉
 - 与本地开发共用同一个数据卷 `assistant_pgdata` 与库 `assistant`，两种方式连的是同一份数据
 
@@ -566,11 +569,22 @@ docker pull ghcr.io/<owner>/<repo>/web:latest
 │   │   ├── 系统设计文档-个人助手v0.7.0.md
 │   │   ├── 测试用例文档-个人助手v0.7.0.md
 │   │   └── 测试报告-个人助手v0.7.0.md
-│   └── v0.8.0/                    # v0.8.0（任务/项目/智能体下线 · 日程折叠展开跟手联动 CAL-04）
+│   └── v0.8.0/                    # v0.8.0（项目模型抽离 · 任务页项目筛选 · 项目页精简 · GES-01/CAL-04 修复）
 │       ├── require.txt
 │       ├── PRD-个人助手v0.8.0.md
 │       ├── UXUI设计文档-个人助手v0.8.0.md
-│       └── 系统设计文档-个人助手v0.8.0.md
+│       ├── 系统设计文档-个人助手v0.8.0.md
+│       ├── 测试用例文档-个人助手v0.8.0.md
+│       └── 测试报告-个人助手v0.8.0.md
+│   └── v0.9.0/                    # v0.9.0（任务/项目/智能体下线 · 日程折叠展开跟手联动 CAL-04）
+│       ├── require.txt
+│       ├── PRD-个人助手v0.9.0.md
+│       ├── UXUI设计文档-个人助手v0.9.0.md
+│       ├── 系统设计文档-个人助手v0.9.0.md
+│       ├── 测试用例文档-个人助手v0.9.0.md
+│       ├── 测试报告-个人助手v0.9.0.md
+│       ├── 测试问题修复记录-个人助手v0.9.0.md
+│       └── 版本合并记录-个人助手v0.9.0.md
 ├── .github/workflows/             # CI：docker-publish.yml（多架构构建并推送 GHCR）
 └── src/
     ├── docker-compose.yml         # 编排 postgres + server + web（应用服务使用 GHCR 上的 CI 镜像）
@@ -579,36 +593,36 @@ docker pull ghcr.io/<owner>/<repo>/web:latest
     │   └── src/
     │       ├── config/            # 配置加载
     │       ├── common/            # 错误码、统一响应、校验、日志
-    │       ├── db/                # 连接池、迁移器、SQL 迁移文件（001~014；014 = 任务/项目/智能体下线）
+    │       ├── db/                # 连接池、迁移器、SQL 迁移文件（001~015；014 = 项目模型抽离（v0.8.0）、015 = 任务/项目/智能体下线）
     │       ├── middleware/        # 用户鉴权（JWT + refresh 校验、时钟容忍）、限流
     │       ├── modules/
     │       │   ├── auth/          # 注册/登录/登出/注销 + 刷新令牌轮转 + 修改密码
     │       │   ├── settings/      # v0.4.0：个人信息（/me）与偏好设置（/settings）
-    │       │   ├── event/         # 日程（领域服务 + REST + 参数校验 + 冲突）—— v0.8.0 唯一领域
+    │       │   ├── event/         # 日程（领域服务 + REST + 参数校验 + 冲突）—— v0.9.0 唯一领域
     │       │   │   ├── recurrence/    # 循环引擎：纯函数展开 + 规则摘要 + 规则类型
     │       │   │   ├── lunar/         # v0.4.0：历法换算 wrapper（农历/节气/节日白名单，隔离第三方库）
     │       │   │   ├── workday/       # v0.4.0：法定工作日判定（整表进程内载入 + 缓存）
     │       │   │   ├── occurrence.service.ts  # 实例虚拟展开、例外覆盖、作用域写操作（含全天抑制计数埋点）
-    │       │   │   └── sql.ts         # 日程域公共 SQL 片段与单次冲突查询（全天目标短路；v0.8.0 去 tasks JOIN）
+    │       │   │   └── sql.ts         # 日程域公共 SQL 片段与单次冲突查询（全天目标短路；v0.9.0 去 tasks JOIN）
     │       │   ├── memory/        # v0.5.0：长期记忆（仓库/结构约束/敏感过滤与去重合并/服务/路由）
-    │       │   └── chat/          # 会话（单会话 get-or-create / 清除聊天记录 / 归档）、对话编排（SSE，含 proposal 方案块）、历史卡片云端刷新（v0.8.0 只刷日程，旧卡走占位）
+    │       │   └── chat/          # 会话（单会话 get-or-create / 清除聊天记录 / 归档）、对话编排（SSE，含 proposal 方案块）、历史卡片云端刷新（v0.9.0 只刷日程，旧卡走占位）
     │       │       ├── compaction.service.ts  # v0.5.0：压缩判定与执行 + 上下文装配（水位/交互地板/keep 递减）
     │       │       └── transcript.ts          # v0.5.0：消息→纯文本转录（对象锚点 + 交互地板判定，压缩与归档共用）
-    │       ├── llm/               # DeepSeek 适配器（支持关闭思考）、工具定义（v0.8.0 收敛为 11 个日程工具）、系统提示词（方案优先 / 摘要器 / 记忆提取与合并器 / 能力下线说明）
+    │       ├── llm/               # DeepSeek 适配器（支持关闭思考）、工具定义（v0.9.0 收敛为 11 个日程工具）、系统提示词（方案优先 / 摘要器 / 记忆提取与合并器 / 能力下线说明）
     │       └── tools/             # LLM 工具执行器（参数校验 + 确认门控 + 审计）
     └── web/                       # 前端
         ├── Dockerfile             # 多阶段构建（vite 打包 → nginx 托管 + /api 反代）
-        ├── nginx/                 # default.conf.template（SPA 回落、SSE 不缓冲、静态强缓存）
+        ├── nginx/                 # default.conf.template（SPA 回落、SSE 不缓冲、静态强缓存、/mcp 404 观测转发）
         └── src/
             ├── api/               # HTTP 客户端（静默续期 + 401 重放）与 SSE 消费、events / settings / memories API
             ├── stores/            # Pinia 状态（chat / conversation 唯一会话与压缩水位、settings 偏好、eventSync 脏标记、drawer 抽屉态）
-            ├── router/            # 路由与登录守卫（异步恢复：access 失效时先用 refresh 静默续期；v0.8.0 下线旧链一律重定向 /calendar）
+            ├── router/            # 路由与登录守卫（异步恢复：access 失效时先用 refresh 静默续期；v0.9.0 下线旧链一律重定向 /calendar）
             ├── styles/            # Design Token 与全局样式（含 --content-max-width 宽屏中栏、农历/法定语义色、v0.7.0 --color-danger-light）
-            ├── utils/             # 时间格式化（含日程区间/日期键）、校验、双凭证（access + refresh）、v0.8.0 CAL-04 手势纯函数（shape.ts）
+            ├── utils/             # 时间格式化（含日程区间/日期键）、校验、双凭证（access + refresh）、v0.9.0 CAL-04 手势纯函数（shape.ts）
             ├── components/        # 通用组件（AppDrawer 抽屉账号区、MemoryCard 记忆卡、AppNavBar 统一导航；v0.6.0 删除 AppFAB）
             │   ├── calendar/      # 月网格（月/周双模式 + 农历副字 + 休/班角标 + --shape-shift 跟手位移）、RepeatSheet、ScopeSheet、冲突分组弹层、FloatingTodayButton
             │   └── chat/          # 日程卡、冲突块、作用域澄清块、确认条、MarkdownText、ProposalCard、新消息胶囊、CardsCollapse、CompactionStatusBar、HistoryDivider
-            └── views/             # 页面（auth / calendar / chat / me 含 MemoriesView）；v0.8.0 只保留日程与助手两大入口
+            └── views/             # 页面（auth / calendar / chat / me 含 MemoriesView）；v0.9.0 只保留日程与助手两大入口
 ```
 
 ---
@@ -617,7 +631,7 @@ docker pull ghcr.io/<owner>/<repo>/web:latest
 
 ### 领域服务，双入口能力对等
 
-`EventService` 是**唯一领域（日程）的入口**：REST 控制器与 LLM 工具执行器都调用同一组领域方法，业务规则只实现一次，因此手动操作与对话操作的结果必然一致（含校验错误码与冲突判定）。循环实例的展开与例外覆盖由 `OccurrenceService` 承载、规则推算由纯函数 `RecurrenceEngine` 承载，二者被 `EventService` 复用。（v0.8.0 起 `TaskService` 已随任务能力下线删除，`events` 不再 JOIN `tasks`。）
+`EventService` 是**唯一领域（日程）的入口**：REST 控制器与 LLM 工具执行器都调用同一组领域方法，业务规则只实现一次，因此手动操作与对话操作的结果必然一致（含校验错误码与冲突判定）。循环实例的展开与例外覆盖由 `OccurrenceService` 承载、规则推算由纯函数 `RecurrenceEngine` 承载，二者被 `EventService` 复用。（v0.9.0 起 `TaskService` 已随任务能力下线删除，`events` 不再 JOIN `tasks`。）
 
 ```
 REST 请求 ─                        ┌─→ EventService ─┬→ RecurrenceEngine（纯函数展开，无 IO）
@@ -627,7 +641,7 @@ REST 请求 ─                        ┌─→ EventService ─┬→ Recurren
                                                     └→ OccurrenceService（例外覆盖 / 作用域写）→ PostgreSQL
 ```
 
-依赖方向固定为单向：`chat → event`，`settings/auth` 独立；v0.8.0 后日程域不再依赖任何任务表。
+依赖方向固定为单向：`chat → event`，`settings/auth` 独立；v0.9.0 后日程域不再依赖任何任务表。
 
 ### 循环日程：实例虚拟展开、零物化
 
@@ -852,7 +866,7 @@ curl -N -X POST http://localhost:3000/api/v1/conversations/1/chat \
 Base URL：`/api/v1`；除注册登录外均需 `Authorization: Bearer <token>`。
 统一响应包裹：`{ "code": 0, "message": "ok", "data": {...} }`；错误含业务码与可选 `details`。
 
-> **v0.8.0 接口收缩**：`/api/v1/tasks*`、`/api/v1/agents*`、`/mcp` **全部下线**（命中统一 404 `1004`，服务端落 `legacy_api_hit` 埋点）；events 入参携带 `event_type` / `task_id` 会被显式拒绝（`1001`）。下表任务 / 项目 / 代理相关行均为**历史留档**，v0.8.0 起不再提供。
+> **v0.9.0 接口收缩**：`/api/v1/tasks*`、`/api/v1/projects*`、`/api/v1/agents*`、`/mcp` **全部下线**（命中统一 404 `1004`，服务端落 `legacy_api_hit` 埋点）；events 入参携带 `event_type` / `task_id` 会被显式拒绝（`1001`）。下表任务 / 项目 / 代理相关行均为**历史留档**，v0.9.0 起不再提供（其中 `/projects*` 为 v0.8.0 新增、随 v0.9.0 项目域下线一并移除）。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -864,6 +878,7 @@ Base URL：`/api/v1`；除注册登录外均需 `Authorization: Bearer <token>`�
 | GET / PATCH | `/me` | **（v0.4.0）个人信息**：读取 `{id,email,nickname,avatar_initial,created_at}` / 更新昵称（null 或 ≤20 字符） |
 | GET / PUT | `/settings` | **（v0.4.0）偏好设置**：`{lunar_enabled, solar_terms_enabled, home_route（v0.7.0 含 '/projects'）}`；PUT 半量更新、键白名单（未知键 `1001`）；农历关闭时节气**生效值**为 false 但用户原始偏好被保留 |
 | ~~GET/POST~~ ~~`/lists`~~、~~PATCH/DELETE `/lists/:id`~~ | **v0.7.0 下线**：清单接口全部 404；携带 `list_id` 的请求显式拒绝 `1001`（任务仍落内部默认清单） |
+| ~~GET/POST~~ ~~`/projects`~~、~~GET/PATCH/DELETE `/projects/:id`~~ | **v0.8.0 新增 / v0.9.0 下线**：项目独立资源路径（列表/创建、详情/更新/删除、`/projects/:id/members` 成员聚合与容量）全部 404 `1004`，服务端落 `legacy_api_hit`；`projects` 表结构保留、停止读写 |
 | GET/POST | `/agents` | **（v0.7.0）** 代理列表 / 创建代理（返回 `AgentWithToken`：一次性明文 `token` + 代理信息 + MCP 接入信息） |
 | GET/PATCH/DELETE | `/agents/:id` | **（v0.7.0）** 代理详情 / 更新（名称/描述/启停）/ 删除（pending 任务回未指派、running 保留、快照日志，返回迁移计数） |
 | POST | `/agents/:id/token/rotate` | **（v0.7.0）** 重置凭据：旧凭据立即失效，返回新明文（仅一次） |
@@ -954,10 +969,11 @@ Base URL：`/api/v1`；除注册登录外均需 `Authorization: Bearer <token>`�
 | **010** | **`long_term_memories` + `conversations.context_summary` / `compacted_until_id`** | **v0.5.0：① 长期记忆表（`user_id` 级联删除、`content` 4~500 字 CHECK、`category` 六类枚举 CHECK、`created_at/updated_at/last_used_at` + 按 `updated_at` 取列表的索引）；② 会话行新增两列承载滚动摘要与压缩水位置标（均可空）** |
 | **011** | **`tasks.task_type`（+ CHECK / 索引 / 一次性层级拆散）** | **v0.6.0 项目管理：① 新增 `task_type VARCHAR(16) NOT NULL DEFAULT 'normal'`（`ck_tasks_task_type` 限定 `normal`/`project`，列注释说明语义）；② `idx_tasks_user_task_type(user_id, task_type)` 与 `idx_tasks_user_project(user_id, status, due_at) WHERE task_type='project'` 两枚索引；③ **一次性拆散**历史层级——`UPDATE tasks SET parent_id = NULL WHERE parent_id IS NOT NULL AND NOT EXISTS(父为 project)`，任意深度一条语句完成，标题/备注/优先级/截止/完成态与关联日程零丢失；谓词守卫保证可重复执行（重放命中 0 行、约束与索引不重复创建）** |
 | **012** | **`agents` + `tasks` 6 个代理列 + `agent_task_logs`（CHECK / 索引）** | **v0.7.0 智能体代理：① `agents` 表（用户级联、名称 `lower(btrim)` 唯一、类型与状态 CHECK、凭据只存 SHA-256）；② tasks 新增 `agent_id`（代理删除兜底 SET NULL）、`agent_state`（默认 `none`）、`agent_queued/claimed/finished_at`、`agent_result`；③ `agent_task_logs`（动作七态 CHECK + 代理名快照）；队列部分索引等 8 枚索引；全部 `IF NOT EXISTS` 幂等** |
-| **014** | **`events` 任务日程转换 + 约束重建 + 索引回收（任务/项目/智能体下线）** | **v0.8.0：① 放宽旧约束 → ② 存量 `event_type='task'` 逐条转 `'normal'`（`title` 取任务标题快照、`task_id=NULL`，缺失用「（原任务日程）」兜底）→ ③ 新增 `ck_events_normal_only`（`event_type='normal' AND task_id IS NULL`）与 `ck_events_title`（`title` 非空）→ ④ 回收 `idx_events_user_type` / `idx_events_user_task` → ⑤ 列注释留档。`tasks`/`task_lists`/`agents`/`agent_task_logs` 表与列一律保留、停止读写；`DROP ... IF EXISTS` + 系统目录判定，幂等可重放；仅动 `events`，普通日程/循环/农历/工作日零变化** |
 | **013** | **`task_lists` / `tasks.list_id` 归位（清单下线）** | **v0.7.0：① 兜底插入缺失的默认清单；② 全部任务（含项目与成员）一条 UPDATE 归位默认清单；③ 删除用户的非默认清单行（`NOT EXISTS` 守卫，不误删仍被引用的清单）。保留表与 `tasks.list_id` NOT NULL；任务/日程计数与父子、日程归属零变化；脚本幂等** |
+| **014** | **`projects` 独立建表 + `tasks.project_id` 归属改写（项目模型抽离，v0.8.0 远程）** | **v0.8.0：① 建 `projects`（无优先级/无截止时间，状态由成员完成度派生）与状态/来源 CHECK、两枚索引、独立序列；② `tasks` 增 `project_id`；③ 原 `task_type='project'` 行按 **id 直通**搬迁进 `projects`；④ 成员任务 `parent_id` → `project_id`（同语句清空 `parent_id`，避免 ⑥ 删项目行时沿自引用外键级联删成员）；⑤ 项目关联日程转普通日程（标题取项目名、截断 100）；⑥ 删除已搬迁的项目行；⑦ 删 `task_type`/`parent_id` 列与旧约束索引；⑧ 建 `fk_tasks_project` 与外键索引；⑨ 推进序列；⑩ 断言校验；⑪ 存量项目状态按派生口径归一。以「列是否存在」为幂等闸门，可安全重放** |
+| **015** | **`events` 任务日程转换 + 约束重建 + 索引回收（任务/项目/智能体下线）** | **v0.9.0：① 放宽旧约束 → ② 存量 `event_type='task'` 逐条转 `'normal'`（`title` 取任务标题快照、`task_id=NULL`，缺失用「（原任务日程）」兜底）→ ③ 新增 `ck_events_normal_only`（`event_type='normal' AND task_id IS NULL`）与 `ck_events_title`（`title` 非空）→ ④ 回收 `idx_events_user_type` / `idx_events_user_task` → ⑤ 列注释留档。`tasks`/`task_lists`/`agents`/`agent_task_logs`/`projects` 表与列一律保留、停止读写；`DROP ... IF EXISTS` + 系统目录判定，幂等可重放；仅动 `events`，普通日程/循环/农历/工作日零变化。**执行顺序上 015 恒在 014 之后**（014 先把项目关联日程转正，015 再收口剩余任务日程）** |
 
-`events` 关键约束与索引（**003 建表时**；014 已按 v0.8.0 语义重建，见下表）：
+`events` 关键约束与索引（**003 建表时**；015 已按 v0.9.0 语义重建，见下表）：
 
 ```sql
 -- 003 建表（历史）：类型与关联一致；任务日程不存标题副本；结束不得早于开始
@@ -967,7 +983,7 @@ CONSTRAINT chk_event_title     CHECK ((event_type='task' AND title IS NULL)
                                    OR (event_type='normal' AND btrim(title) <> ''))
 CONSTRAINT chk_event_time      CHECK (end_at >= start_at)
 
--- 014（v0.8.0）：只剩普通日程，标题必填；chk_event_time 保留
+-- 015（v0.9.0）：只剩普通日程，标题必填；chk_event_time 保留
 CONSTRAINT ck_events_normal_only CHECK (event_type = 'normal' AND task_id IS NULL)
 CONSTRAINT ck_events_title       CHECK (title IS NOT NULL AND btrim(title) <> '')
 -- v0.2.0：任务日程禁循环（Service / zod / DB 三处一致）
@@ -1000,7 +1016,7 @@ WHERE child.parent_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM tasks AS parent WHERE parent.id = child.parent_id AND parent.task_type = 'project');
 ```
 
-004~011 全部语句幂等（`IF NOT EXISTS` / `ON CONFLICT DO NOTHING` / 索引存在性闸门 / 拆散谓词守卫），存量业务数据零回填（新增列全为 NULL、新增表为空）；006 只收敛会话归属、不删消息，已在含多会话与重复幂等键的样例库上做过守恒 + 幂等 + 故障回滚演练。**注意：006 会把每用户的多会话合并为 1 条（消息全保留），回滚需手工删除唯一索引、合并形态不可逆。** v0.4.0 的升级路径已在 v0.3.0 快照库上演练：只应用 007/008/009、存量行数前后不变、幂等重放全跳过、存量循环系列展开逐日一致。**v0.5.0 的升级路径同样在 v0.4.0 快照库（001~009 + 造数）上演练：只应用 010、存量会话两列全 NULL（零回填）、幂等重放 `skipped=10`、CHECK 约束生效、升级后聊天/清除/冲突全部正常。** **v0.6.0 的升级路径在 001~010 基线 + 造数（3 层普通子树、任务日程、长期记忆、会话）上演练：011 只加列加索引并一次性拆散历史层级（任意深度 5 个节点全置 NULL、字段与 `events.task_id` 零变化）、幂等重放命中 0 行且约束/索引不重复、随后新建的「项目 + 成员」在重放中成员 `parent_id` 不被误拆。**
+004~015 全部语句幂等（`IF NOT EXISTS` / `ON CONFLICT DO NOTHING` / 索引存在性闸门 / 拆散谓词守卫 / 014/015 的"列是否存在"闸门），存量业务数据零回填（新增列全为 NULL、新增表为空）；006 只收敛会话归属、不删消息，已在含多会话与重复幂等键的样例库上做过守恒 + 幂等 + 故障回滚演练。**注意：006 会把每用户的多会话合并为 1 条（消息全保留），回滚需手工删除唯一索引、合并形态不可逆。** v0.4.0 的升级路径已在 v0.3.0 快照库上演练：只应用 007/008/009、存量行数前后不变、幂等重放全跳过、存量循环系列展开逐日一致。**v0.5.0 的升级路径同样在 v0.4.0 快照库（001~009 + 造数）上演练：只应用 010、存量会话两列全 NULL（零回填）、幂等重放 `skipped=10`、CHECK 约束生效、升级后聊天/清除/冲突全部正常。** **v0.6.0 的升级路径在 001~010 基线 + 造数（3 层普通子树、任务日程、长期记忆、会话）上演练：011 只加列加索引并一次性拆散历史层级（任意深度 5 个节点全置 NULL、字段与 `events.task_id` 零变化）、幂等重放命中 0 行且约束/索引不重复、随后新建的「项目 + 成员」在重放中成员 `parent_id` 不被误拆。** **v0.8.0（远程）的升级路径在 001~013 基线 + v0.7.0 形态造数上演练：`projects` 一次建出、项目行按 id 直通搬迁、成员 `parent_id` → `project_id` 且无成员被级联删除、项目关联日程转正并截断标题、`task_type`/`parent_id` 列消失、幂等重放整体 no-op；全新库 001→014 一次通过。** **v0.9.0 的升级路径在合并基线上演练：旧库（001~013 + v0.7.0 形态造数）依次应用 014 → 015、远程 v0.8.0 状态库（001~014）只补 015、全新库 001→015 一次到位（`schema_migrations` 15 行）；015 幂等重放 no-op，转换条数与标题快照逐条一致，`remaining=0`、`empty_titles=0`，普通日程/循环/农历/工作日零变化。**
 
 `work_calendar_days` 数据维护方式（v0.4.0）：
 
@@ -1036,7 +1052,8 @@ CREATE TABLE work_calendar_days (
 | **v0.6.0** | **[270 项](docs/v0.6.0/测试用例文档-个人助手v0.6.0.md)** | **[测试报告](docs/v0.6.0/测试报告-个人助手v0.6.0.md)** | **197 通过 / 7 部分通过 / 66 未执行；可执行范围内 197/204 = 96.6%**（冒烟集 112 项：通过 90、部分 6、未执行 16）；测试期发现并修复 **2 个 P1 缺陷**（埋点缺失与命名、`parent_id=0` 口径），另修正 2 处文档口径偏差；未执行项集中在真机手势/视觉、mock 故障注入与前端埋点 |
 | **v0.7.0** | **[393 项](docs/v0.7.0/测试用例文档-个人助手v0.7.0.md)** | **[测试报告](docs/v0.7.0/测试报告-个人助手v0.7.0.md)** | **四层 146 项断言全部通过（迁移演练 19 / 接口与 MCP 86 / 前端静态 38 / 真实 LLM 3），0 产品缺陷**；真机手势 10/10 复测、真实 MCP 工具接入、微信 WebView、压测与埋点平台核验为发布前待补项 |
 
-| **v0.8.0** | 见 [设计文档](docs/v0.8.0/系统设计文档-个人助手v0.8.0.md)（测试用例与测试报告由后续任务产出） | — | **代码交付**：迁移 014、后端任务/项目/智能体与 MCP 下线、日程与助手收敛、前端路由/页面/组件/类型收敛、日程主页 CAL-04 跟手联动；服务端与前端均通过 `tsc --noEmit` / `vue-tsc --noEmit` 与生产构建 |
+| **v0.8.0** | [566 项](docs/v0.8.0/测试用例文档-个人助手v0.8.0.md) | [测试报告](docs/v0.8.0/测试报告-个人助手v0.8.0.md) | **249 项用例，自动化可验证范围内 131/131 通过、142 项断言 0 失败**；测试期发现并修复 2 个缺陷（D-001 手势观察期 P1、D-002 迁移埋点 P2）；真机手势/浏览器走查/生产级迁移与压测为发布前待补项 |
+| **v0.9.0** | **[283 项](docs/v0.9.0/测试用例文档-个人助手v0.9.0.md)**（新增 239 + 续编 44） | **[测试报告](docs/v0.9.0/测试报告-个人助手v0.9.0.md)**、[测试问题修复记录](docs/v0.9.0/测试问题修复记录-个人助手v0.9.0.md) | **219 项断言（218 通过 / 1 失败）**，失败项为端上埋点未落地，已按结论修复并以 **166 + 7 项断言全通过**复核闭环；**代码交付**：迁移 015、后端任务/项目/智能体与 MCP 下线、日程与助手收敛、前端路由/页面/组件/类型收敛、日程主页 CAL-04 跟手联动；服务端与前端均通过 `tsc --noEmit` / `vue-tsc --noEmit` 与生产构建 |
 
 v0.7.0 执行方式：**四层**——① 迁移演练（全新库 001→013 + v0.6.0 类快照库升级，19 项）；② 接口与 MCP 自动化（测试服务以缩放参数启动：代理上限 3 / 队列 10 / 日志保留 3，86 项断言覆盖 REST 响应、MCP JSON-RPC、数据库行三方交叉）；③ 前端结构静态核验（源码剥离注释后断言 38 项）；④ 真实 DeepSeek 专项（对话指派 + 清单诉求引导，3 项）。关键实测数据：
 
@@ -1139,10 +1156,10 @@ v0.2.0 执行方式：引擎单元断言（tsx）+ 接口/DB 自动化（210 断
 - **RRULE 全量能力**（仅支持受控子集：daily/weekly/monthly/yearly + interval + 星期/月内规则 + never/count/until；不支持 BYSETPOS、多规则并集、按工作日顺延等）
 - **循环系列的 REST 批量管理**（批量操作只作用于单次日程，循环系列不参与批量改/删，避免误伤整条系列）
 - 第三方日历账号同步（Google/Outlook/系统日历/企微/飞书）与日历订阅；日历导入导出（.ics）
-- **任务 / 待办 / 项目 / 成员 / 清单 / 智能体（代理）的替代形态**（v0.8.0）：产品只剩「日程」一个时间事务载体，不引入「轻待办 / 提醒 / 打卡」等任务替代形态
-- **任务 / 项目 / 代理数据的物理删除与导出**（v0.8.0）：能力下线但数据保留在库（`tasks`/`task_lists`/`agents`/`agent_task_logs` 保留、停止读写）
-- **折叠/展开的中间停靠态、拖拽把手、手势提示、进度指示**（v0.8.0）：只在「整月 ↔ 选中周」两态吸附；不支持跨月/跨年拖拽
-- **深色模式、字号调节、多语言、PC 适配**（v0.8.0）
+- **任务 / 待办 / 项目 / 成员 / 清单 / 智能体（代理）的替代形态**（v0.9.0）：产品只剩「日程」一个时间事务载体，不引入「轻待办 / 提醒 / 打卡」等任务替代形态
+- **任务 / 项目 / 代理数据的物理删除与导出**（v0.9.0）：能力下线但数据保留在库（`tasks`/`task_lists`/`agents`/`agent_task_logs` 保留、停止读写）
+- **折叠/展开的中间停靠态、拖拽把手、手势提示、进度指示**（v0.9.0）：只在「整月 ↔ 选中周」两态吸附；不支持跨月/跨年拖拽
+- **深色模式、字号调节、多语言、PC 适配**（v0.9.0）
 - 习惯打卡、笔记、记账
 - 语音输入与多模态、插件市场与自定义 Agent
 

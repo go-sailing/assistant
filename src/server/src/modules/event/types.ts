@@ -7,7 +7,7 @@ import type { SpecialDay } from './workday/workday.service';
 import type { OverrideState, RecurrenceRule } from './recurrence/types';
 
 /**
- * v0.8.0：产品里只剩一个时间事务载体——日程（events）。
+ * v0.9.0：产品里只剩一个时间事务载体——日程（events）。
  * `event_type` 恒为 'normal'、`task_id` 恒为 NULL（DB CHECK 兜底），
  * 类型与关联列保留在库以兼容代码回滚，应用不再读写。
  */
@@ -22,7 +22,7 @@ export type EventStatus = 'scheduled' | 'cancelled';
  */
 export type ConflictLevel = 'none' | 'overlap' | 'all_day';
 
-/** events 表行（v0.8.0：不再 JOIN tasks） */
+/** events 表行（v0.9.0：不再 JOIN tasks） */
 export interface EventRow {
   id: number;
   user_id: number;
@@ -46,7 +46,7 @@ export interface EventRow {
 
 export interface EventDTO {
   id: number;
-  /** v0.8.0：恒 'normal' */
+  /** v0.9.0：恒 'normal' */
   event_type: EventType;
   title: string;
   note: string | null;
@@ -182,7 +182,7 @@ export interface WriteEventResult {
   derived?: { old_series: SeriesDTO; new_series: SeriesDTO } | null;
 }
 
-/** 月视图聚合项（v0.8.0：去掉 task 计数） */
+/** 月视图聚合项（v0.9.0：去掉 task 计数） */
 export interface MonthDayCount {
   date: string;
   normal: number;

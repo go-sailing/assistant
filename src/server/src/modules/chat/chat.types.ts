@@ -4,7 +4,7 @@ import type { ConflictDateGroup, EventScope } from '../event/recurrence/types';
 /**
  * 助手消息的结构化内容块，历史回看与实时流式复用同一套渲染模型。
  *
- * v0.8.0：任务 / 项目 / 代理能力下线，对象类内容块只剩日程（events / series / occurrences）。
+ * v0.9.0：任务 / 项目 / 代理能力下线，对象类内容块只剩日程（events / series / occurrences）。
  * 历史消息中残留的 tasks / subtask_groups / clarify.candidates / confirm.affected 字段
  * 不再刷新，由渲染层统一走「该能力已下线」灰态占位（SDD 8.4）。
  */
@@ -125,7 +125,7 @@ export interface PendingActionRow {
   user_id: number;
   tool_name: string;
   params: Record<string, unknown>;
-  /** 预取的影响对象快照：v0.8.0 只剩日程（affected 列为通用 JSONB，键保留 events） */
+  /** 预取的影响对象快照：v0.9.0 只剩日程（affected 列为通用 JSONB，键保留 events） */
   affected: { events?: EventDTO[] } | null;
   status: string;
   expires_at: Date;

@@ -22,7 +22,7 @@ const drawer = useDrawerStore()
 /** v0.2.0：一级页（日程/助手）左侧渲染汉堡菜单，底部 Tab 已下线 */
 /** v0.3.0：会话列表页下线，助手改为一页（route name = chat） */
 /** v0.6.0：个人信息页与系统设置页由抽屉进入，左上角同样改为菜单按钮 */
-/** v0.8.0：任务/项目/智能体页已下线，一级入口只剩日历与助手 */
+/** v0.9.0：任务/项目/智能体页已下线，一级入口只剩日历与助手 */
 const MENU_ROUTE_NAMES = new Set(['calendar-month', 'chat', 'me', 'settings'])
 const showMenu = computed(() => MENU_ROUTE_NAMES.has(String(route.name ?? '')))
 /** 菜单态不并列渲染返回箭头，避免出现两个左操作 */

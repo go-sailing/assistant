@@ -1,8 +1,10 @@
 -- ============================================================
--- 014_retire_task_project_agent.sql
--- v0.8.0 任务 / 项目 / 智能体能力下线（数据侧）。
+-- 015_retire_task_project_agent.sql
+-- v0.9.0 任务 / 项目 / 智能体能力下线（数据侧）。
 -- 仅处理 events：存量任务日程 → 普通日程（标题快照），并重建约束、回收失效索引。
--- tasks / task_lists / agents / agent_task_logs 表与列一律保留、停止读写（不删不改）。
+-- tasks / task_lists / agents / agent_task_logs / projects 表与列一律保留、停止读写（不删不改）。
+-- 其中 projects 表由 v0.8.0 的 014_project_extract.sql 建出（项目模型抽离），本迁移不改其结构，
+-- 只随项目域一起退出读写；单文件单事务，顺序执行且仅执行一次。
 -- 幂等可重复执行：DROP ... IF EXISTS + 系统目录判定；转换后重跑为 no-op。
 -- 执行顺序：① 放宽旧约束 → ② 回填转换 → ③ 收紧新约束 → ④ 回收索引 → ⑤ 注释。
 -- ============================================================
@@ -56,6 +58,6 @@ DROP INDEX IF EXISTS idx_events_user_task;
 
 -- ⑤ 注释（口径留档）
 COMMENT ON COLUMN events.event_type IS
-  'v0.8.0：恒为 normal（任务日程已下线，存量已转为普通日程）。列保留以兼容代码回滚，应用不再写入。';
+  'v0.9.0：恒为 normal（任务日程已下线，存量已转为普通日程）。列保留以兼容代码回滚，应用不再写入。';
 COMMENT ON COLUMN events.task_id IS
-  'v0.8.0：恒为 NULL（任务能力已下线）。列保留以兼容代码回滚，应用不再读写。';
+  'v0.9.0：恒为 NULL（任务能力已下线）。列保留以兼容代码回滚，应用不再读写。';

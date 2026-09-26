@@ -7,7 +7,7 @@ import AppIcon from '../AppIcon.vue'
 
 /**
  * 对话中的日程卡片（UX 5.7 / 5.10）。
- * v0.8.0：任务日程形态已下线，只剩普通日程、循环系列与循环实例三种形态。
+ * v0.9.0：任务日程形态已下线，只剩普通日程、循环系列与循环实例三种形态。
  */
 const props = withDefaults(
   defineProps<{

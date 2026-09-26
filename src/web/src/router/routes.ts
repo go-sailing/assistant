@@ -1,7 +1,7 @@
 import type { RouteRecordRaw } from 'vue-router'
 
 /**
- * v0.8.0：已下线能力的旧链标记（/tasks、/projects、/agents、/search、/lists 及任务日程旧表单）。
+ * v0.9.0：已下线能力的旧链标记（/tasks、/projects、/agents、/search、/lists 及任务日程旧表单）。
  * 命中这些记录的重定向时落 `legacy_route_redirect` 开发期日志，用于观测残余入口
  * （TC-DEL-068 / TC-AUDIT-080）；非本版下线的历史重定向（`/calendar/day`、`/chat/:id`）不标记。
  */
@@ -46,11 +46,11 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/calendar/new',
     name: 'event-create',
-    // v0.6.0：日程主页头部 ＋ → 普通日程表单（v0.8.0 起为唯一表单）
+    // v0.6.0：日程主页头部 ＋ → 普通日程表单（v0.9.0 起为唯一表单）
     component: () => import('@/views/calendar/EventNormalFormView.vue'),
     meta: { requiresAuth: true },
   },
-  // v0.8.0：任务日程已下线，旧链统一静默重定向到 /calendar（无中间态、无骨架、无 toast）
+  // v0.9.0：任务日程已下线，旧链统一静默重定向到 /calendar（无中间态、无骨架、无 toast）
   { path: '/calendar/task/new', redirect: '/calendar', meta: RETIRED_LEGACY },
   { path: '/calendar/tasks', redirect: '/calendar', meta: RETIRED_LEGACY },
   // v0.2.0：循环系列详情（须在 /calendar/:id 之前注册）
@@ -67,7 +67,7 @@ export const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
-    // v0.8.0：编辑入口收敛为唯一普通表单（不再经过 EventEditDispatchView 分流，消除闪烁）
+    // v0.9.0：编辑入口收敛为唯一普通表单（不再经过 EventEditDispatchView 分流，消除闪烁）
     path: '/calendar/:id/edit',
     name: 'event-edit',
     component: () => import('@/views/calendar/EventNormalFormView.vue'),
@@ -85,7 +85,7 @@ export const routes: RouteRecordRaw[] = [
     redirect: (to) => ({ path: `/calendar/${to.params.id}/edit`, query: to.query }),
     meta: RETIRED_LEGACY,
   },
-  /* ----- v0.8.0：任务 / 项目 / 智能体 / 搜索 / 清单能力下线，旧链静默落 /calendar ----- */
+  /* ----- v0.9.0：任务 / 项目 / 智能体 / 搜索 / 清单能力下线，旧链静默落 /calendar ----- */
   { path: '/tasks', redirect: '/calendar', meta: RETIRED_LEGACY },
   { path: '/tasks/new', redirect: '/calendar', meta: RETIRED_LEGACY },
   { path: '/tasks/:id', redirect: '/calendar', meta: RETIRED_LEGACY },

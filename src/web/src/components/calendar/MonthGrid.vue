@@ -146,7 +146,7 @@ const cells = computed<CellInfo[]>(() =>
 
 /**
  * 压缩态行高通过 CSS 变量下发（未压缩时不设置，走 aspect-ratio 正方形）。
- * v0.8.0（CAL-04）：日期行位移改由外部 CSS 变量 --shape-shift 驱动
+ * v0.9.0（CAL-04）：日期行位移改由外部 CSS 变量 --shape-shift 驱动
  * （跟手期间由 MonthView 直写，保证与容器高度同帧）。
  */
 const gridStyle = computed(() =>

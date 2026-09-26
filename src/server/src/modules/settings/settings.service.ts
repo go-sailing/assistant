@@ -20,7 +20,7 @@ export interface UserSettings {
   lunar_enabled: boolean;
   /** 二十四节气（默认开）；仅在 lunar_enabled 时可用 */
   solar_terms_enabled: boolean;
-  /** 默认启动页（v0.8.0：只剩 /calendar 一个有效值） */
+  /** 默认启动页（v0.9.0：只剩 /calendar 一个有效值） */
   home_route: '/calendar';
 }
 

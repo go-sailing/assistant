@@ -50,7 +50,7 @@ interface CardsLike {
   events?: CalendarEvent[]
   series?: SeriesDetail[]
   occurrences?: Occurrence[]
-  /** v0.8.0 历史遗留：任务卡 / 项目结果组快照（仅占位） */
+  /** v0.9.0 历史遗留：任务卡 / 项目结果组快照（仅占位） */
   tasks?: LegacyCard[]
   subtask_groups?: Array<{ root_task_id: number; nodes: LegacyCard[] }>
 }
@@ -91,7 +91,7 @@ function pickedScope(blockIndex: number): string {
   return props.message.clarifyPicked?.[blockIndex] || ''
 }
 
-/* ---- v0.8.0（D-09 / TC-AUDIT-084）：历史卡片占位命中观测 ---- */
+/* ---- v0.9.0（D-09 / TC-AUDIT-084）：历史卡片占位命中观测 ---- */
 
 /** 已落日志的占位项（同一消息重复渲染不重复计数） */
 const loggedPlaceholders = new Set<string>()
@@ -185,7 +185,7 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
           :occurrence="o"
           @occurrence-restore="emit('occurrence-restore', $event)"
         />
-        <!-- v0.8.0：历史消息中的任务 / 项目卡统一渲染为「该能力已下线」灰态占位 -->
+        <!-- v0.9.0：历史消息中的任务 / 项目卡统一渲染为「该能力已下线」灰态占位 -->
         <div
           v-for="(title, li) in legacyTitles(block as CardsLike)"
           :key="`legacy-${bi}-${li}`"
@@ -224,7 +224,7 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
             </button>
           </div>
         </template>
-        <!-- v0.8.0：历史遗留的任务候选统一渲染为灰态占位 -->
+        <!-- v0.9.0：历史遗留的任务候选统一渲染为灰态占位 -->
         <div
           v-for="(t, ci) in block.candidates || []"
           :key="`legacy-cand-${bi}-${ci}`"
@@ -311,7 +311,7 @@ function confirmState(block: ConfirmBlock): 'pending' | 'loading' | 'confirmed' 
 .blocks__cand > :first-child {
   align-self: stretch;
 }
-/* v0.8.0：已下线能力的历史卡占位（不可点击、无 chevron、无 hover） */
+/* v0.9.0：已下线能力的历史卡占位（不可点击、无 chevron、无 hover） */
 .blocks__legacy {
   display: flex;
   flex-direction: column;

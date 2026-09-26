@@ -34,7 +34,7 @@ import type { GestureOrigin, GestureResult } from '@/utils/telemetry'
 import { gestureDirection, logShapeGesture, logShapeGestureDropped } from '@/utils/telemetry'
 
 /**
- * 日程主页（v0.6.0 CAL-01 / CAL-02；v0.8.0 CAL-04 跟手联动）。
+ * 日程主页（v0.6.0 CAL-01 / CAL-02；v0.9.0 CAL-04 跟手联动）。
  *
  * - 头部仅「菜单 · 月份 · ＋（最右）」；换月靠左右滑动与点补位日；
  * - 删除列表标题行；选中日 ≠ 今天时右下角显示浮动「今日」；
@@ -391,7 +391,7 @@ function onSelect(date: string): void {
   else void loadDayOnly()
 }
 
-/* ================= v0.8.0（CAL-04）折叠/展开跟手联动 ================= */
+/* ================= v0.9.0（CAL-04）折叠/展开跟手联动 ================= */
 
 type GestureLock = 'none' | 'vertical' | 'horizontal'
 
@@ -413,7 +413,7 @@ interface ShapeGesture {
   /** p 触达端点时的 dy 与当时 scrollTop（交还列表滚动的基准） */
   endpointDy: number
   handoffBaseScroll: number
-  /* ----- v0.8.0 埋点采样（TC-AUDIT-082：方向 / 帧率采样） ----- */
+  /* ----- v0.9.0 埋点采样（TC-AUDIT-082：方向 / 帧率采样） ----- */
   /** 最近一次 move 的净纵向位移（判定方向） */
   netDy: number
   /** 已采样到的跟手帧数（每次写形态算一帧） */
@@ -499,7 +499,7 @@ function beginGesture(t: Touch, origin: GestureOrigin): void {
   }
 }
 
-/* ---- v0.8.0：形态手势埋点（D-09：开发期日志 + 测试断言，无上报通道） ---- */
+/* ---- v0.9.0：形态手势埋点（D-09：开发期日志 + 测试断言，无上报通道） ---- */
 
 /** 手势被丢弃（TC-AUDIT-083）：方向锁 / 多指 / 动画互斥 */
 function logShapeDropped(
