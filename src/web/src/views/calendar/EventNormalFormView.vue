@@ -35,7 +35,7 @@ import { useToastStore } from '@/stores/toast'
 
 /**
  * 普通日程表单（v0.6.0，FRM-01）：由旧合并表单的 normal 分支整体迁出。
- * 手工输入标题；可设全天、公历/农历、重复规则；不支持关联任务。
+ * 手工输入标题；可设全天、公历/农历、重复规则。
  */
 const route = useRoute()
 const router = useRouter()
@@ -401,14 +401,6 @@ async function loadEvent(): Promise<void> {
   try {
     // 实例视角取实例（带覆盖后的字段），整条视角取系列主记录（= 首次时间锚点）
     const ev = await eventApi.fetchEvent(editId.value, occurrenceKey.value || undefined)
-    if (ev.event_type === 'task') {
-      // 任务日程不属于本表单：交由统一编辑入口按类型分流
-      await router.replace({
-        path: `/calendar/${editId.value}/edit/task`,
-        query: { ...route.query },
-      })
-      return
-    }
     title.value = ev.title
     allDay.value = ev.all_day
     location.value = ev.location || ''
@@ -440,7 +432,6 @@ function buildPayload(confirmConflict: boolean): EventPayload {
     location: location.value.trim() || null,
     note: note.value.trim() || null,
   }
-  if (!editId.value) payload.event_type = 'normal'
 
   // 循环：创建时携带规则；实例作用域只提交本次/本次及以后，不夹带规则
   if (editId.value && (scopeParam.value === 'this' || scopeParam.value === 'following')) {
@@ -684,7 +675,7 @@ onMounted(async () => {
           </div>
         </section>
 
-        <!-- 重复设置行（普通日程专属；任务日程禁循环） -->
+        <!-- 重复设置行 -->
         <section v-if="!scopedToOccurrence" class="form__group form__group--rows">
           <button class="form__row pressable" @click="openRepeat">
             <AppIcon name="repeat" :size="18" color="#6B7080" />

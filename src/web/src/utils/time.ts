@@ -1,4 +1,4 @@
-import type { CalendarEvent, Task } from '@/types'
+import type { CalendarEvent } from '@/types'
 
 /** ISO8601 UTC 字符串 → 本地 Date */
 export function parseDate(iso: string | null | undefined): Date | null {
@@ -90,39 +90,6 @@ export function formatListTime(iso: string): string {
   if (diff === -1) return '昨天'
   const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}-${md}`
-}
-
-/** 是否逾期（未完成且截止时间早于当前） */
-export function isOverdue(task: Pick<Task, 'status' | 'due_at'>): boolean {
-  if (task.status === 'completed') return false
-  const d = parseDate(task.due_at)
-  return !!d && d.getTime() < Date.now()
-}
-
-/** 是否今天截止（未完成、截止时间在今天之内） */
-export function isDueToday(task: Pick<Task, 'status' | 'due_at'>): boolean {
-  if (task.status === 'completed') return false
-  const d = parseDate(task.due_at)
-  return !!d && dayDiff(d) === 0
-}
-
-/** 逾期天数（不足 1 天按 1 天计） */
-export function overdueDays(iso: string | null | undefined): number {
-  const d = parseDate(iso)
-  if (!d) return 0
-  const ms = Date.now() - d.getTime()
-  if (ms <= 0) return 0
-  return Math.max(1, Math.ceil(ms / 86400000))
-}
-
-/** 副标题时间颜色类型 */
-export type TimeTone = 'normal' | 'danger' | 'warning'
-
-export function dueTone(task: Pick<Task, 'status' | 'due_at' | 'completed_at'>): TimeTone {
-  if (task.status === 'completed') return 'normal'
-  if (isOverdue(task)) return 'danger'
-  if (isDueToday(task)) return 'warning'
-  return 'normal'
 }
 
 /** Date → 提交给后端的 ISO8601 UTC 字符串 */

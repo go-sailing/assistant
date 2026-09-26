@@ -20,8 +20,8 @@ export interface UserSettings {
   lunar_enabled: boolean;
   /** 二十四节气（默认开）；仅在 lunar_enabled 时可用 */
   solar_terms_enabled: boolean;
-  /** 默认启动页 */
-  home_route: '/calendar' | '/tasks';
+  /** 默认启动页（v0.8.0：只剩 /calendar 一个有效值） */
+  home_route: '/calendar';
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -74,10 +74,7 @@ function mergeSettings(payload: Record<string, unknown> | null | undefined): Use
   const raw = payload ?? {};
   const bool = (key: keyof UserSettings, fallback: boolean): boolean =>
     typeof raw[key] === 'boolean' ? (raw[key] as boolean) : fallback;
-  const homeRoute =
-    raw.home_route === '/tasks' || raw.home_route === '/calendar'
-      ? (raw.home_route as '/calendar' | '/tasks')
-      : DEFAULT_SETTINGS.home_route;
+  const homeRoute = '/calendar' as const;
   return {
     lunar_enabled: bool('lunar_enabled', DEFAULT_SETTINGS.lunar_enabled),
     solar_terms_enabled: bool('solar_terms_enabled', DEFAULT_SETTINGS.solar_terms_enabled),
@@ -145,7 +142,7 @@ export const settingsService = {
         throw AppError.paramInvalid(`不支持的设置项：${key}`);
       }
     }
-    if (patch.home_route !== undefined && patch.home_route !== '/tasks' && patch.home_route !== '/calendar') {
+    if (patch.home_route !== undefined && patch.home_route !== '/calendar') {
       throw AppError.paramInvalid('默认启动页取值不合法');
     }
     for (const key of ['lunar_enabled', 'solar_terms_enabled'] as const) {

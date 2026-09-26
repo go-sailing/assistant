@@ -12,21 +12,34 @@ import {
   fromDateKey,
   toDateKey,
 } from '@/utils/time'
+import {
+  DRAG_OBSERVE_PX,
+  DRAG_DIRECTION_RATIO,
+  LIST_TOP_TOLERANCE,
+  SETTLE_MS,
+  clamp,
+  easeOutCubic,
+  mapProgress,
+  settleTarget,
+} from '@/utils/shape'
 import AppIcon from '@/components/AppIcon.vue'
 import FloatingTodayButton from '@/components/calendar/FloatingTodayButton.vue'
 import MonthGrid from '@/components/calendar/MonthGrid.vue'
-import EventTypeTag from '@/components/calendar/EventTypeTag.vue'
 import RecurrenceBadge from '@/components/calendar/RecurrenceBadge.vue'
 import SkeletonList from '@/components/SkeletonList.vue'
 import StateError from '@/components/StateError.vue'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useDrawerStore } from '@/stores/drawer'
+import type { GestureOrigin, GestureResult } from '@/utils/telemetry'
+import { gestureDirection, logShapeGesture, logShapeGestureDropped } from '@/utils/telemetry'
 
 /**
- * 日程主页（v0.6.0，CAL-01 / CAL-02）：
+ * 日程主页（v0.6.0 CAL-01 / CAL-02；v0.8.0 CAL-04 跟手联动）。
+ *
  * - 头部仅「菜单 · 月份 · ＋（最右）」；换月靠左右滑动与点补位日；
  * - 删除列表标题行；选中日 ≠ 今天时右下角显示浮动「今日」；
- * - 删除折叠开关行：首次进入默认展开，列表顶部上滑折叠为周、折叠态下拉展开月。
+ * - 折叠/展开为**位移连续驱动**：p∈[0,1] 由手指纵向位移映射，跟手期间阻止列表滚动，
+ *   松手吸附到 0 或 1，到位后无缝交还列表滚动；起手区域扩展为「日历区 ∪ 列表顶部」。
  */
 const router = useRouter()
 const route = useRoute()
@@ -40,9 +53,9 @@ const selectedDate = ref(toDateKey(today))
 
 /** 折叠态（纯内存 UI 态；首次进入恒为展开） */
 const collapsed = ref(false)
-/** 折叠动画进行中：忽略新手势 */
+/** 吸附/回弹动画进行中：忽略新手势 */
 const animating = ref(false)
-/** 动画结束后才真正只渲染一周（动画期间保留整月内容，位置连续） */
+/** 折叠到位后只渲染选中周（跟手期间保持整月渲染，避免重渲染跳变） */
 const renderWeek = ref(false)
 
 /** 月计数缓存：key = `y-m`；折叠态跨月周需要同时覆盖两个月 */
@@ -64,6 +77,8 @@ let skeletonTimer = 0
 const pageEl = ref<HTMLElement | null>(null)
 const headEl = ref<HTMLElement | null>(null)
 const gridWrap = ref<HTMLElement | null>(null)
+/** 月历高度容器：跟手期间直写 height */
+const gridEl = ref<HTMLElement | null>(null)
 /** 月历容器宽度（中栏内容宽）：折叠/展开高度都由它推导，横竖屏切换同样成立 */
 const containerWidth = ref(0)
 const pageHeight = ref(0)
@@ -79,13 +94,6 @@ const GRID_CELL_MIN = 36
 /** 与 --calendar-list-min-height 一致：列表区最小高度占视口比 */
 const LIST_MIN_RATIO = 0.38
 const SKELETON_DELAY = 300
-
-/** v0.6.0 手势常量（系统设计文档 4.4） */
-const GESTURE_LOCK_PX = 8
-const SHAPE_THRESHOLD_PX = 32
-const DIRECTION_RATIO = 1.5
-const SHAPE_ANIMATION_MS = 250
-const LIST_TOP_TOLERANCE = 2
 
 /** 单格边长：(容器宽 − 左右内边距) / 7，格子 aspect-ratio:1 */
 const cellSize = computed(() => {
@@ -133,7 +141,7 @@ const monthTitle = computed(() => formatMonthTitle(year.value, month.value))
 /** 浮动「今日」按钮显隐：选中日 ≠ 今天（无论是否同月） */
 const isSelectedToday = computed(() => selectedDate.value === toDateKey(new Date()))
 
-/** 选中日在其所在月网格中的行号（0..5），折叠动画用 */
+/** 选中日在其所在月网格中的行号（0..5），折叠跟手位移用 */
 const weekIndex = computed(() => {
   const gridStart = buildMonthGrid(year.value, month.value)[0]
   return Math.max(0, Math.floor(diffDays(gridStart, fromDateKey(selectedDate.value)) / 7))
@@ -143,11 +151,6 @@ const gridHeight = computed(() => {
   // 显式像素高度才能触发 height 过渡（auto 无法插值）
   if (collapsed.value) return weekHeight.value ? `${weekHeight.value}px` : undefined
   return expandedHeight.value ? `${expandedHeight.value}px` : undefined
-})
-/** 折叠动画：日期行上移的像素位移（把选中周滑到可视区顶部） */
-const gridShift = computed(() => {
-  if (!collapsed.value || renderWeek.value || !cellSize.value) return 0
-  return weekIndex.value * effectiveCell.value
 })
 
 /** 折叠态可见格子的标记点来源：选中日所在周可能跨两个月 */
@@ -388,112 +391,355 @@ function onSelect(date: string): void {
   else void loadDayOnly()
 }
 
-/* ---- v0.6.0 折叠/展开手势化：删除开关行，改为列表顶部上滑折叠、下拉展开 ---- */
+/* ================= v0.8.0（CAL-04）折叠/展开跟手联动 ================= */
 
-/** 折叠：先按整月内容播放高度/位移过渡，动画结束后只渲染选中周 */
-async function collapseCalendar(): Promise<void> {
-  animating.value = true
-  collapsed.value = true
-  void loadCollapsed()
-  window.setTimeout(() => {
-    renderWeek.value = true
-    animating.value = false
-  }, SHAPE_ANIMATION_MS)
-}
-
-/** 展开：恢复整月渲染并定位到选中日所在月份 */
-async function expandCalendar(): Promise<void> {
-  animating.value = true
-  collapsed.value = false
-  renderWeek.value = false
-  const d = fromDateKey(selectedDate.value)
-  year.value = d.getFullYear()
-  month.value = d.getMonth() + 1
-  await nextTick()
-  measureLayout()
-  void loadExpanded()
-  window.setTimeout(() => {
-    animating.value = false
-  }, SHAPE_ANIMATION_MS)
-}
+type GestureLock = 'none' | 'vertical' | 'horizontal'
 
 interface ShapeGesture {
   startX: number
   startY: number
-  lock: 'none' | 'vertical' | 'horizontal'
-  fired: boolean
-  /**
-   * v0.7.0（CAL-03）：起手快照——本次手势是否从列表顶部开始。
-   * 上滑时原生滚动会先把 scrollTop 推离顶部，若在 touchmove 中实时判定，
-   * 折叠分支将永不可达（v0.6.0 缺陷）；改为以起手时刻为准。
-   */
-  startAtTop: boolean
+  /** 相邻两次 move 的基准（观察期结束时对齐） */
+  lastDy: number
+  lastY: number
+  lastT: number
+  velocity: number
+  lock: GestureLock
+  origin: GestureOrigin
+  /** 是否已接管形态（日历区 / 列表顶部 + 纵向锁定） */
+  tookOver: boolean
+  /** 是否已提交形态（到达端点） */
+  committed: boolean
+  startP: number
+  /** p 触达端点时的 dy 与当时 scrollTop（交还列表滚动的基准） */
+  endpointDy: number
+  handoffBaseScroll: number
+  /* ----- v0.8.0 埋点采样（TC-AUDIT-082：方向 / 帧率采样） ----- */
+  /** 最近一次 move 的净纵向位移（判定方向） */
+  netDy: number
+  /** 已采样到的跟手帧数（每次写形态算一帧） */
+  frames: number
+  /** 首个跟手帧的时间戳（帧率采样起点） */
+  firstFrameAt: number
+  /** 帧率采样结果（已计算后复用，避免重复结算） */
+  fps: number
 }
-let shapeGesture: ShapeGesture | null = null
 
-function onShapeTouchStart(e: TouchEvent): void {
+/** 当前进度（仅在跟手/动画期间由脚本维护；提交后同步为 0/1） */
+let dragP = 1
+let shapeGesture: ShapeGesture | null = null
+let motionRaf = 0
+
+/** 行程：展开态与折叠态的高度差 */
+function progressRange(): number {
+  return Math.max(1, expandedHeight.value - weekHeight.value)
+}
+
+/** 起手点在其所在端的 p 值（未接管时按当前形态估算） */
+function currentP(): number {
+  return collapsed.value ? 0 : 1
+}
+
+/** 跟手期间逐帧直写（rAF 合并，无 CSS transition） */
+function applyDragFrame(p: number): void {
+  const el = gridEl.value
+  if (!el) return
+  // 埋点采样（TC-AUDIT-082）：跟手帧数按实际写形态的次数计，用于估算跟手帧率
+  const g = shapeGesture
+  if (g) {
+    if (!g.frames) g.firstFrameAt = performance.now()
+    g.frames += 1
+  }
+  const h = weekHeight.value + p * (expandedHeight.value - weekHeight.value)
+  const shift = (1 - p) * weekIndex.value * effectiveCell.value
+  el.classList.add('month__grid--dragging')
+  el.style.height = h ? `${h}px` : ''
+  el.style.setProperty('--shape-shift', `${shift}px`)
+}
+
+/** 提交/复位后按响应式状态写回静态高度与位移（归零且无 transition） */
+function applyStatic(): void {
+  const el = gridEl.value
+  if (!el) return
+  const h = collapsed.value ? weekHeight.value : expandedHeight.value
+  el.classList.add('month__grid--dragging')
+  el.style.height = h ? `${h}px` : ''
+  el.style.setProperty('--shape-shift', '0px')
+  // 下一帧解除过渡锁定：静态阶段由 CSS 过渡接管（值已相同，不产生动效）
+  requestAnimationFrame(() => {
+    el.classList.remove('month__grid--dragging')
+  })
+}
+
+function beginGesture(t: Touch, origin: GestureOrigin): void {
   if (animating.value) {
+    // 埋点（TC-AUDIT-083）：动画互斥导致丢弃
     shapeGesture = null
+    logShapeDropped('animating', origin)
     return
   }
-  const list = listEl.value
-  // 非列表顶部不接管：手势只用于滚动
-  if (!list || list.scrollTop > LIST_TOP_TOLERANCE) {
-    shapeGesture = null
-    return
-  }
-  const t = e.touches[0]
-  if (!t) return
+  dragP = currentP()
   shapeGesture = {
     startX: t.clientX,
     startY: t.clientY,
+    lastDy: 0,
+    lastY: t.clientY,
+    lastT: performance.now(),
+    velocity: 0,
     lock: 'none',
-    fired: false,
-    // 能进入本分支即代表起手时列表在顶部
-    startAtTop: true,
+    origin,
+    tookOver: false,
+    committed: false,
+    startP: dragP,
+    endpointDy: 0,
+    handoffBaseScroll: listEl.value?.scrollTop ?? 0,
+    netDy: 0,
+    frames: 0,
+    firstFrameAt: 0,
+    fps: 0,
   }
+}
+
+/* ---- v0.8.0：形态手势埋点（D-09：开发期日志 + 测试断言，无上报通道） ---- */
+
+/** 手势被丢弃（TC-AUDIT-083）：方向锁 / 多指 / 动画互斥 */
+function logShapeDropped(
+  reason: 'direction_lock' | 'multi_touch' | 'animating',
+  origin: GestureOrigin
+): void {
+  logShapeGestureDropped(reason, origin)
+}
+
+/**
+ * 跟手帧率采样（TC-AUDIT-082）：按「写形态的帧数 / 采样时长」估算，
+ * 跟手期间每个 move 写一帧，等价于跟手帧率；未接管（帧数 0）时记 0。
+ */
+function sampleFps(g: ShapeGesture): number {
+  if (g.fps) return g.fps
+  if (g.frames < 1 || !g.firstFrameAt) return 0
+  const elapsed = performance.now() - g.firstFrameAt
+  g.fps = elapsed > 0 ? Math.round((g.frames * 1000) / elapsed) : 0
+  return g.fps
+}
+
+/** 一次手势一条（TC-AUDIT-082）：方向 / 起手区 / 是否接管 / 吸附结果 / 帧率采样 */
+function logGesture(g: ShapeGesture, result: GestureResult): void {
+  logShapeGesture({
+    direction: gestureDirection(g.netDy),
+    origin: g.origin,
+    tookOver: g.tookOver,
+    result,
+    frames: g.frames,
+    fps: sampleFps(g),
+    durationMs: g.firstFrameAt ? Math.round(performance.now() - g.firstFrameAt) : 0,
+  })
+}
+
+function onListTouchStart(e: TouchEvent): void {
+  const t = e.touches[0]
+  if (!t) return
+  const top = (listEl.value?.scrollTop ?? 0) <= LIST_TOP_TOLERANCE
+  beginGesture(t, top ? 'list-top' : 'list-mid')
+}
+
+function onCalTouchStart(e: TouchEvent): void {
+  const t = e.touches[0]
+  if (!t) return
+  beginSwipe(t)
+  beginGesture(t, 'calendar')
 }
 
 function onShapeTouchMove(e: TouchEvent): void {
   const g = shapeGesture
-  if (!g || g.fired || animating.value) return
+  if (!g) return
+  // 多指中断：取消本次手势，回弹到起手端（不残留半开）
+  if (e.touches.length > 1) {
+    cancelGesture()
+    return
+  }
   const t = e.touches[0]
   if (!t) return
   const dx = t.clientX - g.startX
   const dy = t.clientY - g.startY
+  g.netDy = dy
+
+  // 速度采样（最近窗口）
+  const now = performance.now()
+  if (now - g.lastT >= 16) {
+    g.velocity = (t.clientY - g.lastY) / Math.max(1, now - g.lastT)
+    g.lastY = t.clientY
+    g.lastT = now
+  }
 
   if (g.lock === 'none') {
-    if (Math.abs(dx) < GESTURE_LOCK_PX && Math.abs(dy) < GESTURE_LOCK_PX) return
-    g.lock = Math.abs(dy) > DIRECTION_RATIO * Math.abs(dx) ? 'vertical' : 'horizontal'
+    if (Math.abs(dx) < DRAG_OBSERVE_PX && Math.abs(dy) < DRAG_OBSERVE_PX) return
+    g.lock = Math.abs(dy) > DRAG_DIRECTION_RATIO * Math.abs(dx) ? 'vertical' : 'horizontal'
+    g.lastDy = dy // 观察期结束点作为跟手基准
+    // 埋点（TC-AUDIT-083）：方向锁判为横向 → 形态手势被丢弃（交还横滑换期）
+    if (g.lock === 'horizontal') logShapeDropped('direction_lock', g.origin)
+    // 接管条件：日历区任意纵向；列表顶部仅在「能驱动形态」的方向接管
+    // （展开态需上滑折叠、折叠态需下拉展开；反向位移不接管，交回列表滚动）
+    const wantsExpand = dragP < 0.5
+    const directionFits = wantsExpand ? dy > 0 : dy < 0
+    const canTakeOver =
+      g.lock === 'vertical' &&
+      (g.origin === 'calendar' || (g.origin === 'list-top' && directionFits))
+    if (canTakeOver) {
+      g.tookOver = true
+      // 接管的第一帧就阻止原生滚动，避免浏览器在该帧已开始滚动后无法回退
+      e.preventDefault()
+      // 展开方向起手：若当前只渲染选中周，起手即恢复整月渲染，避免跳变
+      if (renderWeek.value) {
+        renderWeek.value = false
+        applyDragFrame(dragP)
+      }
+    }
+    return // 本帧不推进 p（观察期内不跟手）
   }
-  if (g.lock !== 'vertical') return
-  // v0.7.0：以起手快照判定，不再读取实时 scrollTop（避免被原生滚动取消判定）
-  if (!g.startAtTop) return
+  if (g.lock !== 'vertical' || !g.tookOver) return // 列表中部：只滚动，不接管
 
-  if (!collapsed.value && dy <= -SHAPE_THRESHOLD_PX) {
-    g.fired = true
-    void collapseCalendar()
-  } else if (collapsed.value && dy >= SHAPE_THRESHOLD_PX) {
-    g.fired = true
-    void expandCalendar()
+  if (!g.committed) {
+    e.preventDefault() // 跟手期间阻止原生滚动
+    const dDy = dy - g.lastDy
+    g.lastDy = dy
+    dragP = mapProgress(dragP, dDy, progressRange())
+    applyDragFrame(dragP)
+    if (dragP <= 0) commitCollapse(g, dy)
+    else if (dragP >= 1) commitExpand(g, dy)
+    return
   }
+  // 已提交：残余位移交还列表滚动（脚本滚动，原生滚动已被 preventDefault 抑制）
+  e.preventDefault()
+  const el = listEl.value
+  if (!el) return
+  const max = el.scrollHeight - el.clientHeight
+  el.scrollTop = clamp(g.handoffBaseScroll + (g.endpointDy - dy), 0, Math.max(0, max))
+}
+
+/** p 触达折叠端点：提交折叠并开始交还列表滚动 */
+function commitCollapse(g: ShapeGesture, dy: number): void {
+  dragP = 0
+  g.committed = true
+  g.endpointDy = dy
+  g.handoffBaseScroll = listEl.value?.scrollTop ?? 0
+  collapsed.value = true
+  renderWeek.value = true
+  applyStatic()
+  void loadCollapsed()
+}
+
+/** p 触达展开端点：提交展开并开始交还列表滚动 */
+function commitExpand(g: ShapeGesture, dy: number): void {
+  dragP = 1
+  g.committed = true
+  g.endpointDy = dy
+  g.handoffBaseScroll = listEl.value?.scrollTop ?? 0
+  collapsed.value = false
+  renderWeek.value = false
+  applyStatic()
+  void loadExpanded()
+}
+
+/** 中断（多指/取消）：回弹到最近一次已吸附的合法态，不残留半开 */
+function cancelGesture(): void {
+  const g = shapeGesture
+  if (!g) return
+  shapeGesture = null
+  // 埋点（TC-AUDIT-083）：多指打断 → 丢弃记录；已接管则回弹到起手端
+  logShapeDropped('multi_touch', g.origin)
+  // 观察期内即被打断（lock='none'）不算一次手势，与抬起路径同口径
+  if (g.lock !== 'none' || g.committed) {
+    logGesture(g, g.committed ? gestureCommitResult() : g.tookOver ? 'rebound' : 'none')
+  }
+  if (g.committed || !g.tookOver) return
+  const target: 0 | 1 = g.startP >= 0.5 ? 1 : 0
+  animateTo(target)
+}
+
+/** 已提交形态对应的结果枚举 */
+function gestureCommitResult(): GestureResult {
+  return collapsed.value ? 'collapse' : 'expand'
 }
 
 function onShapeTouchEnd(): void {
+  const g = shapeGesture
   shapeGesture = null
+  if (!g) return
+  // 未接管（列表中部竖向、或横滑）时不结算形态，交回原生滚动/翻期
+  // 观察期内即抬起（点按/轻触）不算一次手势，不落埋点
+  if (g.lock === 'none' && !g.committed) return
+  if (!g.tookOver) {
+    logGesture(g, 'none')
+    return
+  }
+  if (g.committed) {
+    logGesture(g, gestureCommitResult())
+    animating.value = false
+    return
+  }
+  const target = settleTarget(dragP, g.startP, g.velocity)
+  logGesture(g, target === g.startP ? 'rebound' : target === 0 ? 'collapse' : 'expand')
+  animateTo(target)
+}
+
+/** 日历区抬手：先结算形态手势，再处理横滑换期 */
+function onCalTouchEnd(e: TouchEvent): void {
+  onShapeTouchEnd()
+  onSwipeTouchEnd(e)
+}
+
+/** rAF ease-out 补间（≤250ms）；prefers-reduced-motion 下即时到位 */
+function animateTo(target: 0 | 1): void {
+  cancelAnimationFrame(motionRaf)
+  const reduced =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const from = dragP
+  if (from === target || reduced) {
+    finishAt(target)
+    return
+  }
+  animating.value = true
+  const startAt = performance.now()
+  const step = (now: number): void => {
+    const t = clamp((now - startAt) / SETTLE_MS, 0, 1)
+    dragP = from + (target - from) * easeOutCubic(t)
+    applyDragFrame(dragP)
+    if (t < 1) {
+      motionRaf = requestAnimationFrame(step)
+      return
+    }
+    finishAt(target)
+  }
+  motionRaf = requestAnimationFrame(step)
+}
+
+/** 动画结束：切渲染 + 加载数据 + 归零位移 */
+function finishAt(target: 0 | 1): void {
+  dragP = target
+  if (target === 0) {
+    collapsed.value = true
+    renderWeek.value = true
+    applyStatic()
+    void loadCollapsed()
+  } else {
+    collapsed.value = false
+    renderWeek.value = false
+    applyStatic()
+    void loadExpanded()
+  }
+  animating.value = false
 }
 
 function goNew(): void {
   router.push(`/calendar/new?date=${selectedDate.value}`)
 }
 
-/* ---- 左右滑动：展开态翻月 / 折叠态翻周 ---- */
+/* ---- 左右滑动：展开态翻月 / 折叠态翻周（纵向锁定前仍生效） ---- */
 let swipeStartX = 0
 let swipeStartY = 0
 let swipeActive = false
 
-function onTouchStart(e: TouchEvent): void {
-  const t = e.touches[0]
+function beginSwipe(t: Touch): void {
   // 屏幕边缘 20px 起手让给浏览器返回/前进手势
   if (t.clientX < 20 || t.clientX > window.innerWidth - 20) {
     swipeActive = false
@@ -504,10 +750,14 @@ function onTouchStart(e: TouchEvent): void {
   swipeActive = true
 }
 
-function onTouchEnd(e: TouchEvent): void {
+function onSwipeTouchEnd(e: TouchEvent): void {
   if (!swipeActive) return
   swipeActive = false
+  const g = shapeGesture
+  // 已接管形态的手势不翻期（起手区与形态手势互斥）
+  if (g && g.tookOver) return
   const t = e.changedTouches[0]
+  if (!t) return
   const dx = t.clientX - swipeStartX
   const dy = t.clientY - swipeStartY
   // 横向位移足够且明显横滑才切换，避免与纵向滚动冲突
@@ -543,7 +793,7 @@ function rowKey(e: CalendarEvent): string {
   return `${e.id}-${occurrenceOf(e)?.occurrence_key ?? ''}`
 }
 
-/** v0.3.0：列表 item 统一直达详情（普通/任务日程 → 详情；循环实例 → 实例视角详情） */
+/** v0.3.0：列表 item 统一直达详情（普通日程 → 详情；循环实例 → 实例视角详情） */
 function onEventClick(e: CalendarEvent): void {
   const occ = occurrenceOf(e)
   if (occ) {
@@ -579,8 +829,10 @@ onMounted(async () => {
   }
   await nextTick()
   measureLayout()
+  dragP = collapsed.value ? 0 : 1
   if (collapsed.value) await loadCollapsed()
   else await bootstrap()
+  applyStatic()
   if (restoreTop >= 0 && listEl.value) {
     listEl.value.scrollTop = restoreTop
     restoreTop = -1
@@ -591,6 +843,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', measureLayout)
   window.clearTimeout(skeletonTimer)
+  cancelAnimationFrame(motionRaf)
+  shapeGesture = null
   const top = listEl.value?.scrollTop ?? 0
   lastView = {
     date: selectedDate.value,
@@ -618,26 +872,22 @@ onBeforeUnmount(() => {
       </button>
     </header>
 
+    <!-- 日历区：既可跟手折叠/展开，也保留横滑换期与点选日期 -->
     <section
       ref="gridWrap"
       class="month__cal"
-      @touchstart.passive="onTouchStart"
-      @touchend="onTouchEnd"
-      @touchcancel="onTouchEnd"
+      @touchstart="onCalTouchStart"
+      @touchmove="onShapeTouchMove"
+      @touchend="onCalTouchEnd"
+      @touchcancel="onCalTouchEnd"
     >
-      <div
-        class="month__grid"
-        :class="{ 'month__grid--noanim': renderWeek }"
-        :style="{ height: gridHeight }"
-      >
+      <div ref="gridEl" class="month__grid" :style="{ height: gridHeight }">
         <MonthGrid
           :year="year"
           :month="month"
           :counts="gridCounts"
           :selected="selectedDate"
           :mode="renderWeek ? 'week' : 'month'"
-          :week-shift="gridShift"
-          :no-shift-anim="renderWeek"
           :compact="!collapsed && compactCells"
           :cell-height="!collapsed && compressedCell > 0 ? compressedCell : null"
           @select="onSelect"
@@ -645,12 +895,12 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <!-- v0.6.0：列表区（无标题行）；上滑折叠、下拉展开 -->
+    <!-- 列表区（无标题行）：顶部上滑折叠 / 下拉展开，中部只滚动 -->
     <div
       ref="listEl"
       class="month__body"
-      @touchstart.passive="onShapeTouchStart"
-      @touchmove.passive="onShapeTouchMove"
+      @touchstart="onListTouchStart"
+      @touchmove="onShapeTouchMove"
       @touchend="onShapeTouchEnd"
       @touchcancel="onShapeTouchEnd"
     >
@@ -673,12 +923,7 @@ onBeforeUnmount(() => {
               @click="onEventClick(e)"
             >
               <span class="month__row-allday">全天</span>
-              <span
-                class="month__row-title ellipsis"
-                :class="{ 'month__row-title--done': e.task?.status === 'completed' }"
-                >{{ e.title }}</span
-              >
-              <EventTypeTag :type="e.event_type" />
+              <span class="month__row-title ellipsis">{{ e.title }}</span>
               <AppIcon name="chevron-right" :size="12" color="var(--text-secondary)" />
             </button>
           </li>
@@ -699,13 +944,8 @@ onBeforeUnmount(() => {
                 :size="14"
                 color="var(--color-primary)"
               />
-              <span
-                class="month__row-title ellipsis"
-                :class="{ 'month__row-title--done': e.task?.status === 'completed' }"
-                >{{ e.title }}</span
-              >
+              <span class="month__row-title ellipsis">{{ e.title }}</span>
               <RecurrenceBadge v-if="isModified(e)" kind="modified" />
-              <EventTypeTag :type="e.event_type" />
               <AppIcon name="chevron-right" :size="12" color="var(--text-secondary)" />
             </button>
           </li>
@@ -768,12 +1008,14 @@ onBeforeUnmount(() => {
   background: var(--bg-card);
   overflow: hidden;
   border-bottom: 1px solid var(--border-color);
+  /* 纵向交给脚本（跟手），横滑由脚本处理 */
+  touch-action: pan-y;
 }
 .month__grid {
   transition: height var(--dur-page) ease-out;
 }
-/* 折叠动画结束后的内容切换不再 animate，避免一周行出现回弹 */
-.month__grid--noanim {
+/* 跟手/复位期间由脚本逐帧直写，禁用过渡避免与位移脱帧 */
+.month__grid--dragging {
   transition: none;
 }
 /* 列表区：唯一滚动容器（flex 占满剩余高度，独立滚动防穿透） */
@@ -845,10 +1087,6 @@ onBeforeUnmount(() => {
   min-width: 0;
   font-size: var(--font-body-m);
   color: var(--text-primary);
-}
-.month__row-title--done {
-  color: var(--text-disabled);
-  text-decoration: line-through;
 }
 /* 浮动今日按钮淡入淡出 */
 .today-fab-enter-active,

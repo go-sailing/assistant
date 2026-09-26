@@ -7,7 +7,6 @@ import type {
   MonthDayCount,
   Occurrence,
   SeriesDetail,
-  Task,
 } from '@/types'
 
 /** 用户 IANA 时区（日程按自然日筛选/聚合都以此为准） */
@@ -146,9 +145,4 @@ export function restoreOccurrence(
   })
 }
 
-/** 某任务的全部任务日程（任务详情「日程安排」分区） */
-export function fetchTaskEvents(taskId: string | number): Promise<CalendarEvent[]> {
-  return request<CalendarEvent[]>(`/tasks/${taskId}/events`)
-}
-
-export type { CalendarEvent, Task }
+export type { CalendarEvent }

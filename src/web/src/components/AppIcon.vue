@@ -24,7 +24,6 @@ const ICONS: Record<string, string> = {
   eye: `<g ${STROKE}><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></g>`,
   'eye-off': `<g ${STROKE}><path d="M3.5 3.5l17 17"/><path d="M10.2 5.9A9.7 9.7 0 0 1 12 5.8c6 0 9.5 6.2 9.5 6.2a17.6 17.6 0 0 1-3.2 4"/><path d="M6.4 7.5A17.4 17.4 0 0 0 2.5 12S6 18.2 12 18.2c1.3 0 2.5-.3 3.5-.7"/><path d="M9.9 9.9a2.8 2.8 0 0 0 3.9 3.9"/></g>`,
   clock: `<g ${STROKE}><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.3 1.9"/></g>`,
-  folder: `<g ${STROKE}><path d="M3 7.5A2 2 0 0 1 5 5.5h3.6l2 2.2H19a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5z"/></g>`,
   flag: `<g ${STROKE}><path d="M6.5 21V3.5"/><path d="M6.5 4.5h11l-1.6 3.6 1.6 3.6h-11"/></g>`,
   more: `<g fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></g>`,
   check: `<g ${STROKE}><path d="M5 12.5l4.5 4.5L19 7"/></g>`,
@@ -41,7 +40,6 @@ const ICONS: Record<string, string> = {
   // v0.1.0 日程相关图标
   calendar: `<g ${STROKE}><rect x="3.5" y="5.5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></g>`,
   'calendar-fill': `<g fill="currentColor"><path d="M6 5.5h12A2.5 2.5 0 0 1 20.5 8v1H3.5V8A2.5 2.5 0 0 1 6 5.5z"/><path d="M3.5 10.5h17v7.5A2.5 2.5 0 0 1 18 20.5H6a2.5 2.5 0 0 1-2.5-2.5v-7.5z"/></g>`,
-  link: `<g ${STROKE}><path d="M10 13.8a3.6 3.6 0 0 0 5.1 0l2.6-2.6a3.6 3.6 0 0 0-5.1-5.1L11.4 7.3"/><path d="M14 10.2a3.6 3.6 0 0 0-5.1 0l-2.6 2.6a3.6 3.6 0 0 0 5.1 5.1l1.2-1.2"/></g>`,
   pin: `<g ${STROKE}><path d="M12 21s6.2-5.4 6.2-10a6.2 6.2 0 1 0-12.4 0C5.8 15.6 12 21 12 21z"/><circle cx="12" cy="11" r="2.3"/></g>`,
   allday: `<g ${STROKE}><path d="M6.5 4.5h8l3 3v12a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M14 4.5v3.5h3.5"/><path d="M8.5 13h7M8.5 16.5h4"/></g>`,
   conflict: `<g ${STROKE}><path d="M12 4.5 21 19.5H3z"/><path d="M12 10.2v4"/><circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"/></g>`,
@@ -53,10 +51,6 @@ const ICONS: Record<string, string> = {
   archive: `<g ${STROKE}><rect x="3.5" y="4.5" width="17" height="4" rx="1.2"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M9.8 12.5h4.4"/></g>`,
   brain: `<g ${STROKE}><path d="M12 5.2a3 3 0 0 0-5.6 1.4A2.8 2.8 0 0 0 4.6 12a2.8 2.8 0 0 0 1.9 4.2A3 3 0 0 0 12 18.8z"/><path d="M12 5.2a3 3 0 0 1 5.6 1.4A2.8 2.8 0 0 1 19.4 12a2.8 2.8 0 0 1-1.9 4.2A3 3 0 0 1 12 18.8z"/></g>`,
   'chevron-up': `<g ${STROKE}><path d="M5 14.5 12 7.5 19 14.5"/></g>`,
-  // v0.7.0：智能体代理 / 凭据 / 复制
-  agent: `<g ${STROKE}><rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 8V5"/><circle cx="12" cy="4" r="1.1" fill="currentColor" stroke="none"/><circle cx="9.2" cy="13.2" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.8" cy="13.2" r="1.2" fill="currentColor" stroke="none"/></g>`,
-  key: `<g ${STROKE}><circle cx="8" cy="12" r="3.4"/><path d="M11.4 12h8.1"/><path d="M17.2 12v3.2M14.6 12v2.2"/></g>`,
-  copy: `<g ${STROKE}><rect x="9" y="9" width="10.5" height="10.5" rx="2.2"/><path d="M15 6.2A2.2 2.2 0 0 0 12.8 4H6.7A2.2 2.2 0 0 0 4.5 6.2v6.1A2.2 2.2 0 0 0 6.7 14.5"/></g>`,
 }
 
 const inner = computed(() => ICONS[props.name] || '')

@@ -8,7 +8,6 @@ import type {
   Occurrence,
   ProposalBlock,
   ScopeBlock,
-  Task,
 } from '@/types'
 import AppActionSheet from '../AppActionSheet.vue'
 import AppIcon from '../AppIcon.vue'
@@ -18,12 +17,7 @@ import MessageBlocks from './MessageBlocks.vue'
 const props = defineProps<{ message: ChatMessage }>()
 
 const emit = defineEmits<{
-  (e: 'detail', task: Task): void
-  (e: 'toggle', task: Task): void
-  (e: 'pick', message: ChatMessage, blockIndex: number, task: Task): void
   (e: 'event-detail', event: CalendarEvent): void
-  (e: 'event-task', task: Task): void
-  (e: 'event-toggle', event: CalendarEvent): void
   (e: 'event-pick', message: ChatMessage, blockIndex: number, event: CalendarEvent): void
   (e: 'occurrence-restore', occurrence: Occurrence): void
   (e: 'scope-pick', message: ChatMessage, blockIndex: number, block: ScopeBlock, scope: EventScope): void
@@ -79,12 +73,7 @@ function onSheetSelect(v: string): void {
       <div class="msg__body">
         <MessageBlocks
           :message="message"
-          @detail="emit('detail', $event)"
-          @toggle="emit('toggle', $event)"
-          @pick="(i, t) => emit('pick', message, i, t)"
           @event-detail="emit('event-detail', $event)"
-          @event-task="emit('event-task', $event)"
-          @event-toggle="emit('event-toggle', $event)"
           @event-pick="(i, e) => emit('event-pick', message, i, e)"
           @occurrence-restore="emit('occurrence-restore', $event)"
           @scope-pick="(i, b, s) => emit('scope-pick', message, i, b, s)"

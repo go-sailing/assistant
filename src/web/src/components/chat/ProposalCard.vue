@@ -33,7 +33,6 @@ const stateText = computed(() => {
 const icon = computed(() => {
   const t = props.block.title
   if (t.includes('日程')) return 'calendar'
-  if (t.includes('任务')) return 'check'
   if (t.includes('删除')) return 'trash'
   return 'chat'
 })

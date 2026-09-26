@@ -126,8 +126,6 @@ function buildOccurrence(
     override_state: state,
     recurrence_summary: summary,
     event_type: 'normal',
-    task_id: null,
-    task: null,
     title: pickString('title', row.title) ?? '',
     location: pickString('location', row.location),
     note: pickString('note', row.note),

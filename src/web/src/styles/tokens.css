@@ -21,24 +21,12 @@
   /* v0.7.0：失败/危险语义的浅底（用于失败状态胶囊、删除代理等；不新增色相） */
   --color-danger-light: #fdeceb;
 
-  /* 优先级 */
-  --priority-high: #f5483b;
-  --priority-medium: #ff8f1f;
-  --priority-low: #3d5afe;
-  --priority-none: #b5b9c4;
-
   /* 日程领域（v0.1.0，对应 UXUI 6.1） */
-  /* 任务日程身份色：与 primary 蓝可区分，色盲友好 */
-  --color-link: #7c4dff;
-  --color-link-light: #f1ecff;
-  /* 链接色浅底上的文字，对比度 ≥ 4.5:1 */
-  --color-link-text: #5e35d6;
   --color-conflict-bg: #fff6ec;
   /* 冲突文字色：#FF8F1F 作文字在白底仅 2.28:1、浅橙底 2.14:1，不满足 WCAG AA；
      改用深一档橙色（白底 5.3:1 / 浅橙底 4.85:1），图标与边框仍用 --color-warning */
   --color-conflict-text: #a35b00;
   --color-allday-bg: #eff1f5;
-  --color-timeline: #d8dce6;
 
   /* v0.4.0 农历与法定日历（对应 UXUI 6.1）
      休/班沿用全国通行心智：放假绿、补班橙红；节日与节气弱于法定 */

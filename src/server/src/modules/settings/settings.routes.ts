@@ -8,7 +8,7 @@ import { settingsService } from './settings.service';
 /**
  * v0.4.0 个人信息与偏好设置路由（PRD 第 10 章）。
  *
- * 挂载在 /api/v1 下、由 app.ts 统一套 authMiddleware（与 lists/tasks/events 同）。
+ * 挂载在 /api/v1 下、由 app.ts 统一套 authMiddleware（与 events/conversations 同）。
  */
 export const settingsRoutes = Router();
 

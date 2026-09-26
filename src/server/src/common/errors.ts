@@ -113,14 +113,11 @@ export class AppError extends Error {
   static eventTimeInvalid(message = '日程时间不合法') {
     return new AppError(ErrorCode.EVENT_TIME_INVALID, message);
   }
-  /** 关联任务不可排期（已完成任务） */
-  static eventTaskNotSchedulable(message = '该任务已完成，请先恢复为未完成再安排日程') {
-    return new AppError(ErrorCode.EVENT_TASK_NOT_SCHEDULABLE, message);
-  }
-  /** 日程类型与关联任务创建后不可变更 */
-  static eventTypeImmutable(message = '日程类型与关联任务创建后不可更改，请删除后重建') {
-    return new AppError(ErrorCode.EVENT_TYPE_IMMUTABLE, message);
-  }
+  /**
+   * v0.8.0：任务 / 项目 / 智能体能力已下线，下列错误码保留编号与 HTTP 映射
+   * （兼容旧客户端解析），但失去触发面，对应 AppError 工厂已删除：
+   * 4002 / 4003 / 4010 / 4013 / 4014 / 4015 / 4016 / 4017 / 4018 / 4019 / 4020 / 4021 / 4022。
+   */
   /** 时间冲突待确认：details 携带冲突日程列表 */
   static eventConflict(conflicts: unknown, conflictLevel: string, extra?: Record<string, unknown>) {
     return new AppError(ErrorCode.EVENT_CONFLICT, '该时段与已有日程冲突', {
@@ -141,15 +138,6 @@ export class AppError extends Error {
       ...details,
     });
   }
-  /** 项目成员完成需级联确认：details 携带未完成成员数量 */
-  static taskCascadeRequired(incompleteMemberCount: number) {
-    return new AppError(ErrorCode.TASK_CASCADE_REQUIRED, '还有未完成的项目成员', {
-      incomplete_member_count: incompleteMemberCount,
-      // 兼容别名：保留一个大版本
-      incomplete_descendant_count: incompleteMemberCount,
-      cascade_required: true,
-    });
-  }
   /** 循环规则非法 */
   static recurrenceInvalid(reason: string) {
     return new AppError(ErrorCode.RECURRENCE_INVALID, `重复规则不合法：${reason}`, {
@@ -159,52 +147,5 @@ export class AppError extends Error {
   /** 循环实例不存在（occurrence_key 在规则下无对应实例） */
   static occurrenceNotFound(message = '未找到该次安排') {
     return new AppError(ErrorCode.OCCURRENCE_NOT_FOUND, message);
-  }
-  /** 子任务层级超过上限 */
-  static subtaskDepthExceeded(maxDepth: number) {
-    return new AppError(
-      ErrorCode.SUBTASK_DEPTH_EXCEEDED,
-      `子任务最多支持 ${maxDepth} 级`,
-      { max_depth: maxDepth }
-    );
-  }
-  /** 子任务必须与根任务在同一清单 */
-  static subtaskListMismatch() {
-    return new AppError(ErrorCode.SUBTASK_LIST_MISMATCH, '成员任务必须与项目在同一清单');
-  }
-  /** 不能移动到自身或自己的子任务下 */
-  static subtaskCycle() {
-    return new AppError(ErrorCode.SUBTASK_CYCLE, '不能把任务移动到它自己或它的子任务下');
-  }
-  /** 任务日程不支持循环 */
-  static recurrenceNotSupported() {
-    return new AppError(
-      ErrorCode.RECURRENCE_NOT_SUPPORTED,
-      '任务日程不支持重复，只能创建单次安排'
-    );
-  }
-  /** 项目任务必须为顶层任务（v0.6.0） */
-  static projectInvalidState(message = '项目任务不能挂到其他任务下，项目须为顶层任务') {
-    return new AppError(ErrorCode.PROJECT_INVALID_STATE, message);
-  }
-  /** 普通任务不支持子任务（v0.6.0）：父任务只能是项目 */
-  static subtaskNotSupported(message = '普通任务不支持子任务，仅项目可包含任务') {
-    return new AppError(ErrorCode.SUBTASK_NOT_SUPPORTED, message);
-  }
-  /** v0.7.0：代理凭据无效/已重置/代理已停用或已删除 */
-  static agentUnauthorized(message = '代理凭据无效或已失效') {
-    return new AppError(ErrorCode.AGENT_UNAUTHORIZED, message);
-  }
-  /** v0.7.0：领取冲突（已被领取、重复领取、并发未抢到） */
-  static agentTaskConflict(message = '该任务已被其他代理领取') {
-    return new AppError(ErrorCode.AGENT_TASK_CONFLICT, message);
-  }
-  /** v0.7.0：当前状态不允许该代理操作 */
-  static agentTaskInvalidState(message: string, details?: unknown) {
-    return new AppError(ErrorCode.AGENT_TASK_INVALID_STATE, message, details);
-  }
-  /** v0.7.0：代理数或待执行队列超出上限 */
-  static agentLimitExceeded(message: string) {
-    return new AppError(ErrorCode.AGENT_LIMIT_EXCEEDED, message);
   }
 }

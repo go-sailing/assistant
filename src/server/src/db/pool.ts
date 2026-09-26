@@ -28,7 +28,7 @@ export async function query<R extends QueryResultRow = QueryResultRow>(
   return result;
 }
 
-/** 在单个事务中执行，异常自动回滚（用于删清单迁移任务、注册建默认清单） */
+/** 在单个事务中执行，异常自动回滚（用于注册建用户、循环派生、清空会话等复合写） */
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {

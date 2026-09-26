@@ -14,19 +14,12 @@ const props = withDefaults(
     selected: string
     /** v0.3.0：month = 6 行整月；week = 仅选中日所在周一行（折叠态） */
     mode?: 'month' | 'week'
-    /**
-     * v0.3.0 折叠动画：日期行整体上移的像素位移（周标题行不参与位移），
-     * 收起时把选中周滑到可视区，避免"跳变"。
-     */
-    weekShift?: number
-    /** 折叠动画结束后的内容切换：位移需瞬时归零、不做过渡 */
-    noShiftAnim?: boolean
     /** v0.4.0：展开态竖向空间不足（列表区需保 38dvh）时压缩圆底/副字/标记点 */
     compact?: boolean
     /** v0.4.0：压缩后的单格高度（px）；null = 按格子宽度正方形 */
     cellHeight?: number | null
   }>(),
-  { mode: 'month', weekShift: 0, noShiftAnim: false, compact: false, cellHeight: null }
+  { mode: 'month', compact: false, cellHeight: null }
 )
 
 const emit = defineEmits<{ (e: 'select', date: string): void }>()
@@ -37,11 +30,11 @@ const settings = useSettingsStore()
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const WEEK_FULL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-/** 标记点形态：实心点（单次）/ 空心环（循环）/ 紫点（任务日程）；环心点表示混合 */
+/** 标记点形态：实心点（单次）/ 空心环（循环）；环心点表示混合 */
 interface CellMark {
-  kind: 'single' | 'ring' | 'task'
-  /** 空心环中心点：primary 蓝心 / link 紫心 */
-  core?: 'primary' | 'link'
+  kind: 'single' | 'ring'
+  /** 空心环中心点：primary 蓝心（同日还有单次日程） */
+  core?: 'primary'
 }
 
 /** 副字语义色（对应 UXUI 5.2 优先级 1~5） */
@@ -92,32 +85,22 @@ const cells = computed<CellInfo[]>(() =>
     const key = toDateKey(d)
     const c = countMap.value.get(key)
     const normal = c?.normal ?? 0
-    const task = c?.task ?? 0
     const recurring = c?.recurring ?? 0
     // normal 已含循环实例，单次数量需要扣减后再判断形态
     const single = Math.max(0, normal - recurring)
-    const total = normal + task
+    const total = normal
 
     const marks: CellMark[] = []
     if (recurring > 0) {
-      // 含循环实例：空心环；与其他类型同日时用环心点聚合
-      marks.push({
-        kind: 'ring',
-        core: task > 0 ? 'link' : single > 0 ? 'primary' : undefined,
-      })
+      // 含循环实例：空心环；同日还有单次日程时用环心点聚合
+      marks.push({ kind: 'ring', core: single > 0 ? 'primary' : undefined })
     } else {
-      // 无循环：按类型逐点展示，最多 3 点（避免单点无法表达混合信息）
-      const rest: CellMark[] = [
-        ...Array.from({ length: single }, () => ({ kind: 'single' as const })),
-        ...Array.from({ length: task }, () => ({ kind: 'task' as const })),
-      ]
-      marks.push(...rest.slice(0, 3))
+      // 无循环：逐点展示，最多 3 点
+      marks.push(...Array.from({ length: single }, () => ({ kind: 'single' as const })).slice(0, 3))
     }
 
     const isToday = key === todayKey
-    const types = [recurring > 0 ? '含循环日程' : '', task > 0 ? '含任务日程' : '']
-      .filter(Boolean)
-      .join('与')
+    const types = recurring > 0 ? '含循环日程' : ''
 
     // 日期格副字：法定节假日名 ＞ 农历传统节日 ＞ 节气 ＞ 农历月名（初一）＞ 农历日序
     const lunar: LunarDayInfo | null = c?.lunar ?? null
@@ -161,7 +144,11 @@ const cells = computed<CellInfo[]>(() =>
   })
 )
 
-/** 压缩态行高通过 CSS 变量下发（未压缩时不设置，走 aspect-ratio 正方形） */
+/**
+ * 压缩态行高通过 CSS 变量下发（未压缩时不设置，走 aspect-ratio 正方形）。
+ * v0.8.0（CAL-04）：日期行位移改由外部 CSS 变量 --shape-shift 驱动
+ * （跟手期间由 MonthView 直写，保证与容器高度同帧）。
+ */
 const gridStyle = computed(() =>
   props.cellHeight ? { '--grid-cell-h': `${props.cellHeight}px` } : undefined
 )
@@ -172,11 +159,7 @@ const gridStyle = computed(() =>
     <div class="grid__week" aria-hidden="true">
       <span v-for="w in WEEK_LABELS" :key="w" class="grid__week-item">{{ w }}</span>
     </div>
-    <ul
-      class="grid__days"
-      :class="{ 'grid__days--noanim': noShiftAnim }"
-      :style="{ transform: `translateY(${weekShift}px)` }"
-    >
+    <ul class="grid__days">
       <li v-for="cell in cells" :key="cell.key">
         <button
           class="grid__day"
@@ -246,10 +229,12 @@ const gridStyle = computed(() =>
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   padding: 0 var(--page-padding) var(--sp-2);
-  /* 折叠动画：仅日期行位移，周标题行保持不动 */
+  /* 折叠/展开：仅日期行位移，周标题行保持不动（位移由外部 --shape-shift 驱动） */
+  transform: translateY(var(--shape-shift, 0px));
   transition: transform var(--dur-page) ease-out;
 }
-.grid__days--noanim {
+/* 跟手期间（及动画期间）由脚本逐帧直写，禁用过渡避免脱帧 */
+.grid__days--dragging {
   transition: none;
 }
 /* 格内自上而下：角标（绝对定位贴左上角）→ 公历主字 → 农历副字 → 标记点 */
@@ -360,18 +345,13 @@ const gridStyle = computed(() =>
 .grid__dot--single {
   background: var(--color-primary);
 }
-/* 任务日程：实心紫点（沿用 v0.1.0） */
-.grid__dot--task {
-  background: var(--color-link);
-}
-/* 循环实例：空心圆环，环心点表示同日还有单次或任务日程 */
+/* 循环实例：空心圆环，环心点表示同日还有单次日程 */
 .grid__dot--ring {
   position: relative;
   background: transparent;
   border: 1.5px solid var(--color-primary);
 }
-.grid__dot--core-primary::after,
-.grid__dot--core-link::after {
+.grid__dot--core-primary::after {
   content: '';
   position: absolute;
   top: 50%;
@@ -381,9 +361,6 @@ const gridStyle = computed(() =>
   border-radius: 50%;
   transform: translate(-50%, -50%);
   background: var(--color-primary);
-}
-.grid__dot--core-link::after {
-  background: var(--color-link);
 }
 /* v0.4.0 紧凑态（展开空间不足或 320px 窄屏）：收紧圆底与标记点，保证格内不裁切 */
 .grid--compact .grid__num {

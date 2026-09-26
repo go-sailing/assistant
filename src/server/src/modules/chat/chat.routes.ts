@@ -176,7 +176,7 @@ chatRoutes.post(
   })
 );
 
-/** 确认执行待确认动作（删除 / 批量修改 / 删除清单） */
+/** 确认执行待确认动作（删除日程 / 批量处理日程） */
 chatRoutes.post(
   '/conversations/:id/pending-actions/:pendingId/confirm',
   asyncHandler(async (req, res) => {

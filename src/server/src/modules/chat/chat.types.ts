@@ -1,20 +1,23 @@
-import type { SubtaskGroup, TaskDTO } from '../task/types';
 import type { EventConflictBrief, EventDTO, OccurrenceDTO, SeriesDTO } from '../event/types';
 import type { ConflictDateGroup, EventScope } from '../event/recurrence/types';
 
-/** 助手消息的结构化内容块，历史回看与实时流式复用同一套渲染模型 */
+/**
+ * 助手消息的结构化内容块，历史回看与实时流式复用同一套渲染模型。
+ *
+ * v0.8.0：任务 / 项目 / 代理能力下线，对象类内容块只剩日程（events / series / occurrences）。
+ * 历史消息中残留的 tasks / subtask_groups / clarify.candidates / confirm.affected 字段
+ * 不再刷新，由渲染层统一走「该能力已下线」灰态占位（SDD 8.4）。
+ */
 export type MessageBlock =
   | { type: 'text'; text: string }
   | {
       type: 'cards';
-      tasks: TaskDTO[];
+      /** 唯一对象类：日程卡片 */
       events?: EventDTO[];
       /** v0.2.0：循环系列卡片（每系列一条） */
       series?: SeriesDTO[];
       /** v0.2.0：循环实例卡片 */
       occurrences?: OccurrenceDTO[];
-      /** v0.6.0：项目结果组卡片（项目 + 直接成员，扁平节点） */
-      subtask_groups?: SubtaskGroup[];
     }
   | {
       type: 'conflict';
@@ -31,9 +34,6 @@ export type MessageBlock =
   | {
       type: 'clarify';
       question: string;
-      /** task：候选任务；event：候选日程（v0.1.0） */
-      kind?: 'task' | 'event';
-      candidates: TaskDTO[];
       /** 候选日程（v0.1.0） */
       events?: EventDTO[];
       intent?: string;
@@ -51,8 +51,7 @@ export type MessageBlock =
       type: 'confirm';
       pending_action_id: string;
       action: string;
-      affected: TaskDTO[];
-      /** 日程类危险操作的影响对象（v0.1.0） */
+      /** 日程类危险操作的影响对象 */
       affected_events?: EventDTO[];
       count: number;
       description: string;
@@ -69,7 +68,7 @@ export type MessageBlock =
        */
       type: 'proposal';
       proposal_id: string;
-      /** 动作名，如「创建日程」「创建任务」 */
+      /** 动作名，如「创建日程」「修改日程」 */
       title: string;
       /** 参数行：label + value，defaulted=true 表示这是助手替用户补的默认值 */
       params: Array<{ label: string; value: string; defaulted?: boolean }>;
@@ -126,8 +125,8 @@ export interface PendingActionRow {
   user_id: number;
   tool_name: string;
   params: Record<string, unknown>;
-  /** 预取的影响对象快照：任务与日程分列（affected 列为通用 JSONB） */
-  affected: { tasks?: TaskDTO[]; events?: EventDTO[] } | null;
+  /** 预取的影响对象快照：v0.8.0 只剩日程（affected 列为通用 JSONB，键保留 events） */
+  affected: { events?: EventDTO[] } | null;
   status: string;
   expires_at: Date;
   created_at: Date;

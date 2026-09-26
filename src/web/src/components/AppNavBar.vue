@@ -12,26 +12,18 @@ const props = withDefaults(
     /** 返回兜底路由（无历史记录时使用） */
     fallback?: string
   }>(),
-  { title: '', backText: '', showBack: true, fallback: '/tasks' }
+  { title: '', backText: '', showBack: true, fallback: '/calendar' }
 )
 
 const router = useRouter()
 const route = useRoute()
 const drawer = useDrawerStore()
 
-/** v0.2.0：一级页（日程/任务/助手）左侧渲染汉堡菜单，底部 Tab 已下线 */
+/** v0.2.0：一级页（日程/助手）左侧渲染汉堡菜单，底部 Tab 已下线 */
 /** v0.3.0：会话列表页下线，助手改为一页（route name = chat） */
 /** v0.6.0：个人信息页与系统设置页由抽屉进入，左上角同样改为菜单按钮 */
-/** v0.7.0：新增项目页与智能体页两个一级入口 */
-const MENU_ROUTE_NAMES = new Set([
-  'calendar-month',
-  'task-home',
-  'project-home',
-  'agent-home',
-  'chat',
-  'me',
-  'settings',
-])
+/** v0.8.0：任务/项目/智能体页已下线，一级入口只剩日历与助手 */
+const MENU_ROUTE_NAMES = new Set(['calendar-month', 'chat', 'me', 'settings'])
 const showMenu = computed(() => MENU_ROUTE_NAMES.has(String(route.name ?? '')))
 /** 菜单态不并列渲染返回箭头，避免出现两个左操作 */
 const renderBack = computed(() => props.showBack && !showMenu.value)

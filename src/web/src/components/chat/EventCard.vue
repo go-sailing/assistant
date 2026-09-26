@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import type { CalendarEvent, Occurrence, SeriesDetail, Task } from '@/types'
+import type { CalendarEvent, Occurrence, SeriesDetail } from '@/types'
 import { formatEventCardTime, parseDate } from '@/utils/time'
-import AppCheckbox from '../AppCheckbox.vue'
 import AppIcon from '../AppIcon.vue'
 
 /**
  * 对话中的日程卡片（UX 5.7 / 5.10）。
- * 任务日程与普通日程用「图标 + 颜色 + 文案」三重区分，不靠颜色单一传达；
- * v0.2.0 扩展循环系列卡片与循环实例卡片（已调整 / 已取消 / 已删除占位）。
+ * v0.8.0：任务日程形态已下线，只剩普通日程、循环系列与循环实例三种形态。
  */
 const props = withDefaults(
   defineProps<{
@@ -26,52 +24,16 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'detail', event: CalendarEvent): void
-  (e: 'task', task: Task): void
-  (e: 'toggle', event: CalendarEvent): void
   (e: 'occurrence-restore', occurrence: Occurrence): void
 }>()
 
 const router = useRouter()
 
-const isTask = computed(() => props.event.event_type === 'task')
-const taskDone = computed(() => props.event.task?.status === 'completed')
 const timeText = computed(() => formatEventCardTime(props.event))
 
 /** 实例状态胶囊三态：正常 / 已调整 / 已取消 */
 const overrideState = computed(() => props.occurrence?.override_state ?? 'normal')
 const cancelled = computed(() => overrideState.value === 'cancelled')
-
-/** 任务日程的任务摘要转为 Task 形状，供跳转任务详情使用 */
-const taskAsTask = computed<Task | null>(() => {
-  const t = props.event.task
-  if (!t) return null
-  return {
-    id: t.id,
-    title: t.title,
-    note: null,
-    status: t.status,
-    priority: t.priority,
-    due_at: t.due_at,
-    created_at: '',
-    updated_at: '',
-    completed_at: t.completed_at,
-    task_type: 'normal',
-    parent_id: null,
-    depth: 1,
-    member_total: 0,
-    member_completed: 0,
-    subtask_total: 0,
-    subtask_completed: 0,
-    agent_id: null,
-    agent_name: null,
-    agent_state: 'none',
-    agent_queued_at: null,
-    agent_claimed_at: null,
-    agent_finished_at: null,
-    agent_result: null,
-    agent_connection: null,
-  }
-})
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
@@ -126,16 +88,6 @@ function openOccurrence(): void {
 /** 恢复本次：由 ChatView 调接口，前端不本地伪造状态 */
 function restore(): void {
   if (props.occurrence) emit('occurrence-restore', props.occurrence)
-}
-
-function openTask(e: Event): void {
-  e.stopPropagation()
-  if (taskAsTask.value) emit('task', taskAsTask.value)
-}
-
-/** 勾选动作落在关联任务上（AppCheckbox 内部已阻止冒泡，避免同时触发整卡跳转） */
-function toggleTask(): void {
-  emit('toggle', props.event)
 }
 </script>
 
@@ -242,7 +194,7 @@ function toggleTask(): void {
     </div>
   </div>
 
-  <div v-else class="ecard" :class="{ 'ecard--task': isTask }">
+  <div v-else class="ecard">
     <div
       class="ecard__row"
       role="button"
@@ -251,31 +203,17 @@ function toggleTask(): void {
       @click="openDetail"
       @keydown.enter="openDetail"
     >
-      <!-- 类型身份：任务日程用链接图标，普通日程用圆点 -->
-      <AppIcon v-if="isTask" name="link" :size="16" color="#7C4DFF" />
-      <span v-else class="ecard__dot" aria-hidden="true" />
+      <span class="ecard__dot" aria-hidden="true" />
 
       <div class="ecard__main">
         <div class="ecard__title-row">
-          <span
-            v-if="isTask"
-            class="ecard__title ecard__title--link"
-            :class="{ 'ecard__title--done': taskDone }"
-            role="button"
-            tabindex="0"
-            :aria-label="`查看任务 ${event.title}`"
-            @click="openTask"
-            @keydown.enter="openTask"
-            >{{ event.title }}</span
-          >
-          <span v-else class="ecard__title">{{ event.title }}</span>
+          <span class="ecard__title">{{ event.title }}</span>
           <span v-if="event.conflicts && event.conflicts.length" class="ecard__conflict">
             <AppIcon name="conflict" :size="12" color="#FF8F1F" />
             冲突
           </span>
         </div>
         <p class="ecard__sub">
-          <span v-if="isTask" class="ecard__tag">任务日程</span>
           <span class="ecard__time">{{ timeText }}</span>
         </p>
         <p v-if="event.location" class="ecard__sub">
@@ -284,16 +222,7 @@ function toggleTask(): void {
         </p>
       </div>
 
-      <!-- 任务日程：勾选即完成关联任务（动作归属写在 aria-label 里） -->
-      <AppCheckbox
-        v-if="isTask && event.task"
-        :checked="taskDone"
-        :size="20"
-        :label="`完成关联任务：${event.title}`"
-        @toggle="toggleTask"
-      />
-      <AppIcon v-else-if="showArrow" name="chevron-right" :size="18" color="#B5B9C4" />
-      <AppIcon v-if="isTask && showArrow" name="chevron-right" :size="18" color="#B5B9C4" />
+      <AppIcon v-if="showArrow" name="chevron-right" :size="18" color="#B5B9C4" />
     </div>
   </div>
 </template>
@@ -305,9 +234,6 @@ function toggleTask(): void {
   border-left: 4px solid var(--color-primary);
   border-radius: var(--radius-card);
   overflow: hidden;
-}
-.ecard--task {
-  border-left-color: var(--color-link);
 }
 .ecard--missing {
   border-left-color: var(--text-disabled);
@@ -358,15 +284,6 @@ function toggleTask(): void {
   color: var(--text-primary);
   word-break: break-word;
 }
-.ecard__title--link {
-  color: var(--color-link-text);
-  text-decoration: underline;
-  text-decoration-style: dotted;
-}
-.ecard__title--done {
-  color: var(--text-disabled);
-  text-decoration: line-through;
-}
 .ecard__conflict {
   display: inline-flex;
   align-items: center;
@@ -414,15 +331,6 @@ function toggleTask(): void {
 .ecard__sub--done {
   color: var(--text-disabled);
   text-decoration: line-through;
-}
-.ecard__tag {
-  height: 18px;
-  padding: 0 6px;
-  border-radius: 9px;
-  background: var(--color-link-light);
-  color: var(--color-link-text);
-  font-size: var(--font-caption-s);
-  line-height: 18px;
 }
 .ecard__time {
   font-variant-numeric: tabular-nums;

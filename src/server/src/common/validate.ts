@@ -30,33 +30,35 @@ export const optionalId = z.preprocess(
   z.union([z.number().int().positive(), z.null()])
 );
 
-export const priorityEnum = z.enum(['none', 'low', 'medium', 'high']);
-export const statusEnum = z.enum(['todo', 'completed']);
-/** v0.6.0 任务类型：normal 普通任务 / project 项目任务 */
-export const taskTypeEnum = z.enum(['normal', 'project']);
-
-/* ---------------- v0.7.0 智能体代理 ---------------- */
-
-/** 代理类型：预设工具 + 自定义 */
-export const agentKindEnum = z.enum(['claude_code', 'opencode', 'pi_agent', 'custom']);
-/** 代理执行状态（任务维度） */
-export const agentStateEnum = z.enum(['none', 'pending', 'running', 'succeeded', 'failed']);
-
 /**
- * v0.7.0：清单功能已下线，携带清单字段一律显式拒绝（PRD 8.2 / SDD 12.7）。
- * 采用"局部拒绝"而非整对象 strict，避免误伤未来的合法扩展字段。
+ * v0.8.0：任务 / 清单 / 项目 / 智能体领域字段已下线。
+ * 携带下列字段的请求一律显式拒绝（1001），比静默忽略更早暴露旧客户端
+ * （沿用 v0.7.0「显式拒绝优于静默忽略」口径，SDD 8.2 / T5）。
  */
-const LEGACY_LIST_KEYS = ['list_id', 'list_name', 'listId', 'listName'] as const;
+const RETIRED_EVENT_KEYS = ['event_type', 'task_id', 'taskId'] as const;
+const RETIRED_PARAM_KEYS = [
+  'list_id',
+  'list_name',
+  'listId',
+  'listName',
+  'task_type',
+  'taskType',
+  'priority',
+  'status',
+  'parent_id',
+  'due_at',
+  'agent_id',
+  'agent_name',
+  'agent_state',
+] as const;
 
-export function rejectListParams(input: unknown, label = '参数'): void {
+export function rejectRetiredParams(input: unknown, label = '参数'): void {
   if (!input || typeof input !== 'object') return;
-  for (const key of LEGACY_LIST_KEYS) {
+  for (const key of [...RETIRED_EVENT_KEYS, ...RETIRED_PARAM_KEYS]) {
     if (Object.prototype.hasOwnProperty.call(input, key)) {
-      throw new AppError(
-        1001,
-        `${label}校验失败：不支持 ${key}（清单功能已下线）`,
-        [{ field: key, message: '不支持的参数' }]
-      );
+      throw new AppError(1001, `${label}校验失败：不支持 ${key}（该能力已下线）`, [
+        { field: key, message: '不支持的参数' },
+      ]);
     }
   }
 }

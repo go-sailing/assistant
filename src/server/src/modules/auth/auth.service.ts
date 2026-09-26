@@ -4,7 +4,6 @@ import { query, withTransaction } from '../../db/pool';
 import { AppError } from '../../common/errors';
 import { logger } from '../../common/logger';
 import { config } from '../../config';
-import { listService } from '../list/list.service';
 import { issueToken, revokeToken } from '../../middleware/auth';
 
 // 仅接受 ASCII 邮箱，避免「中文@test.com」这类实际不可用的地址通过校验
@@ -86,7 +85,7 @@ async function issuePair(user: { id: number; email: string; nickname?: string | 
 
 export const authService = {
   /**
-   * 注册：事务内创建用户 + 默认清单，保证「注册成功即有默认清单」
+   * 注册：事务内创建用户（v0.8.0 起不再创建默认清单，任务域已下线）
    * MVP 无验证码、无邮箱激活（PRD 6.3）
    */
   async register(email: string, password: string) {
@@ -103,7 +102,6 @@ export const authService = {
         `INSERT INTO users(email, password_hash) VALUES ($1, $2) RETURNING *`,
         [normalizedEmail, passwordHash]
       );
-      await listService.createDefaultList(inserted.rows[0].id, client);
       return inserted.rows[0];
     });
 

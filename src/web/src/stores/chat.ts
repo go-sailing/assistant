@@ -17,11 +17,8 @@ import type {
   RawMessage,
   ScopeBlock,
   SeriesDetail,
-  SubtaskGroup,
-  Task,
 } from '@/types'
 import { useToastStore } from './toast'
-import { useTaskSyncStore } from './taskSync'
 import { useEventSyncStore } from './eventSync'
 
 /** 生成幂等键（重发沿用同一个，服务端据此去重） */
@@ -68,7 +65,6 @@ function toChatMessage(raw: RawMessage): ChatMessage {
 
 export const useChatStore = defineStore('chat', () => {
   const toast = useToastStore()
-  const taskSync = useTaskSyncStore()
   const eventSync = useEventSyncStore()
 
   const messagesByConv = ref<Record<string, ChatMessage[]>>({})
@@ -288,33 +284,20 @@ export const useChatStore = defineStore('chat', () => {
           }
           case 'cards': {
             msg.thinking = false
-            const tasks = Array.isArray(data.tasks) ? (data.tasks as Task[]) : []
             const events = Array.isArray(data.events) ? (data.events as CalendarEvent[]) : []
             const series = Array.isArray(data.series) ? (data.series as SeriesDetail[]) : []
             const occurrences = Array.isArray(data.occurrences)
               ? (data.occurrences as Occurrence[])
               : []
-            const subtaskGroups = Array.isArray(data.subtask_groups)
-              ? (data.subtask_groups as SubtaskGroup[])
-              : []
-            if (
-              tasks.length ||
-              events.length ||
-              series.length ||
-              occurrences.length ||
-              subtaskGroups.length
-            ) {
+            if (events.length || series.length || occurrences.length) {
               msg.blocks.push({
                 type: 'cards',
-                tasks,
                 events,
                 series,
                 occurrences,
-                subtask_groups: subtaskGroups,
               })
             }
-            taskSync.markDirty()
-            // 卡片出现即说明日程可能发生变化，日历 Tab 需重拉
+            // 卡片出现即说明日程可能发生变化，日历页需重拉
             eventSync.markDirty()
             break
           }
@@ -343,13 +326,10 @@ export const useChatStore = defineStore('chat', () => {
           }
           case 'clarify': {
             msg.thinking = false
-            const candidates = Array.isArray(data.candidates) ? (data.candidates as Task[]) : []
             const events = Array.isArray(data.events) ? (data.events as CalendarEvent[]) : []
             msg.blocks.push({
               type: 'clarify',
               question: typeof data.question === 'string' ? data.question : '',
-              kind: data.kind === 'event' ? 'event' : 'task',
-              candidates,
               events,
             })
             break
@@ -408,14 +388,13 @@ export const useChatStore = defineStore('chat', () => {
             break
           }
           case 'confirm': {
-            // action 为字符串透传（含 v0.2.0 的 delete_event_series / complete_task_cascade），
+            // action 为字符串透传（含 v0.2.0 的 delete_event_series），
             // 文案与危险级别差异在 ConfirmBar 内按 action 处理
             msg.thinking = false
             const block: ConfirmBlock = {
               type: 'confirm',
               pending_action_id: String(data.pending_action_id ?? ''),
               action: String(data.action ?? ''),
-              affected: Array.isArray(data.affected) ? (data.affected as Task[]) : [],
               affected_events: Array.isArray(data.affected_events)
                 ? (data.affected_events as CalendarEvent[])
                 : [],
@@ -502,8 +481,7 @@ export const useChatStore = defineStore('chat', () => {
       const res = await confirmPendingAction(convId, block.pending_action_id)
       msg.pendingState = { ...msg.pendingState, [block.pending_action_id]: 'confirmed' }
       if (res && res.message) appendMessage(convId, toChatMessage(res.message))
-      taskSync.markDirty()
-      // 日程类确认（删除日程/批量）同样需要日历重拉
+      // 日程类确认（删除日程/批量）需要日历重拉
       eventSync.markDirty()
     } catch (e) {
       msg.pendingState = { ...msg.pendingState, [block.pending_action_id]: 'pending' }
@@ -531,22 +509,9 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * 候选选择：本地折叠为「已选择：xxx」并把选择结果作为下一条用户消息发出，
+   * 日程候选选择：本地折叠为「已选择：xxx」并把选择结果作为下一条用户消息发出，
    * 由助手基于上下文继续执行（接口契约仅有 /chat 接收 content）。
    */
-  function pickCandidate(
-    convId: string | number,
-    msg: ChatMessage,
-    blockIndex: number,
-    task: Task
-  ): void {
-    if (streamingByConv.value[keyOf(convId)]) return
-    msg.clarifyPicked = { ...(msg.clarifyPicked || {}), [blockIndex]: task.title }
-    // 带上 ID，便于服务端在长会话中稳定地解析指代（避免只靠标题重名）
-    void send(convId, `我选择：${task.title}（任务ID ${task.id}）`)
-  }
-
-  /** 日程候选选择（任务日程场景：选中的是候选日程还是候选任务由 block.kind 决定） */
   function pickEventCandidate(
     convId: string | number,
     msg: ChatMessage,
@@ -619,7 +584,6 @@ export const useChatStore = defineStore('chat', () => {
     retrySend,
     confirmAction,
     cancelAction,
-    pickCandidate,
     pickEventCandidate,
     pickScope,
     conflictForce,

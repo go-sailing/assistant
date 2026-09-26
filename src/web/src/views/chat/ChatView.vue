@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as convApi from '@/api/conversations'
-import * as taskApi from '@/api/tasks'
 import { restoreOccurrence } from '@/api/events'
 import { errorText } from '@/api/client'
 import type {
@@ -12,7 +11,6 @@ import type {
   Occurrence,
   ProposalBlock,
   ScopeBlock,
-  Task,
 } from '@/types'
 import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppModal from '@/components/AppModal.vue'
@@ -25,7 +23,6 @@ import MessageItem from '@/components/chat/MessageItem.vue'
 import { useChatStore } from '@/stores/chat'
 import { useConversationStore } from '@/stores/conversation'
 import { useDrawerStore } from '@/stores/drawer'
-import { useTaskSyncStore } from '@/stores/taskSync'
 import { useEventSyncStore } from '@/stores/eventSync'
 import { useToastStore } from '@/stores/toast'
 import { ARCHIVE_TOAST_DURATION } from '@/utils/constants'
@@ -36,7 +33,6 @@ const toast = useToastStore()
 const chat = useChatStore()
 const conversation = useConversationStore()
 const drawer = useDrawerStore()
-const taskSync = useTaskSyncStore()
 const eventSync = useEventSyncStore()
 
 /** v0.3.0：每用户唯一会话；URL 始终是 /chat，会话 id 由自举获得 */
@@ -303,94 +299,9 @@ function markDetailNav(): void {
   if (convId.value) chat.markDetailNavigation(convId.value)
 }
 
-function onDetail(task: Task): void {
-  markDetailNav()
-  router.push(`/tasks/${task.id}?from=chat`)
-}
-
-/** 卡片勾选完成：以云端返回的最新任务数据刷新卡片 */
-async function onToggle(task: Task): Promise<void> {
-  try {
-    const updated =
-      task.status === 'completed'
-        ? await taskApi.uncompleteTask(task.id)
-        : await taskApi.completeTask(task.id)
-    updateTaskEverywhere(task.id, updated)
-    taskSync.markDirty()
-  } catch (e) {
-    toast.show(errorText(e))
-  }
-}
-
-function updateTaskEverywhere(id: Task['id'], updated: Task): void {
-  messages.value.forEach((m) => {
-    m.blocks.forEach((b) => {
-      if (b.type === 'cards') {
-        const i = b.tasks.findIndex((t) => String(t.id) === String(id))
-        if (i >= 0) b.tasks[i] = updated
-      } else if (b.type === 'clarify') {
-        const i = b.candidates.findIndex((t) => String(t.id) === String(id))
-        if (i >= 0) b.candidates[i] = updated
-      } else if (b.type === 'confirm') {
-        const i = b.affected.findIndex((t) => String(t.id) === String(id))
-        if (i >= 0) b.affected[i] = updated
-      }
-    })
-  })
-}
-
-function onPick(msg: (typeof messages.value)[number], blockIndex: number, task: Task): void {
-  chat.pickCandidate(convId.value, msg, blockIndex, task)
-}
-
 function onEventDetail(event: CalendarEvent): void {
   markDetailNav()
   router.push(`/calendar/${event.id}?from=chat`)
-}
-
-function onEventTask(task: Task): void {
-  markDetailNav()
-  router.push(`/tasks/${task.id}?from=chat`)
-}
-
-/** 日程卡片勾选 = 完成关联任务（写任务状态，日程本身无完成态） */
-async function onEventToggle(event: CalendarEvent): Promise<void> {
-  const task = event.task
-  if (!task) return
-  try {
-    const updated =
-      task.status === 'completed'
-        ? await taskApi.uncompleteTask(task.id)
-        : await taskApi.completeTask(task.id)
-    updateEventTaskEverywhere(task.id, updated)
-    taskSync.markDirty()
-    eventSync.markDirty()
-  } catch (e) {
-    toast.show(errorText(e))
-  }
-}
-
-/** 任务完成态变化后刷新所有日程卡片内嵌的任务摘要 */
-function updateEventTaskEverywhere(id: Task['id'], updated: Task): void {
-  const patch = (ev: CalendarEvent): void => {
-    if (ev.task && String(ev.task.id) === String(id)) {
-      ev.task = {
-        ...ev.task,
-        title: updated.title,
-        status: updated.status,
-        priority: updated.priority,
-        due_at: updated.due_at,
-        completed_at: updated.completed_at,
-      }
-    }
-  }
-  messages.value.forEach((m) => {
-    m.blocks.forEach((b) => {
-      if (b.type === 'cards') (b.events ?? []).forEach(patch)
-      else if (b.type === 'clarify') (b.events ?? []).forEach(patch)
-      else if (b.type === 'confirm') (b.affected_events ?? []).forEach(patch)
-    })
-  })
 }
 
 function onEventPick(
@@ -607,12 +518,7 @@ async function confirmClear(): Promise<void> {
             <p v-if="item.showDay" class="chat__day">{{ formatDaySeparator(item.msg.created_at) }}</p>
             <MessageItem
               :message="item.msg"
-              @detail="onDetail"
-              @toggle="onToggle"
-              @pick="onPick"
               @event-detail="onEventDetail"
-              @event-task="onEventTask"
-              @event-toggle="onEventToggle"
               @event-pick="onEventPick"
               @occurrence-restore="onOccurrenceRestore"
               @scope-pick="onScopePick"
@@ -658,7 +564,7 @@ async function confirmClear(): Promise<void> {
     <AppModal
       :visible="clearVisible"
       title="清除聊天记录？"
-      text="将永久清除与助手的全部聊天记录，且不可恢复。任务与日程数据不会被删除。"
+      text="将永久清除与助手的全部聊天记录，且不可恢复。日程数据不会被删除。"
       confirm-text="清除"
       danger
       :loading="clearing"
@@ -673,7 +579,7 @@ async function confirmClear(): Promise<void> {
       :text="
         askStillClear
           ? '本次没有提炼到需要长期保留的内容，仍然清空吗？'
-          : '系统会从当前对话中提炼长期记忆并保存，之后与助手的新对话可以使用这些记忆。提炼完成后，当前聊天记录将被清空且不可恢复。任务与日程数据不会被删除。'
+          : '系统会从当前对话中提炼长期记忆并保存，之后与助手的新对话可以使用这些记忆。提炼完成后，当前聊天记录将被清空且不可恢复。日程数据不会被删除。'
       "
       :confirm-text="askStillClear ? '仍然清空' : '归档并清空'"
       :loading="archiving"

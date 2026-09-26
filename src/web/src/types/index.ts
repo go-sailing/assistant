@@ -40,136 +40,20 @@ export interface UserProfile {
   created_at: string
 }
 
-/** v0.4.0 偏好设置（GET/PUT /settings） */
+/** v0.4.0 偏好设置（GET/PUT /settings）；v0.8.0 home_route 收敛为 '/calendar' */
 export interface UserSettings {
   /** 显示农历（关闭后全站农历文案隐藏，法定「休/班」角标不受影响） */
   lunar_enabled: boolean
   /** 二十四节气（仅在 lunar_enabled 时可为 true） */
   solar_terms_enabled: boolean
-  /** 默认启动页（v0.7.0 增加「项目」） */
-  home_route: '/calendar' | '/tasks' | '/projects'
+  /** 默认启动页：v0.8.0 只剩日程一个有效值 */
+  home_route: '/calendar'
 }
 
-export type TaskStatus = 'todo' | 'completed'
-export type TaskPriority = 'none' | 'low' | 'medium' | 'high'
-/** v0.6.0：任务类型（普通任务 / 项目任务） */
-export type TaskType = 'normal' | 'project'
+/* ---------------- 日程（v0.1.0 / v0.8.0） ---------------- */
 
-/* ---------------- v0.7.0 智能体代理 ---------------- */
-
-export type AgentKind = 'claude_code' | 'opencode' | 'pi_agent' | 'custom'
-export type AgentStatus = 'enabled' | 'disabled'
-/** 派生连接状态：未连接 / 已连接（活跃窗口内）/ 离线 */
-export type AgentConnection = 'never' | 'online' | 'offline'
-/** 任务的代理执行状态（与任务完成状态正交） */
-export type AgentState = 'none' | 'pending' | 'running' | 'succeeded' | 'failed'
-export type AgentLogAction =
-  | 'assigned'
-  | 'unassigned'
-  | 'claimed'
-  | 'progress'
-  | 'succeeded'
-  | 'failed'
-  | 'retried'
-
-export interface Agent {
-  id: number
-  name: string
-  kind: AgentKind
-  kind_label: string
-  description: string | null
-  status: AgentStatus
-  token_prefix: string
-  connection: AgentConnection
-  last_seen_at: string | null
-  running_count: number
-  pending_count: number
-  created_at: string
-  updated_at: string
-}
-
-/** 创建/重置凭据响应：明文仅此一次 */
-export interface AgentWithToken {
-  agent: Agent
-  token: string
-  mcp: { endpoint: string; auth_header: string }
-}
-
-export interface AgentLog {
-  id: number
-  action: AgentLogAction
-  agent_id: number | null
-  agent_name: string | null
-  content: string | null
-  created_at: string
-}
-
-/** 代理绑定任务列表的筛选状态（不含 none） */
-export type AgentBoundState = 'pending' | 'running' | 'succeeded' | 'failed'
-
-/** 任务对象 */
-export interface Task {
-  id: number | string
-  title: string
-  note: string | null
-  status: TaskStatus
-  priority: TaskPriority
-  due_at: string | null
-  created_at: string
-  updated_at: string
-  completed_at: string | null
-  /** 创建来源：manual（任务页）/ chat（对话） */
-  source?: 'manual' | 'chat'
-  /** 该任务关联的任务日程数量（详情接口返回，v0.1.0） */
-  event_count?: number
-  /* ----- v0.6.0 任务类型与项目 ----- */
-  /** 任务类型：normal 普通任务 / project 项目任务 */
-  task_type: TaskType
-  /** 所属项目 ID（null = 独立任务 / 项目本身） */
-  parent_id: number | null
-  /** 相对本次查询根的深度（项目 = 1，成员 = 2） */
-  depth: number
-  /** 项目直接成员总数（普通任务恒为 0） */
-  member_total: number
-  /** 项目直接成员已完成数（普通任务恒为 0） */
-  member_completed: number
-  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
-  subtask_total: number
-  /** @deprecated v0.6.0 兼容别名：项目与 member_* 同值，普通任务恒 0 */
-  subtask_completed: number
-  /** 写操作响应：被自动恢复为未完成的项目 */
-  revived_parent?: { id: number; title: string } | null
-  /* ----- v0.7.0 代理执行维度（与任务完成状态正交） ----- */
-  agent_id: number | null
-  agent_name: string | null
-  agent_state: AgentState
-  agent_queued_at: string | null
-  agent_claimed_at: string | null
-  agent_finished_at: string | null
-  agent_result: string | null
-  /** 派生：代理连接状态（未指派时为 null） */
-  agent_connection: AgentConnection | null
-}
-
-/** v0.6.0：删除前预取的影响范围（项目成员数 / 关联日程数） */
-export interface RemovePreview {
-  deleted_task_count: number
-  deleted_event_count: number
-}
-
-/** 对话卡片中的项目结果组（项目 + 直接成员，扁平节点） */
-export interface SubtaskGroup {
-  root_task_id: number
-  nodes: Task[]
-  /** 历史卡片刷新时置位：根任务已删除，整组渲染「该任务已删除」占位 */
-  missing?: boolean
-  missing_reason?: 'deleted'
-}
-
-/* ---------------- 日程（v0.1.0） ---------------- */
-
-/** 日程类型：normal 普通日程 / task 任务日程（链接一个任务作为执行时段载体） */
-export type EventType = 'normal' | 'task'
+/** v0.8.0：只剩普通日程（日程为唯一时间事务载体） */
+export type EventType = 'normal'
 export type EventSource = 'manual' | 'chat'
 export type ConflictLevel = 'none' | 'overlap' | 'all_day'
 
@@ -241,20 +125,9 @@ export interface ConflictDateGroup {
   conflicts: EventConflictBrief[]
 }
 
-/** 任务日程内嵌的任务摘要（实时数据） */
-export interface EventTaskBrief {
-  id: number | string
-  title: string
-  status: TaskStatus
-  priority: TaskPriority
-  due_at: string | null
-  completed_at: string | null
-}
-
 export interface CalendarEvent {
   id: number | string
   event_type: EventType
-  task_id: number | string | null
   title: string
   note: string | null
   location: string | null
@@ -265,8 +138,6 @@ export interface CalendarEvent {
   source: EventSource
   created_at: string
   updated_at: string
-  /** 任务日程内嵌任务对象；普通日程为 null */
-  task: EventTaskBrief | null
   /* ----- v0.2.0 循环 ----- */
   /** 重复规则；单次日程为 null */
   recurrence?: RecurrenceRule | null
@@ -324,11 +195,10 @@ export interface EventConflictBrief {
   occurrence_key?: string | null
 }
 
-/** 月视图聚合项 */
+/** 月视图聚合项（v0.8.0：去掉 task 计数） */
 export interface MonthDayCount {
   date: string
   normal: number
-  task: number
   /** v0.2.0：其中循环实例数（含已调整，不含已取消） */
   recurring: number
   /** v0.4.0：当日农历信息（超出农历表范围时为 null，界面按"无副字"处理） */
@@ -371,16 +241,13 @@ export interface LunarResolved {
 }
 
 export interface EventPayload {
-  /** 仅创建时必填；编辑时不下发（类型创建后不可变更） */
-  event_type?: EventType
-  task_id?: number | string | null
   title?: string | null
   note?: string | null
   location?: string | null
   all_day?: boolean
   start_at: string
   end_at: string
-  /** v0.2.0：重复规则（仅普通日程） */
+  /** v0.2.0：重复规则 */
   recurrence?: RecurrenceRule | null
   /** v0.2.0：写操作作用域（默认 series） */
   scope?: EventScope
@@ -395,8 +262,6 @@ export interface EventQuery {
   date_from?: string
   date_to?: string
   tz?: string
-  task_id?: string | number
-  event_type?: EventType
   sort?: 'start_asc' | 'start_desc'
   limit?: number
   /** v0.2.0：只看某个系列 / 只看循环 / 含已取消 */
@@ -409,33 +274,6 @@ export interface EventQuery {
 export interface ConflictDetail {
   conflicts: EventConflictBrief[]
   conflict_level: ConflictLevel
-}
-
-export interface TaskQuery {
-  status?: TaskStatus
-  priority?: TaskPriority
-  /** v0.6.0：按任务类型筛选 */
-  task_type?: TaskType
-  due_from?: string
-  due_to?: string
-  sort?: TaskSort
-  page?: number
-  page_size?: number
-}
-
-/** 排序：按截止时间 / 按创建时间，可升序或降序 */
-export type TaskSort = 'due_at_asc' | 'due_at_desc' | 'created_at_desc' | 'created_at_asc'
-
-export interface TaskPayload {
-  title: string
-  note?: string | null
-  priority?: TaskPriority
-  due_at?: string | null
-  status?: TaskStatus
-  /** v0.6.0：仅创建时有效；编辑携带会被服务端拒绝 */
-  task_type?: TaskType
-  /** v0.6.0：所属项目（移入传项目 ID，移出传 null） */
-  parent_id?: string | number | null
 }
 
 export interface Conversation {
@@ -485,26 +323,38 @@ export interface TextBlock {
   text: string
 }
 
+/**
+ * v0.8.0 历史消息占位对象：旧版本落库的任务卡 / 子任务组 / 任务候选 / 任务影响对象
+ * 字段不再刷新，仅用于渲染层「该能力已下线」灰态占位（标题取快照）。
+ */
+export interface LegacyCard {
+  id: number | string
+  title: string
+}
+
 export interface CardsBlock {
   type: 'cards'
-  tasks: Task[]
-  /** 日程卡片（v0.1.0） */
+  /** 日程卡片（唯一对象类） */
   events?: CalendarEvent[]
   /** v0.2.0：循环系列卡片（每系列一条） */
   series?: SeriesDetail[]
   /** v0.2.0：循环实例卡片 */
   occurrences?: Occurrence[]
-  /** v0.6.0：项目结果组卡片 */
-  subtask_groups?: SubtaskGroup[]
+  /** @deprecated v0.8.0 历史遗留：任务卡快照，仅作灰态占位 */
+  tasks?: LegacyCard[]
+  /** @deprecated v0.8.0 历史遗留：项目结果组快照，仅作灰态占位 */
+  subtask_groups?: Array<{ root_task_id: number; nodes: LegacyCard[] }>
 }
 
 export interface ClarifyBlock {
   type: 'clarify'
   question: string
-  /** task 候选任务；event 候选日程 */
-  kind?: 'task' | 'event'
-  candidates: Task[]
+  /** 候选日程 */
   events?: CalendarEvent[]
+  /** @deprecated v0.8.0 历史遗留：任务候选快照，仅作灰态占位 */
+  kind?: 'task' | 'event'
+  /** @deprecated v0.8.0 历史遗留：任务候选快照，仅作灰态占位 */
+  candidates?: LegacyCard[]
 }
 
 /** 时间冲突提示块（v0.1.0）：未保存，等待用户决定 */
@@ -531,27 +381,24 @@ export interface ScopeBlock {
   recommended: EventScope
 }
 
-/** 确认条动作类型（v0.7.0：delete_list 随清单下线移除） */
+/** 确认条动作类型（v0.8.0：任务/项目类动作随能力下线移除） */
 export type ConfirmAction =
-  | 'delete_task'
-  | 'batch_update_tasks'
   | 'delete_event'
   | 'batch_update_events'
   /** v0.2.0：删除整条循环系列 */
   | 'delete_event_series'
-  /** v0.6.0：级联完成项目及其未完成成员任务 */
-  | 'complete_task_cascade'
   | string
 
 export interface ConfirmBlock {
   type: 'confirm'
   pending_action_id: string
   action: ConfirmAction
-  affected: Task[]
   /** 日程类危险操作的影响对象 */
   affected_events?: CalendarEvent[]
   count: number
   description?: string
+  /** @deprecated v0.8.0 历史遗留：任务影响对象快照，仅作灰态占位 */
+  affected?: LegacyCard[]
 }
 
 export interface ErrorBlock {

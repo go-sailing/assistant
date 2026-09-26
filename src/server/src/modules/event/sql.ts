@@ -10,19 +10,12 @@ import { logger } from '../../common/logger';
 import type { ConflictLevel, EventRow } from './types';
 
 /**
- * 日程查询公共 SELECT：
- * 任务日程的标题/优先级/完成态实时取自 tasks，events 不存冗余副本。
- * v0.7.0：清单维度已下线，不再 JOIN task_lists。
+ * 日程查询公共 SELECT。
+ * v0.8.0：任务日程已下线，不再 JOIN tasks（EVENT_SELECT 收敛为单表查询）。
  */
 export const EVENT_SELECT = `
-  SELECT e.*,
-         t.title        AS task_title,
-         t.status       AS task_status,
-         t.priority     AS task_priority,
-         t.due_at       AS task_due_at,
-         t.completed_at AS task_completed_at
+  SELECT e.*
   FROM events e
-  LEFT JOIN tasks t ON t.id = e.task_id
 `;
 
 /** 时间段左闭右开相交判定 */

@@ -1,4 +1,3 @@
-import type { TaskDTO } from '../task/types';
 import type { EventDTO, OccurrenceDTO, SeriesDTO } from '../event/types';
 import type { LlmMessage } from '../../llm/types';
 import type { MessageBlock, MessageRow } from './chat.types';
@@ -8,9 +7,11 @@ import type { MessageBlock, MessageRow } from './chat.types';
  *
  * 与 v0.4.0 buildHistory 的原则一致：**不回放历史工具调用与原始工具返回**
  * （避免与云端最新数据状态不一致），只把助手文本与「本轮涉及对象」的真实 ID 锚点
- * 拼成紧凑文本，使「把它改成高优先级」这类指代能在多轮中解析到真实对象。
+ * 拼成紧凑文本，使「把它改成下午多」这类指代能在多轮中解析到真实对象。
  *
  * 工具原始 JSON、cards 完整 DTO 不参与转录：防止陈旧快照污染摘要与长期记忆。
+ *
+ * v0.8.0：任务 / 项目对象锚点已删除，只保留日程 / 系列 / 实例 / 作用域 / 方案锚点。
  */
 
 export interface TranscriptItem {
@@ -27,7 +28,6 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
     .join('\n')
     .trim();
 
-  const referenced: TaskDTO[] = [];
   const referencedEvents: EventDTO[] = [];
   const referencedSeries: SeriesDTO[] = [];
   const referencedOccurrences: OccurrenceDTO[] = [];
@@ -35,16 +35,12 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
   const referencedProposals: Array<{ title: string; params: Array<{ label: string; value: string }> }> = [];
   for (const block of blocks) {
     if (block.type === 'cards') {
-      referenced.push(...block.tasks);
       referencedEvents.push(...(block.events ?? []));
       referencedSeries.push(...(block.series ?? []));
       referencedOccurrences.push(...(block.occurrences ?? []));
-      for (const group of block.subtask_groups ?? []) referenced.push(...group.nodes);
     } else if (block.type === 'clarify') {
-      referenced.push(...block.candidates);
       referencedEvents.push(...(block.events ?? []));
     } else if (block.type === 'confirm') {
-      referenced.push(...block.affected);
       referencedEvents.push(...(block.affected_events ?? []));
     } else if (block.type === 'scope') {
       // 作用域澄清未选择时，下一轮必须还能定位到同一系列/实例（TC-CHAT-108）
@@ -59,23 +55,10 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
     }
   }
 
-  const taskHint = referenced.length
-    ? `\n[本轮涉及的任务] ${referenced
-        .map(
-          (t) =>
-            `#${t.id} ${t.title}（${t.status === 'completed' ? '已完成' : '待办'}${
-              t.parent_id ? `，父任务 #${t.parent_id}` : ''
-            }）`
-        )
-        .join('；')}`
-    : '';
   // 把日程 ID 一并喂给模型，使「把它改到下午4点」这类指代能在多轮中解析到真实 event_id
   const eventHint = referencedEvents.length
     ? `\n[本轮涉及的日程] ${referencedEvents
-        .map(
-          (e) =>
-            `#${e.id} ${e.title}（${e.event_type === 'task' ? '任务日程' : '普通日程'} ${e.start_at}~${e.end_at}）`
-        )
+        .map((e) => `#${e.id} ${e.title}（${e.start_at}~${e.end_at}）`)
         .join('；')}`
     : '';
   // v0.2.0：系列与实例身份必须回灌，否则模型无法正确传 occurrence_key
@@ -112,14 +95,11 @@ export function renderAssistantText(blocks: MessageBlock[]): string {
   // 方案卡：参数必须随转录回放，用户确认「就这么办」时按同一参数执行（服务端门控照旧）
   const proposalHint = referencedProposals.length
     ? `\n[助手给出的方案卡参数] ${referencedProposals
-        .map(
-          (p) =>
-            `「${p.title}」${p.params.map((x) => `${x.label}：${x.value}`).join('；')}`
-        )
+        .map((p) => `「${p.title}」${p.params.map((x) => `${x.label}：${x.value}`).join('；')}`)
         .join('；')}（用户确认后按这些参数执行）`
     : '';
 
-  return `${text}${taskHint}${eventHint}${seriesHint}${occurrenceHint}${scopeHint}${proposalHint}`.trim();
+  return `${text}${eventHint}${seriesHint}${occurrenceHint}${scopeHint}${proposalHint}`.trim();
 }
 
 /** 消息行 → 给 LLM 阅读的紧凑转录（保持传入顺序） */

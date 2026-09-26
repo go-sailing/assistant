@@ -2,17 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as eventApi from '@/api/events'
-import * as taskApi from '@/api/tasks'
 import { errorText } from '@/api/client'
 import type { CalendarEvent, EventScope, Occurrence } from '@/types'
-import { formatDue, formatFull, formatShort } from '@/utils/time'
+import { formatFull, formatShort } from '@/utils/time'
 import AppButton from '@/components/AppButton.vue'
-import AppCheckbox from '@/components/AppCheckbox.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
-import PriorityFlag from '@/components/PriorityFlag.vue'
 import StateError from '@/components/StateError.vue'
-import EventTypeTag from '@/components/calendar/EventTypeTag.vue'
 import RecurrenceBadge from '@/components/calendar/RecurrenceBadge.vue'
 import ScopeSheet from '@/components/calendar/ScopeSheet.vue'
 import SeriesHeaderCard from '@/components/calendar/SeriesHeaderCard.vue'
@@ -52,8 +48,6 @@ const seriesId = computed(() => String((detail.value as Occurrence | null)?.seri
 const seriesSummary = computed(() => detail.value?.recurrence_summary || '')
 
 const fromChat = computed(() => route.query.from === 'chat')
-const isTaskEvent = computed(() => detail.value?.event_type === 'task')
-const completed = computed(() => detail.value?.task?.status === 'completed')
 const startText = computed(() => (detail.value?.all_day ? '全天' : formatFull(detail.value?.start_at)))
 const endText = computed(() => (detail.value?.all_day ? '' : formatFull(detail.value?.end_at)))
 const sourceText = computed(() => (detail.value?.source === 'chat' ? '对话创建' : '手动创建'))
@@ -64,10 +58,8 @@ const conflictText = computed(() => {
   const rest = conflicts.value.length > 1 ? `等 ${conflicts.value.length} 项` : ''
   return `与『${first.title}』时间重叠${rest}`
 })
-const sheetTitle = computed(() =>
-  isTaskEvent.value ? '确定删除该日程安排？关联任务不会被删除' : '删除后不可恢复'
-)
-const sheetItemLabel = computed(() => (isTaskEvent.value ? '删除此安排' : '删除日程'))
+const sheetTitle = '删除后不可恢复'
+const sheetItemLabel = '删除日程'
 const headTitle = computed(() => (isOccurrence.value ? '本次安排' : '日程详情'))
 
 /** v0.4.0：日期下方农历一行（如「农历 八月十五 · 中秋节」），受农历开关控制 */
@@ -102,35 +94,7 @@ function goBack(): void {
   else router.replace('/calendar')
 }
 
-/** 任务日程的完成状态即关联任务的状态，两者必须一致 */
-async function toggleStatus(): Promise<void> {
-  const ev = detail.value
-  if (!ev || !ev.task || actionLoading.value) return
-  const wasCompleted = ev.task.status === 'completed'
-  actionLoading.value = true
-  try {
-    const updated = wasCompleted
-      ? await taskApi.uncompleteTask(ev.task.id)
-      : await taskApi.completeTask(ev.task.id)
-    const cur = detail.value
-    if (cur && cur.task) {
-      detail.value = {
-        ...cur,
-        task: { ...cur.task, status: updated.status, completed_at: updated.completed_at },
-      }
-    }
-    toast.show(wasCompleted ? '已恢复未完成' : '已标记完成')
-  } catch (e) {
-    toast.show(errorText(e))
-  } finally {
-    actionLoading.value = false
-  }
-}
-
-function goTask(): void {
-  const t = detail.value?.task
-  if (t) router.push(`/tasks/${t.id}`)
-}
+/** 任务日程完成勾选与跳转任务已随任务能力下线移除（日程本身无完成态） */
 
 function goSeries(): void {
   router.push({ name: 'event-series', params: { id: seriesId.value } })
@@ -265,30 +229,12 @@ onMounted(load)
           {{ conflictText }}
         </p>
 
-        <!-- 任务日程：标题即任务标题，此处不可编辑 -->
+        <!-- 日程主体：仅普通日程（v0.8.0） -->
         <section class="detail__main">
-          <AppCheckbox
-            v-if="isTaskEvent"
-            :checked="completed"
-            :size="24"
-            :disabled="actionLoading"
-            :label="completed ? '取消完成任务' : '标记任务已完成'"
-            @toggle="toggleStatus"
-          />
           <div class="detail__main-text">
-            <h1
-              class="detail__title"
-              :class="{ 'detail__title--done': completed || isCancelled }"
-            >
+            <h1 class="detail__title" :class="{ 'detail__title--done': isCancelled }">
               <AppIcon
-                v-if="isTaskEvent"
-                name="link"
-                :size="16"
-                color="var(--color-link)"
-                class="detail__title-icon"
-              />
-              <AppIcon
-                v-else-if="isOccurrence"
+                v-if="isOccurrence"
                 name="repeat"
                 :size="16"
                 color="var(--color-primary)"
@@ -296,8 +242,7 @@ onMounted(load)
               />
               {{ detail.title }}
             </h1>
-            <div class="detail__tags">
-              <EventTypeTag :type="detail.event_type" />
+            <div v-if="isOccurrence" class="detail__tags">
               <!-- 三态不只靠颜色：已调整 / 已取消均为文字胶囊 -->
               <RecurrenceBadge v-if="isModified" kind="modified" />
               <RecurrenceBadge v-if="isCancelled" kind="cancelled" />
@@ -321,22 +266,6 @@ onMounted(load)
             <span>{{ detail.location }}</span>
           </li>
         </ul>
-
-        <button
-          v-if="isTaskEvent && detail.task"
-          class="detail__task pressable"
-          @click="goTask"
-        >
-          <AppIcon name="link" :size="18" color="var(--color-link)" />
-          <span class="detail__task-main">
-            <span class="detail__task-title">查看关联任务</span>
-            <span class="detail__task-sub">
-              <PriorityFlag :priority="detail.task.priority" />
-              <span class="ellipsis">{{ formatDue(detail.task.due_at) }}</span>
-            </span>
-          </span>
-          <AppIcon name="chevron-right" :size="18" color="#B5B9C4" />
-        </button>
 
         <section class="detail__note">
           <h2 class="detail__note-title">备注</h2>
@@ -369,19 +298,10 @@ onMounted(load)
         </div>
 
         <div v-else class="detail__actions">
-          <template v-if="isTaskEvent">
-            <AppButton type="primary" :loading="actionLoading" @click="toggleStatus">
-              {{ completed ? '取消完成任务' : '标记任务已完成' }}
-            </AppButton>
-            <button class="detail__delete pressable" @click="deleteVisible = true">删除此安排</button>
-            <p class="detail__hint">只取消这个时间安排，不会删除任务</p>
-          </template>
-          <template v-else>
-            <AppButton type="primary" @click="router.push(`/calendar/${eventId}/edit`)">
-              编辑日程
-            </AppButton>
-            <button class="detail__delete pressable" @click="deleteVisible = true">删除日程</button>
-          </template>
+          <AppButton type="primary" @click="router.push(`/calendar/${eventId}/edit`)">
+            编辑日程
+          </AppButton>
+          <button class="detail__delete pressable" @click="deleteVisible = true">删除日程</button>
         </div>
       </template>
     </div>
@@ -531,35 +451,6 @@ onMounted(load)
 /* 农历对照行：小字 secondary，不抢时间主行 */
 .detail__meta-row--lunar {
   min-height: 40px;
-  font-size: var(--font-caption);
-  color: var(--text-secondary);
-}
-.detail__task {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  width: 100%;
-  min-height: 64px;
-  margin-top: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  background: var(--bg-card);
-  text-align: left;
-}
-.detail__task-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.detail__task-title {
-  font-size: var(--font-body-m);
-  color: var(--text-primary);
-}
-.detail__task-sub {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   font-size: var(--font-caption);
   color: var(--text-secondary);
 }

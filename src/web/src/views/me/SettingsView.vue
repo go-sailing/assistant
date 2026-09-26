@@ -5,11 +5,9 @@ import * as convApi from '@/api/conversations'
 import { listMemories } from '@/api/memories'
 import { errorText } from '@/api/client'
 import type { UserSettings } from '@/types'
-import AppActionSheet from '@/components/AppActionSheet.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
-import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useConversationStore } from '@/stores/conversation'
 import { useSettingsStore } from '@/stores/settings'
@@ -20,11 +18,10 @@ import { useToastStore } from '@/stores/toast'
  *
  * - 开关「切换即保存」：先乐观更新控件，失败**回拨**并 Toast「保存失败，请重试」；
  * - 关闭农历时服务端会一并关闭节气，本地乐观呈现同结果；
+ * - v0.8.0：删除「默认启动页」设置行（冷启动固定落 /calendar）；
  * - 不提供深色模式/字号/推送/多语言等入口。
  */
 const router = useRouter()
-/** 仅用于「默认启动页」同步到会话内状态（退出/注销入口已在本页移除） */
-const auth = useAuthStore()
 const chat = useChatStore()
 const conversation = useConversationStore()
 const settingsStore = useSettingsStore()
@@ -35,30 +32,16 @@ type BoolFlag = 'lunar_enabled' | 'solar_terms_enabled'
 /** 各开关保存中（行内小 spinner），避免连点产生并发写 */
 const lunarSaving = ref(false)
 const termsSaving = ref(false)
-const homeSaving = ref(false)
 
-const homeSheetOpen = ref(false)
 const aboutOpen = ref(false)
 const clearOpen = ref(false)
 const clearing = ref(false)
 /** v0.5.0：长期记忆条数（0 条也照常显示，与记忆页同源） */
 const memoryCount = ref(0)
 
-const homeLabel = computed(() => HOME_LABELS[settingsStore.homeRoute])
 const termsLabel = computed(() =>
   settingsStore.lunarEnabled ? '二十四节气' : '二十四节气（需先开启显示农历）'
 )
-/** v0.7.0：默认启动页新增「项目」 */
-const HOME_LABELS: Record<UserSettings['home_route'], string> = {
-  '/calendar': '日程',
-  '/tasks': '任务',
-  '/projects': '项目',
-}
-const homeItems = [
-  { label: '日程', value: '/calendar' },
-  { label: '任务', value: '/tasks' },
-  { label: '项目', value: '/projects' },
-]
 
 /** 记忆条数：失败静默（不改动其余设置区呈现），下次进入再拉 */
 async function loadMemoryCount(): Promise<void> {
@@ -104,28 +87,6 @@ async function toggleFlag(flag: BoolFlag): Promise<void> {
     toast.show('保存失败，请重试')
   } finally {
     busy.value = false
-  }
-}
-
-/** 默认启动页：选中即保存（下次登录/冷启动生效） */
-async function pickHome(value: string): Promise<void> {
-  homeSheetOpen.value = false
-  if (value !== '/calendar' && value !== '/tasks' && value !== '/projects') return
-  const route: UserSettings['home_route'] = value
-  if (route === settingsStore.homeRoute || homeSaving.value) return
-
-  const before = { ...settingsStore.settings }
-  homeSaving.value = true
-  settingsStore.settings.home_route = route
-  try {
-    await settingsStore.save({ home_route: route })
-    auth.setHomeRoute(route)
-    toast.show('下次启动生效')
-  } catch {
-    Object.assign(settingsStore.settings, before)
-    toast.show('保存失败，请重试')
-  } finally {
-    homeSaving.value = false
   }
 }
 
@@ -194,20 +155,7 @@ async function confirmClear(): Promise<void> {
         </ul>
       </section>
 
-      <!-- 通用 -->
-      <section class="settings__group">
-        <h2 class="settings__group-title">通用</h2>
-        <ul class="settings__list">
-          <li>
-            <button class="settings__row pressable" @click="homeSheetOpen = true">
-              <span class="settings__label">默认启动页</span>
-              <span v-if="homeSaving" class="settings__spinner" aria-hidden="true" />
-              <span class="settings__value">{{ homeLabel }}</span>
-              <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
-            </button>
-          </li>
-        </ul>
-      </section>
+      <!-- v0.8.0：默认启动页设置行已删除（冷启动固定落 /calendar） -->
 
       <!-- 对话 -->
       <section class="settings__group">
@@ -239,7 +187,7 @@ async function confirmClear(): Promise<void> {
           <li>
             <button class="settings__row pressable" @click="aboutOpen = true">
               <span class="settings__label">关于</span>
-              <span class="settings__value">v0.7.0</span>
+              <span class="settings__value">v0.8.0</span>
               <AppIcon name="chevron-right" :size="16" color="#B5B9C4" />
             </button>
           </li>
@@ -251,14 +199,6 @@ async function confirmClear(): Promise<void> {
            退出与注销的唯一入口为「个人信息 → 危险区」。 -->
     </div>
 
-    <AppActionSheet
-      :visible="homeSheetOpen"
-      title="默认启动页"
-      :items="homeItems"
-      @select="pickHome"
-      @cancel="homeSheetOpen = false"
-    />
-
     <AppModal
       :visible="aboutOpen"
       title="关于"
@@ -269,15 +209,15 @@ async function confirmClear(): Promise<void> {
     >
       <div class="about">
         <p class="about__row"><span>应用名称</span><span>个人助手</span></p>
-        <p class="about__row"><span>版本</span><span>v0.7.0</span></p>
-        <p class="about__tip">日历、任务与助手一体化；长期未使用（30 天）需重新登录。</p>
+        <p class="about__row"><span>版本</span><span>v0.8.0</span></p>
+        <p class="about__tip">日历与助手一体化；长期未使用（30 天）需重新登录。</p>
       </div>
     </AppModal>
 
     <AppModal
       :visible="clearOpen"
       title="清除聊天记录？"
-      text="将永久清除与助手的全部聊天记录，且不可恢复。任务与日程数据不会被删除。"
+      text="将永久清除与助手的全部聊天记录，且不可恢复。日程数据不会被删除。"
       confirm-text="清除"
       danger
       :loading="clearing"

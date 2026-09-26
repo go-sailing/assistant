@@ -3,8 +3,6 @@ import { query, withTransaction } from '../../db/pool';
 import { AppError } from '../../common/errors';
 import { logger } from '../../common/logger';
 import { config } from '../../config';
-import type { TaskDTO } from '../task/types';
-import { taskService } from '../task/task.service';
 import { toSeriesDTO, type EventDTO, type EventRow, type OccurrenceDTO, type SeriesDTO } from '../event/types';
 import { eventService } from '../event/event.service';
 import { occurrenceService } from '../event/occurrence.service';
@@ -29,18 +27,18 @@ function deriveTitle(content: string): string {
 }
 
 /**
- * 历史消息里的任务/日程卡片落库时是快照。为了让「再次打开会话时卡片显示最新状态」
+ * 历史消息里的日程卡片落库时是快照。为了让「再次打开会话时卡片显示最新状态」
  * （PRD 8.2-5 / UX 7.1），读取历史时用云端最新数据覆盖快照。
  * 已被删除的对象保留原快照，以便用户仍能看到当时的操作对象。
  *
  * v0.2.0 扩展：循环系列卡片按 series_id 回查主记录；实例卡片用 occurrence_key
  * 在当前规则下重新物化（规则变更导致该次不再发生时渲染"已不再发生"占位）。
+ *
+ * v0.8.0：任务 / 项目对象刷新逻辑已删除，历史中的旧卡片交由渲染层页面占位。
  */
 async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): Promise<void> {
-  const taskIdSet = new Set<number>();
   const eventIdSet = new Set<number>();
   const seriesIdSet = new Set<number>();
-  const groupRootIds = new Set<number>();
 
   const collectEvents = (events?: EventDTO[]) => {
     for (const e of events ?? []) {
@@ -56,50 +54,26 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
   for (const msg of messages) {
     for (const block of msg.payload?.blocks ?? []) {
       if (block.type === 'cards') {
-        block.tasks.forEach((t) => taskIdSet.add(Number(t.id)));
-        (block.subtask_groups ?? []).forEach((g) => {
-          taskIdSet.add(Number(g.root_task_id));
-          groupRootIds.add(Number(g.root_task_id));
-          g.nodes.forEach((n) => taskIdSet.add(Number(n.id)));
-        });
         collectEvents(block.events);
         (block.occurrences ?? []).forEach((o) => seriesIdSet.add(o.series_id));
         (block.series ?? []).forEach((s) => seriesIdSet.add(Number(s.id)));
       } else if (block.type === 'clarify') {
-        block.candidates.forEach((t) => taskIdSet.add(Number(t.id)));
         collectEvents(block.events);
       } else if (block.type === 'confirm') {
-        block.affected.forEach((t) => taskIdSet.add(Number(t.id)));
         collectEvents(block.affected_events);
       }
     }
   }
-  if (taskIdSet.size === 0 && eventIdSet.size === 0 && seriesIdSet.size === 0) return;
+  if (eventIdSet.size === 0 && seriesIdSet.size === 0) return;
 
   const tz = eventService.defaultTz();
-  const [latestTasks, latestEvents, latestSeries] = await Promise.all([
-    taskIdSet.size ? taskService.getManyByIds(userId, [...taskIdSet]) : Promise.resolve(new Map()),
+  const [latestEvents, latestSeries] = await Promise.all([
     eventIdSet.size ? eventService.getManyByIds(userId, [...eventIdSet]) : Promise.resolve(new Map()),
     seriesIdSet.size
       ? eventService.getManySeriesByIds(userId, [...seriesIdSet])
       : Promise.resolve({ rows: new Map(), overrides: new Map() }),
   ]);
 
-  /**
-   * 项目成员组按 root 重新拉取：他端新增/删除成员后重开会话要能看到最新结构
-   * （只刷新已有节点的字段会漏掉新增节点）。拉取失败（如超节点上限）时退回字段刷新。
-   */
-  const freshSubtrees = new Map<number, TaskDTO[]>();
-  for (const rootId of groupRootIds) {
-    if (!latestTasks.has(rootId)) continue;
-    try {
-      freshSubtrees.set(rootId, await taskService.getSubtree(userId, rootId));
-    } catch {
-      // 保持快照，交给字段级刷新
-    }
-  }
-
-  const applyTasks = (tasks: TaskDTO[]): TaskDTO[] => tasks.map((t) => latestTasks.get(Number(t.id)) ?? t);
   // 日程被删除时标记 missing，交由客户端渲染"该日程已删除"占位（不要展示陈旧快照）
   const applyEvents = (events: EventDTO[] | undefined): EventDTO[] | undefined =>
     events
@@ -119,29 +93,14 @@ async function refreshBlocksWithLatest(userId: number, messages: MessageDTO[]): 
   for (const msg of messages) {
     for (const block of msg.payload?.blocks ?? []) {
       if (block.type === 'cards') {
-        block.tasks = applyTasks(block.tasks);
         block.events = applyEvents(block.events);
         block.series = applySeries(block.series);
         block.occurrences = (block.occurrences ?? []).map((o) =>
           refreshOccurrence(o, latestSeries, tz)
         );
-        block.subtask_groups = (block.subtask_groups ?? []).map((g) => {
-          // 根任务被删 → 整组渲染「该任务已删除」占位（TC-CHAT-111）
-          const rootAlive = latestTasks.has(Number(g.root_task_id));
-          return {
-            ...g,
-            nodes: rootAlive
-              ? freshSubtrees.get(Number(g.root_task_id)) ?? applyTasks(g.nodes)
-              : applyTasks(g.nodes),
-            missing: !rootAlive,
-            missing_reason: rootAlive ? undefined : ('deleted' as const),
-          };
-        });
       } else if (block.type === 'clarify') {
-        block.candidates = applyTasks(block.candidates);
         block.events = applyEvents(block.events);
       } else if (block.type === 'confirm') {
-        block.affected = applyTasks(block.affected);
         block.affected_events = applyEvents(block.affected_events);
       }
     }
@@ -217,7 +176,7 @@ export const conversationService = {
    * v0.3.0：清除聊天记录（会话本身保留）。
    * 单事务删除该会话全部消息与待确认动作，并重置标题；
    * v0.5.0：同时重置压缩摘要与水位（消息已清空，无旧内容可概括）；
-   * 不触碰任何任务 / 日程 / 清单 / 长期记忆数据。
+   * 不触碰任何日程 / 长期记忆数据。
    */
   async clearHistory(
     userId: number,
@@ -358,15 +317,12 @@ export const pendingActionService = {
     userId: number;
     toolName: string;
     resolvedParams: Record<string, unknown>;
-    affected: TaskDTO[];
     affectedEvents?: EventDTO[];
   }): Promise<PendingActionRow> {
     // 过期时间在应用侧计算，避免 SQL 中的参数类型推断问题
     const expiresAt = new Date(Date.now() + config.pendingActionTtlSeconds * 1000);
-    const snapshot = JSON.stringify({
-      tasks: params.affected ?? [],
-      events: params.affectedEvents ?? [],
-    });
+    // v0.8.0：影响对象只剩日程（affected 列仍为通用 JSONB，键保留 events）
+    const snapshot = JSON.stringify({ events: params.affectedEvents ?? [] });
     const res = await query<PendingActionRow>(
       `INSERT INTO pending_actions(id, conversation_id, user_id, tool_name, params, affected, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)

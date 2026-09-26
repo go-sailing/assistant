@@ -19,7 +19,6 @@ import {
   type EventDTO,
   type EventFilter,
   type EventRow,
-  type EventType,
   type MonthDayCount,
   type OccurrenceDTO,
   type SeriesDTO,
@@ -29,13 +28,6 @@ import {
 import type { EventScope, RecurrenceRule } from './recurrence/types';
 
 const MS_PER_DAY = 86_400_000;
-
-/** 任务排期前置校验所需的最小任务信息 */
-interface ScheduleTaskRow {
-  id: number;
-  title: string;
-  status: string;
-}
 
 function normalizeDateOnly(value: string | null | undefined, label: string): string | null {
   if (!value) return null;
@@ -181,8 +173,8 @@ function resolveWindow(
     const endNaive = to ? naiveOfDate(to) : naiveOfDate('9999-12-31');
     return { start: fromZonedNaive(startNaive, tz), end: fromZonedNaive(endNaive, tz) };
   }
-  // 只给系列/循环/任务标识（对话工具常见问法：「这个系列/这个任务接下来有哪些」）时默认取今天起未来一年
-  if (filter.series_id || filter.recurring_only || filter.task_id) {
+  if (filter.series_id || filter.recurring_only) {
+    // 只给系列/循环标识（对话工具常见问法：「这个系列接下来有哪些」）时默认取今天起未来一年
     const now = Date.now();
     return { start: new Date(now - MS_PER_DAY), end: new Date(now + 365 * MS_PER_DAY) };
   }
@@ -201,8 +193,6 @@ function instanceMatchesKeyword(inst: OccurrenceDTO, keyword?: string): boolean 
 function applyInstanceFilters(list: OccurrenceDTO[], filter: EventFilter): OccurrenceDTO[] {
   let out = list;
   if (filter.series_id) out = out.filter((o) => o.series_id === filter.series_id);
-  if (filter.event_type === 'task') return [];
-  if (filter.task_id) return [];
   if (filter.keyword) out = out.filter((o) => instanceMatchesKeyword(o, filter.keyword));
   return out;
 }
@@ -325,20 +315,6 @@ export const eventService = {
     );
   },
 
-  /** 任务排期前置校验：任务必须存在、属于当前用户且未完成 */
-  async requireSchedulableTask(userId: number, taskId: number): Promise<ScheduleTaskRow> {
-    const res = await query<ScheduleTaskRow>(
-      `SELECT t.id, t.title, t.status
-       FROM tasks t
-       WHERE t.id = $1 AND t.user_id = $2`,
-      [taskId, userId]
-    );
-    if (res.rowCount === 0) throw AppError.notFound('任务不存在');
-    const task = res.rows[0];
-    if (task.status === 'completed') throw AppError.eventTaskNotSchedulable();
-    return task;
-  },
-
   /**
    * 创建日程（v0.2.0 支持 recurrence）。
    * 命中冲突且未带确认标记时**不落库**，返回 need_conflict_confirmation 交给调用方询问用户。
@@ -350,7 +326,6 @@ export const eventService = {
     opts: { confirmConflict?: boolean; tz?: string | null } = {}
   ): Promise<WriteEventResult> {
     const tz = await resolveTz(opts.tz);
-    const eventType: EventType = input.event_type === 'task' ? 'task' : 'normal';
     const allDay = input.all_day === true;
     const startAt = parseTime(input.start_at, '开始时间');
     const endAt = parseTime(input.end_at, '结束时间');
@@ -358,20 +333,7 @@ export const eventService = {
       throw AppError.eventTimeInvalid('结束时间需晚于开始时间');
     }
 
-    let title: string | null = null;
-    let taskId: number | null = null;
-    if (eventType === 'task') {
-      // 任务日程不支持循环（DB CHECK + Service + zod 三处拦截）
-      if (input.recurrence) throw AppError.recurrenceNotSupported();
-      if (!input.task_id) throw AppError.paramInvalid('任务日程必须指定关联任务');
-      const task = await this.requireSchedulableTask(userId, Number(input.task_id));
-      taskId = task.id;
-      // 任务日程不存标题副本（由 DB CHECK 兜底）
-      title = null;
-    } else {
-      title = normalizeTitle(input.title);
-    }
-
+    const title = normalizeTitle(input.title);
     const note = normalizeNote(input.note);
     const location = normalizeLocation(input.location);
     const durationMs = eventDurationMs({ start_at: startAt, end_at: endAt });
@@ -445,7 +407,6 @@ export const eventService = {
         user_id: userId,
         level: conflict_level,
         count: conflicts.length,
-        event_type: eventType,
       });
       return { saved: false, event: null, conflicts, conflict_level, need_conflict_confirmation: true };
     }
@@ -455,21 +416,17 @@ export const eventService = {
         user_id: userId,
         level: conflict_level,
         count: conflicts.length,
-        event_type: eventType,
       });
     }
 
     const res = await query<{ id: number }>(
       `INSERT INTO events(user_id, event_type, task_id, title, note, location, all_day, start_at, end_at, source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-      [userId, eventType, taskId, title, note, location, allDay, startAt, endAt, source]
+       VALUES ($1, 'normal', NULL, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [userId, title, note, location, allDay, startAt, endAt, source]
     );
 
-    // 埋点：日程创建来源与类型分布；任务日程额外上报排期事件
-    logger.info('event_created', { user_id: userId, event_type: eventType, source, all_day: allDay });
-    if (eventType === 'task' && taskId) {
-      logger.info('task_scheduled', { user_id: userId, task_id: taskId, event_id: res.rows[0].id });
-    }
+    // 埋点：日程创建来源分布
+    logger.info('event_created', { user_id: userId, event_type: 'normal', source, all_day: allDay });
 
     const dto = await this.get(userId, res.rows[0].id, { tz });
     return { saved: true, event: dto, conflicts, conflict_level, need_conflict_confirmation: false };
@@ -477,7 +434,6 @@ export const eventService = {
 
   /**
    * 编辑日程：按 scope 分流（series 整条 / this 仅本次 / following 本次及以后）。
-   * 禁止修改类型与关联任务；任务日程的 title 入参被忽略（标题随任务）。
    */
   async update(
     userId: number,
@@ -498,18 +454,6 @@ export const eventService = {
       }
       return occurrenceService.updateFromFollowing(userId, existing, opts.occurrenceKey, patch, tz, opts);
     }
-
-    // 类型与关联创建后不可变更；但「原样回传当前值」（前端表单整表提交的常见形态）不算变更，
-    // 只有真正试图改成别的类型/换绑任务才拒绝，否则会让正常的编辑保存被误伤。
-    const typeChanged =
-      (patch.event_type !== undefined && patch.event_type !== existing.event_type) ||
-      (patch.task_id !== undefined && patch.task_id !== null && Number(patch.task_id) !== existing.task_id);
-    if (typeChanged) {
-      throw AppError.eventTypeImmutable();
-    }
-
-    const isTask = existing.event_type === 'task';
-    if (isTask && patch.recurrence) throw AppError.recurrenceNotSupported();
 
     const allDay = patch.all_day === undefined ? existing.all_day : patch.all_day === true;
     const startAt = patch.start_at === undefined ? existing.start_at : parseTime(patch.start_at, '开始时间');
@@ -542,8 +486,8 @@ export const eventService = {
       sets.push(`location = $${index++}`);
       params.push(normalizeLocation(patch.location));
     }
-    // 任务日程不接受自拟标题，静默忽略以保持"标题属于任务"的语义
-    if (patch.title !== undefined && !isTask) {
+    // v0.8.0：只剩普通日程，title 可自由编辑
+    if (patch.title !== undefined) {
       sets.push(`title = $${index++}`);
       params.push(normalizeTitle(patch.title));
     }
@@ -852,20 +796,9 @@ export const eventService = {
       }
     }
 
-    if (filter.task_id) {
-      clauses.push(`e.task_id = $${index++}`);
-      params.push(filter.task_id);
-    }
-    if (filter.event_type) {
-      clauses.push(`e.event_type = $${index++}`);
-      params.push(filter.event_type);
-    }
     if (filter.keyword && filter.keyword.trim()) {
       const escaped = filter.keyword.trim().replace(/[%_\\]/g, (m) => `\\${m}`);
-      // 任务日程同时匹配关联任务标题（TC-EVENT-065）
-      clauses.push(
-        `(e.title ILIKE $${index} OR e.note ILIKE $${index} OR e.location ILIKE $${index} OR t.title ILIKE $${index})`
-      );
+      clauses.push(`(e.title ILIKE $${index} OR e.note ILIKE $${index} OR e.location ILIKE $${index})`);
       params.push(`%${escaped}%`);
       index += 1;
     }
@@ -883,8 +816,7 @@ export const eventService = {
       !filter.date_from &&
       !filter.date_to &&
       !filter.series_id &&
-      !filter.recurring_only &&
-      !filter.task_id
+      !filter.recurring_only
     ) {
       throw AppError.paramInvalid('请指定日期或日期范围');
     }
@@ -952,7 +884,7 @@ export const eventService = {
     const res = await query<EventRow>(
       `${EVENT_SELECT}
        WHERE e.user_id = $1
-         AND (e.title ILIKE $2 OR e.note ILIKE $2 OR e.location ILIKE $2 OR t.title ILIKE $2)
+         AND (e.title ILIKE $2 OR e.note ILIKE $2 OR e.location ILIKE $2)
        ORDER BY e.start_at DESC, e.id DESC
        LIMIT $3`,
       [userId, `%${escaped}%`, Math.min(limit, config.event.listMaxLimit)]
@@ -983,56 +915,6 @@ export const eventService = {
     };
   },
 
-  /** 某任务的全部任务日程（任务详情排期分区） */
-  async listByTask(userId: number, taskId: number): Promise<EventDTO[]> {
-    const res = await query<EventRow>(
-      `${EVENT_SELECT} WHERE e.user_id = $1 AND e.task_id = $2 ORDER BY e.start_at ASC, e.id ASC`,
-      [userId, taskId]
-    );
-    return res.rows.map((row) => toEventDTO(row));
-  },
-
-  /** 某任务关联的日程条数（删除任务前的级联告知） */
-  async countByTask(userId: number, taskId: number): Promise<number> {
-    const res = await query<{ total: string }>(
-      `SELECT COUNT(*)::int AS total FROM events WHERE user_id = $1 AND task_id = $2`,
-      [userId, taskId]
-    );
-    return Number(res.rows[0]?.total ?? 0);
-  },
-
-  /** 某任务集合关联的日程条数（子任务子树删除前的级联告知） */
-  async countByTaskIds(userId: number, taskIds: number[]): Promise<number> {
-    if (taskIds.length === 0) return 0;
-    const res = await query<{ total: string }>(
-      `SELECT COUNT(*)::int AS total FROM events WHERE user_id = $1 AND task_id = ANY($2::int[])`,
-      [userId, taskIds]
-    );
-    return Number(res.rows[0]?.total ?? 0);
-  },
-
-  /**
-   * 删除任务及其全部任务日程（单事务，返回级联删除条数）。
-   * DB 层 ON DELETE CASCADE 仅作兜底，正常路径以本事务为准（计数可返回、可审计）。
-   */
-  async removeTaskWithEvents(userId: number, taskId: number): Promise<{ deleted_event_count: number }> {
-    const result = await this.removeTaskIdsWithEvents(userId, [taskId]);
-    return { deleted_event_count: result.deleted_event_count };
-  },
-
-  /** 按任务 id 集合批量清理任务日程（子任务子树删除用，需在调用方事务内复用） */
-  async removeTaskIdsWithEvents(
-    userId: number,
-    taskIds: number[]
-  ): Promise<{ deleted_event_count: number }> {
-    if (taskIds.length === 0) return { deleted_event_count: 0 };
-    const res = await query(
-      `DELETE FROM events WHERE user_id = $1 AND task_id = ANY($2::int[])`,
-      [userId, taskIds]
-    );
-    return { deleted_event_count: res.rowCount ?? 0 };
-  },
-
   /** 月视图聚合：按日返回「计数 + 农历 + 法定状态」，不拉明细（含循环实例归属日期） */
   async monthly(userId: number, year: number, month: number, tzInput?: string): Promise<MonthDayCount[]> {
     if (!Number.isInteger(year) || year < 1970 || year > 9999) {
@@ -1048,16 +930,15 @@ export const eventService = {
     const next = month === 12 ? { y: year + 1, m: 1 } : { y: year, m: month + 1 };
     const monthEnd = `${next.y}-${String(next.m).padStart(2, '0')}-01`;
 
-    const res = await query<{ day: string; event_type: string; cnt: string }>(
+    const res = await query<{ day: string; cnt: string }>(
       `SELECT to_char((e.start_at AT TIME ZONE $1)::date, 'YYYY-MM-DD') AS day,
-              e.event_type,
               COUNT(*)::int AS cnt
        FROM events e
        WHERE e.user_id = $2
          AND e.recurrence IS NULL
          AND e.start_at >= ($3::date::timestamp AT TIME ZONE $1)
          AND e.start_at <  ($4::date::timestamp AT TIME ZONE $1)
-       GROUP BY 1, 2
+       GROUP BY 1
        ORDER BY 1`,
       [tz, userId, monthStart, monthEnd]
     );
@@ -1071,7 +952,6 @@ export const eventService = {
       map.set(date, {
         date,
         normal: 0,
-        task: 0,
         recurring: 0,
         lunar: solarToLunar(date),
         calendar_day: getCalendarDay(date),
@@ -1081,8 +961,7 @@ export const eventService = {
     for (const row of res.rows) {
       const item = map.get(row.day);
       if (!item) continue;
-      if (row.event_type === 'task') item.task += Number(row.cnt);
-      else item.normal += Number(row.cnt);
+      item.normal += Number(row.cnt);
     }
 
     // 循环实例：按 patch 后的日期计入；已取消的不计

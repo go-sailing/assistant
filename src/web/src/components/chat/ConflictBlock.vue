@@ -73,7 +73,6 @@ function onForce(): void {
               <li v-for="c in g.conflicts" :key="String(c.id)" class="conflict__item">
                 <span class="conflict__dot" aria-hidden="true" />
                 <span class="conflict__time">{{ formatEventRange(c) }}</span>
-                <AppIcon v-if="c.event_type === 'task'" name="link" :size="12" color="#7C4DFF" />
                 <span class="conflict__name ellipsis">{{ c.title }}</span>
               </li>
             </ul>
@@ -92,7 +91,6 @@ function onForce(): void {
         <ul class="conflict__list">
           <li v-for="c in preview" :key="String(c.id)" class="conflict__item">
             <span class="conflict__time">{{ formatEventRange(c) }}</span>
-            <AppIcon v-if="c.event_type === 'task'" name="link" :size="12" color="#7C4DFF" />
             <span class="conflict__name ellipsis">{{ c.title }}</span>
           </li>
           <li v-if="restCount" class="conflict__item conflict__item--rest">等 {{ restCount }} 项</li>

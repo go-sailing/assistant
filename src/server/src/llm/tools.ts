@@ -1,266 +1,11 @@
 import type { LlmTool } from './types';
 
 /**
- * LLM 可调用的工具白名单（对应 PRD 5.3 能力对照表与系统设计文档 7.3）。
+ * LLM 可调用的工具白名单（对应 PRD 5.3 能力对照表与系统设计文档 7.1）。
  * 客户端不可直接调用，仅由对话编排在内执行。
+ * v0.8.0：任务类 10 个与代理类 2 个工具已删除，仅保留 11 个日程工具。
  */
 export const TOOL_DEFINITIONS: LlmTool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'create_task',
-      description:
-        '创建一个新任务。task_type=normal（默认）为普通任务；task_type=project 为项目（一组相关任务的容器）。' +
-        '用户表达「提醒我做某事」用 normal；用户说「建个项目」或一件事包含 ≥2 个相关任务时用 project。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task_type: {
-            type: 'string',
-            enum: ['normal', 'project'],
-            description: '任务类型，默认 normal。project 的 parent_id 必须为空（项目为顶层）。',
-          },
-          title: { type: 'string', description: '任务标题；task_type=project 时为项目名称，必填' },
-          note: { type: 'string', description: '备注，可选' },
-          priority: {
-            type: 'string',
-            enum: ['none', 'low', 'medium', 'high'],
-            description: '优先级，默认 none',
-          },
-          due_at: {
-            type: 'string',
-            description:
-              '截止时间，ISO8601 带时区偏移，例如 2026-09-21T10:00:00+08:00。只有日期时用 00:00:00 表示当天。无法确定时不要传。',
-          },
-          parent_id: {
-            type: 'number',
-            description:
-              '挂载到项目下时传项目任务的真实 ID：普通任务的父只能是 project。' +
-              '创建「带成员的项目」时必须先 create_task(task_type=project) 取得返回的项目 ID，' +
-              '再以该 ID 作为 parent_id 依次创建成员；禁止猜测 ID，禁止把任务挂到普通任务下。',
-          },
-        },
-        required: ['title'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'update_task',
-      description: '修改一个已存在任务的字段（标题/备注/优先级/截止时间/所属项目）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'number', description: '任务ID，必须来自查询结果的真实ID' },
-          title: { type: 'string' },
-          note: { type: 'string' },
-          priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
-          due_at: { type: 'string', description: 'ISO8601 带时区偏移；传空字符串表示清除截止时间' },
-          parent_id: {
-            type: 'number',
-            description:
-              '所属项目（v0.6.0）：传项目任务真实 ID = 移入该项目成为成员；传 0 或 null = 移出成为独立任务。' +
-              '不能挂到普通任务下；project 任务不能移动到任何父任务下。',
-          },
-        },
-        required: ['task_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'update_task_status',
-      description:
-        '把任务标记为已完成或恢复为未完成。' +
-        '完成一个还有未完成成员的项目时，系统会返回 need_cascade_confirmation 并要求用户确认后级联完成；' +
-        '取消完成只作用于该任务本身，不会影响成员任务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'number', description: '任务ID' },
-          status: { type: 'string', enum: ['todo', 'completed'], description: '目标状态' },
-        },
-        required: ['task_id', 'status'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_task',
-      description: '查询单个任务的详细信息（含所属项目、任务类型与项目成员进度）。',
-      parameters: {
-        type: 'object',
-        properties: { task_id: { type: 'number' } },
-        required: ['task_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_task_subtree',
-      description:
-        '查询项目的成员列表（项目 + 直接成员，成员仅一层）。普通任务没有成员，仅返回自身。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'number', description: '项目任务ID' },
-          depth: { type: 'number', description: '保留字段：成员仅一层，传与不传结果相同' },
-        },
-        required: ['task_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_tasks',
-      description: '按条件查询任务列表。用户问「我今天要做什么」「有哪些没完成的」时使用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          status: { type: 'string', enum: ['todo', 'completed'] },
-          priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
-          due_from: { type: 'string', description: '截止时间下限，ISO8601 带时区' },
-          due_to: { type: 'string', description: '截止时间上限，ISO8601 带时区' },
-          sort: {
-            type: 'string',
-            enum: ['due_at_asc', 'due_at_desc', 'created_at_asc', 'created_at_desc'],
-            description: '排序，默认 due_at_asc',
-          },
-          limit: { type: 'number', description: '返回条数上限，默认 50' },
-          task_type: {
-            type: 'string',
-            enum: ['normal', 'project'],
-            description: '按任务类型筛选：project=只看项目，normal=只看普通任务；缺省不过滤',
-          },
-          root_only: { type: 'boolean', description: '只看根任务（项目与独立任务），默认 false' },
-          parent_id: { type: 'number', description: '只看某个项目的直接成员' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'search_tasks',
-      description: '按关键词搜索任务标题与备注。',
-      parameters: {
-        type: 'object',
-        properties: { keyword: { type: 'string' } },
-        required: ['keyword'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_agents',
-      description:
-        '查询用户的智能体代理（外部工具接入身份，如 Claude Code）。需要把任务交给某个代理执行时，先用它拿到真实的代理 ID 与名称/状态。',
-      parameters: { type: 'object', properties: {} },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'assign_task_to_agent',
-      description:
-        '把一个任务指派给智能体代理执行。**指派即自动执行**：指派成功后任务会自动进入该代理的待执行队列并自动下发，代理会自行领取执行，'
-        + '不存在也不需要"通知执行"这一步。agent_id 与 agent_name 至少提供一个（不确定时先调用 list_agents）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'number', description: '任务 ID，必须来自查询结果的真实 ID' },
-          agent_id: { type: 'number', description: '代理 ID，必须来自 list_agents 的真实 ID' },
-          agent_name: { type: 'string', description: '代理名称，系统会按名称精确匹配' },
-          replace: {
-            type: 'boolean',
-            description: '任务已有代理时是否更换代理（true 表示更换；默认 false 会返回错误）',
-          },
-        },
-        required: ['task_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'delete_task',
-      description:
-        '删除单个任务。这是危险操作，调用后系统会先让用户确认，你不需要自行询问，但要向用户说明将要删除的任务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'number' },
-          reason: { type: 'string', description: '删除原因的简短说明，用于向用户展示' },
-        },
-        required: ['task_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'batch_update_tasks',
-      description:
-        '批量修改符合筛选条件的任务（如「把本周逾期任务都延到明天」）。这是危险操作，系统会先展示影响范围让用户确认。',
-      parameters: {
-        type: 'object',
-        properties: {
-          filter: {
-            type: 'object',
-            description: '筛选条件，至少提供一个条件，不要留空以免影响全部任务',
-            properties: {
-              status: { type: 'string', enum: ['todo', 'completed'] },
-              priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
-              due_before: { type: 'string', description: '截止时间早于该时间，ISO8601' },
-              due_after: { type: 'string', description: '截止时间晚于该时间，ISO8601' },
-              keyword: { type: 'string', description: '标题/备注关键词' },
-            },
-          },
-          update: {
-            type: 'object',
-            description: '要更新成的字段，至少一个',
-            properties: {
-              priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
-              due_at: { type: 'string', description: '统一设置为该截止时间，ISO8601' },
-              status: { type: 'string', enum: ['todo', 'completed'] },
-            },
-          },
-        },
-        required: ['filter', 'update'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'clarify_task_selection',
-      description:
-        '当用户指定的任务存在多个候选、或无法匹配到任何任务时调用，向用户展示候选任务让其选择。调用后不要执行任何写操作。',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: { type: 'string', description: '向用户提出的澄清问题' },
-          candidate_task_ids: {
-            type: 'array',
-            items: { type: 'number' },
-            description: '候选任务ID列表，来自查询结果的真实ID；可以是空数组',
-          },
-          pending_intent: {
-            type: 'string',
-            description: '用户原本想执行的操作描述，例如「删除任务」',
-          },
-        },
-        required: ['question'],
-      },
-    },
-  },
-
   /* ------------------- v0.1.0 日程工具集 ------------------- */
 
   {
@@ -268,21 +13,11 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'create_event',
       description:
-        '创建一个日程。日程分两类：普通日程（用户自己要安排的一件事）与任务日程（为某个已有任务安排执行时段，必须传 task_id）。' +
-        '用户说「给我约个 15:00-16:00 的会」用普通日程；说「把季度报告安排在明天下午写」用任务日程（先查证任务拿到真实 task_id）。',
+        '创建一个日程（唯一类型）。用户说「给我约个 15:00-16:00 的会」「明天交报告」「每周五交周报」时都用它。',
       parameters: {
         type: 'object',
         properties: {
-          event_type: {
-            type: 'string',
-            enum: ['normal', 'task'],
-            description: '日程类型，默认 normal；传了 task_id 即视为 task',
-          },
-          task_id: {
-            type: 'number',
-            description: '任务日程必填：关联任务的真实ID（必须先用 search_tasks/get_task 查证，禁止猜测）',
-          },
-          title: { type: 'string', description: '日程标题（仅普通日程需要；任务日程的标题取任务标题，不要传）' },
+          title: { type: 'string', description: '日程标题' },
           start_at: {
             type: 'string',
             description: '开始时间，ISO8601 带时区偏移，例如 2026-09-18T15:00:00+08:00',
@@ -294,11 +29,11 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           },
           all_day: { type: 'boolean', description: '是否全天日程，默认 false；全天时 start/end 用当天与次日的 00:00' },
           location: { type: 'string', description: '地点，可选' },
-          note: { type: 'string', description: '日程备注，可选（与任务备注相互独立）' },
+          note: { type: 'string', description: '日程备注，可选' },
           recurrence: {
             type: 'object',
             description:
-              '（v0.2.0）重复规则：只有**普通日程**可循环，任务日程禁止带该字段。' +
+              '（v0.2.0）重复规则：' +
               '频率、时间、结束条件任一缺失或有歧义时必须先追问，不要猜测；不要向用户输出这段 JSON。',
             properties: {
               freq: {
@@ -378,8 +113,8 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'update_event',
       description:
-        '修改一个已存在的日程（改期、改全天、改地点、改备注、改普通日程标题、改重复规则）。' +
-        '不允许修改日程类型与关联任务（想改只能删除后重建）；任务日程的标题由任务决定，不要传。改时间时系统会重新做冲突校验。' +
+        '修改一个已存在的日程（改期、改全天、改地点、改备注、改标题、改重复规则）。' +
+        '改时间时系统会重新做冲突校验。' +
         '（v0.2.0）循环日程必须区分作用域：用户说「这次/本次」→ scope=this 必带 occurrence_key；' +
         '「以后每次都」→ scope=series；「从这次开始」→ scope=following 必带 occurrence_key。作用域不明确时先澄清，禁止默认按整条执行。',
       parameters: {
@@ -400,7 +135,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           start_at: { type: 'string', description: '新的开始时间，ISO8601 带时区' },
           end_at: { type: 'string', description: '新的结束时间，ISO8601 带时区' },
           all_day: { type: 'boolean' },
-          title: { type: 'string', description: '新的标题（仅普通日程有效）' },
+          title: { type: 'string', description: '新的标题' },
           location: { type: 'string' },
           note: { type: 'string' },
           recurrence: {
@@ -421,7 +156,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     function: {
       name: 'get_event',
       description:
-        '查询单个日程的详细信息（含关联任务信息、该时段是否与其他日程重叠）。' +
+        '查询单个日程的详细信息（含该时段是否与其他日程重叠）。' +
         '（v0.2.0）查询循环日程的某一次实例时传 occurrence_key；只传 series_id 返回系列规则与摘要。',
       parameters: {
         type: 'object',
@@ -450,8 +185,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
           date_from: { type: 'string', description: '范围查询起始日期（含），YYYY-MM-DD' },
           date_to: { type: 'string', description: '范围查询结束日期（不含），YYYY-MM-DD' },
           tz: { type: 'string', description: '用户时区，IANA 名称，如 Asia/Shanghai' },
-          event_type: { type: 'string', enum: ['normal', 'task'], description: '只看某一类日程' },
-          task_id: { type: 'number', description: '只看某个任务的任务日程' },
           series_id: { type: 'number', description: '（v0.2.0）只看某个循环系列的实例；只给该字段时返回今天起未来一年的实例' },
           recurring_only: { type: 'boolean', description: '（v0.2.0）只看循环日程实例' },
           include_cancelled: { type: 'boolean', description: '（v0.2.0）是否包含「仅本次已取消」的实例' },
@@ -465,7 +198,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
     type: 'function',
     function: {
       name: 'search_events',
-      description: '按关键词搜索日程的标题、地点、备注（任务日程同时匹配关联任务标题）。',
+      description: '按关键词搜索日程的标题、地点、备注。',
       parameters: {
         type: 'object',
         properties: { keyword: { type: 'string' } },
@@ -479,7 +212,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
       name: 'delete_event',
       description:
         '删除日程。这是危险操作，调用后系统会先让用户确认，你不需要自行询问，但要向用户说明将要删除的日程。' +
-        '删除任务日程只是取消这个安排，不会删除关联任务。' +
         '（v0.2.0）循环日程：scope=series（默认）删除整条系列且不可恢复（需用户确认）；' +
         '用户说「这次/本次不去」时用 scope=this + occurrence_key，只是取消单次（可恢复），会立即执行。',
       parameters: {
@@ -535,8 +267,6 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
               date_from: { type: 'string', description: '起始日期（含），YYYY-MM-DD' },
               date_to: { type: 'string', description: '结束日期（不含），YYYY-MM-DD' },
               tz: { type: 'string', description: '用户时区，IANA 名称' },
-              event_type: { type: 'string', enum: ['normal', 'task'] },
-              task_id: { type: 'number' },
               keyword: { type: 'string', description: '标题/地点/备注关键词' },
             },
           },
@@ -615,7 +345,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
         properties: {
           title: {
             type: 'string',
-            description: '方案的动作名，如「创建日程」「创建任务」「修改日程」',
+            description: '方案的动作名，如「创建日程」「修改日程」',
           },
           params: {
             type: 'array',
@@ -625,7 +355,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
             items: {
               type: 'object',
               properties: {
-                label: { type: 'string', description: '参数名，如「标题」「时间」「重复」「所属清单」' },
+                label: { type: 'string', description: '参数名，如「标题」「时间」「重复」「地点」' },
                 value: { type: 'string', description: '参数值，如「季度复盘」「明天 15:00–16:00」「长期重复」' },
                 defaulted: { type: 'boolean', description: '是否为你补的默认值' },
               },
@@ -646,12 +376,7 @@ export const TOOL_DEFINITIONS: LlmTool[] = [
 ];
 
 /** 需要用户在对话中确认后才会执行的危险工具 */
-export const DANGEROUS_TOOLS = new Set([
-  'delete_task',
-  'batch_update_tasks',
-  'delete_event',
-  'batch_update_events',
-]);
+export const DANGEROUS_TOOLS = new Set(['delete_event', 'batch_update_events']);
 
 export const TOOL_NAMES = new Set(TOOL_DEFINITIONS.map((t) => t.function.name));
 

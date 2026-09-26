@@ -81,7 +81,7 @@ async function onSubmit(): Promise<void> {
       </div>
 
       <h1 class="auth__title">欢迎回来</h1>
-      <p class="auth__subtitle">登录继续管理任务</p>
+      <p class="auth__subtitle">登录继续管理日程</p>
 
       <div class="auth__form">
         <AppInput

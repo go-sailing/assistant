@@ -23,22 +23,15 @@ const panelRef = ref<HTMLElement | null>(null)
 
 const ITEMS = [
   { key: 'calendar', label: '日程', icon: 'calendar', to: '/calendar' },
-  { key: 'tasks', label: '任务', icon: 'list', to: '/tasks' },
-  // v0.7.0：项目页与智能体页各为一级入口（清单入口已随 LIST-01 下线）
-  { key: 'projects', label: '项目', icon: 'folder', to: '/projects' },
-  { key: 'agents', label: '智能体', icon: 'agent', to: '/agents' },
   { key: 'chat', label: '助手', icon: 'chat', to: '/chat' },
 ] as const
 
 const open = computed(() => drawer.open)
 
-/** 按路由前缀高亮一级入口 */
+/** 按路由前缀高亮一级入口（v0.8.0：只剩日程与助手） */
 const activeKey = computed(() => {
   const path = route.path
   if (path.startsWith('/calendar')) return 'calendar'
-  if (path.startsWith('/projects')) return 'projects'
-  if (path.startsWith('/agents')) return 'agents'
-  if (path.startsWith('/tasks') || path.startsWith('/search')) return 'tasks'
   if (path.startsWith('/chat')) return 'chat'
   return ''
 })

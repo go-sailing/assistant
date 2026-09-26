@@ -9,13 +9,13 @@ const scroller = ref<HTMLElement | null>(null)
 
 const slides = [
   {
-    title: '一句话记录任务',
-    desc: '用聊天的方式管理待办，说得清楚就记得下',
+    title: '一句话记录日程',
+    desc: '用聊天的方式管理日程，说得清楚就记得下',
     art: 'chat',
   },
   {
     title: '列表一眼看清',
-    desc: '按状态、时间筛选，逾期与今日到期一眼可见',
+    desc: '月历与列表联动，每天安排一眼看清',
     art: 'list',
   },
   {

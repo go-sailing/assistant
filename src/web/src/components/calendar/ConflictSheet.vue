@@ -4,7 +4,6 @@ import type { ConflictDateGroup, ConflictLevel, EventConflictBrief } from '@/typ
 import { formatEventRange } from '@/utils/time'
 import AppButton from '@/components/AppButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
-import EventTypeTag from '@/components/calendar/EventTypeTag.vue'
 import RecurringConflictSheet from '@/components/calendar/RecurringConflictSheet.vue'
 
 const props = withDefaults(
@@ -65,7 +64,6 @@ const restText = computed(() => `等 ${props.conflicts.length} 项`)
           <li v-for="c in shown" :key="String(c.id)" class="conflict__item">
             <div class="conflict__item-head">
               <span class="conflict__time">{{ c.all_day ? '全天' : formatEventRange(c) }}</span>
-              <EventTypeTag :type="c.event_type" />
             </div>
             <p class="conflict__item-title ellipsis">{{ c.title }}</p>
             <p v-if="c.location" class="conflict__item-loc">

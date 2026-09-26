@@ -1,11 +1,17 @@
-import type { Priority, TaskStatus } from '../task/types';
 import { config } from '../../config';
 import { summarizeRecurrence, recurrenceNote } from './recurrence/summary';
 import { firstOccurrenceAfter, firstOccurrenceAt, countOccurrences, localDateString } from './recurrence/engine';
 import { solarToLunar } from './lunar/lunar.service';
+import type { LunarDayInfo } from './lunar/lunar.service';
+import type { SpecialDay } from './workday/workday.service';
 import type { OverrideState, RecurrenceRule } from './recurrence/types';
 
-export type EventType = 'normal' | 'task';
+/**
+ * v0.8.0：产品里只剩一个时间事务载体——日程（events）。
+ * `event_type` 恒为 'normal'、`task_id` 恒为 NULL（DB CHECK 兜底），
+ * 类型与关联列保留在库以兼容代码回滚，应用不再读写。
+ */
+export type EventType = 'normal';
 export type EventSource = 'manual' | 'chat';
 export type EventStatus = 'scheduled' | 'cancelled';
 /**
@@ -16,10 +22,7 @@ export type EventStatus = 'scheduled' | 'cancelled';
  */
 export type ConflictLevel = 'none' | 'overlap' | 'all_day';
 
-/**
- * events 表行 + JOIN tasks/task_lists 的展示字段。
- * 任务日程的标题等展示信息一律取关联任务实时数据，不存冗余副本。
- */
+/** events 表行（v0.8.0：不再 JOIN tasks） */
 export interface EventRow {
   id: number;
   user_id: number;
@@ -35,33 +38,16 @@ export interface EventRow {
   source: string;
   created_at: Date;
   updated_at: Date;
-  /** v0.2.0：循环规则（null = 单次日程 / 任务日程） */
+  /** v0.2.0：循环规则（null = 单次日程） */
   recurrence: RecurrenceRule | null;
   /** v0.2.0：「本次及以后」派生新系列的溯源 */
   derived_from_event_id: number | null;
-  /** 关联任务展示字段（仅任务日程有值） */
-  task_title: string | null;
-  task_status: string | null;
-  task_priority: string | null;
-  task_due_at: Date | null;
-  task_completed_at: Date | null;
-}
-
-/** 任务日程内嵌的任务摘要（供卡片与详情展示，实时数据） */
-export interface EventTaskBrief {
-  id: number;
-  title: string;
-  status: TaskStatus;
-  priority: Priority;
-  due_at: string | null;
-  completed_at: string | null;
 }
 
 export interface EventDTO {
   id: number;
+  /** v0.8.0：恒 'normal' */
   event_type: EventType;
-  task_id: number | null;
-  /** 普通日程为自填标题；任务日程实时取关联任务标题 */
   title: string;
   note: string | null;
   location: string | null;
@@ -72,8 +58,6 @@ export interface EventDTO {
   source: EventSource;
   created_at: string;
   updated_at: string;
-  /** 任务日程内嵌的任务对象；普通日程为 null */
-  task: EventTaskBrief | null;
   /** v0.2.0：循环规则；单次日程为 null */
   recurrence?: RecurrenceRule | null;
   /** v0.2.0：规则人话摘要（服务端单点产出）；单次日程为 null */
@@ -96,7 +80,7 @@ export interface EventDTO {
    * v0.4.0：开始日所在公历日的农历信息（PRD 5.1：详情/表单/卡片展示）。
    * 仅按需填充（列表与详情填，冲突简报不填）。
    */
-  lunar?: import('./lunar/lunar.service').LunarDayInfo | null;
+  lunar?: LunarDayInfo | null;
 }
 
 /** 展开实例读模型（系统设计文档 5.4）：复用 EventDTO 形状 + 实例身份 */
@@ -148,8 +132,6 @@ export interface EventFilter {
   date_to?: string;
   /** 用户时区（IANA），影响日期边界换算 */
   tz?: string;
-  task_id?: number;
-  event_type?: EventType;
   keyword?: string;
   sort?: string;
   limit?: number;
@@ -162,20 +144,17 @@ export interface EventFilter {
 }
 
 export interface CreateEventInput {
-  event_type?: EventType;
-  task_id?: number | null;
   title?: string | null;
   note?: string | null;
   location?: string | null;
   all_day?: boolean;
   start_at: string;
   end_at: string;
-  /** v0.2.0：重复规则；任务日程带此字段直接 4016 */
+  /** v0.2.0：重复规则 */
   recurrence?: RecurrenceRule | null;
 }
 
 export interface UpdateEventInput {
-  /** 仅任务日程可改（任务日程该字段被忽略，标题以任务为准） */
   title?: string | null;
   note?: string | null;
   location?: string | null;
@@ -184,9 +163,6 @@ export interface UpdateEventInput {
   end_at?: string;
   /** v0.2.0：整条系列改规则（仅 scope=series/following 允许） */
   recurrence?: RecurrenceRule | null;
-  /** 出现即拒绝（类型与关联创建后不可变更） */
-  event_type?: EventType;
-  task_id?: number | null;
 }
 
 /** 写操作结果：冲突未确认时不落库，由调用方决定是否二次提交 */
@@ -206,20 +182,19 @@ export interface WriteEventResult {
   derived?: { old_series: SeriesDTO; new_series: SeriesDTO } | null;
 }
 
-/** 月视图聚合项 */
+/** 月视图聚合项（v0.8.0：去掉 task 计数） */
 export interface MonthDayCount {
   date: string;
   normal: number;
-  task: number;
   /** v0.2.0：其中循环实例数（含已调整，不含已取消） */
   recurring: number;
   /**
    * v0.4.0：当日农历信息（月历副字、标题条、详情与对话卡片共用同一份）。
    * 农历超出支持范围（1900-01-31~2100-12-31）时为 null。
    */
-  lunar: import('./lunar/lunar.service').LunarDayInfo | null;
+  lunar: LunarDayInfo | null;
   /** v0.4.0：当日法定状态（holiday 放假 / makeup 补班 / null 非特殊日） */
-  calendar_day: import('./workday/workday.service').SpecialDay | null;
+  calendar_day: SpecialDay | null;
 }
 
 const TITLE_MAX = 100;
@@ -237,16 +212,13 @@ export function eventDurationMs(row: { start_at: Date; end_at: Date }): number {
  * next_occurrence 单独按需计算（避免列表批量展开的额外开销）。
  */
 export function toEventDTO(row: EventRow, tz: string = config.event.defaultTz): EventDTO {
-  const isTask = row.event_type === 'task';
   const recurrence = (row.recurrence ?? null) as RecurrenceRule | null;
   // v0.4.0：开始日所在公历日的农历信息（超出支持范围时为 null，界面按"无副字"处理）
   const lunar = solarToLunar(localDateString(row.start_at, tz));
   return {
     id: row.id,
-    event_type: isTask ? 'task' : 'normal',
-    task_id: row.task_id,
-    // 任务日程标题实时取任务，任务已被删除时兜底为"已删除的任务"
-    title: isTask ? row.task_title ?? '已删除的任务' : row.title ?? '',
+    event_type: 'normal',
+    title: row.title ?? '',
     note: row.note,
     location: row.location,
     all_day: row.all_day,
@@ -262,17 +234,6 @@ export function toEventDTO(row: EventRow, tz: string = config.event.defaultTz): 
       : null,
     derived_from_event_id: row.derived_from_event_id ?? null,
     lunar,
-    task:
-      isTask && row.task_id !== null && row.task_title !== null
-        ? {
-            id: row.task_id,
-            title: row.task_title,
-            status: (row.task_status as TaskStatus) ?? 'todo',
-            priority: (row.task_priority as Priority) ?? 'none',
-            due_at: row.task_due_at ? row.task_due_at.toISOString() : null,
-            completed_at: row.task_completed_at ? row.task_completed_at.toISOString() : null,
-          }
-        : null,
   };
 }
 
@@ -295,11 +256,10 @@ export function toSeriesDTO(row: EventRow, tz: string, now = new Date()): Series
 }
 
 export function toConflictBrief(row: EventRow): EventConflictBrief {
-  const isTask = row.event_type === 'task';
   return {
     id: row.id,
-    event_type: isTask ? 'task' : 'normal',
-    title: isTask ? row.task_title ?? '已删除的任务' : row.title ?? '',
+    event_type: 'normal',
+    title: row.title ?? '',
     start_at: row.start_at.toISOString(),
     end_at: row.end_at.toISOString(),
     all_day: row.all_day,

@@ -241,7 +241,7 @@ async function doDestroy(): Promise<void> {
     <AppModal
       :visible="destroyOpen"
       title="注销账号？"
-      text="将永久删除账号及全部任务、日程与聊天记录，且不可恢复。"
+      text="将永久删除账号及全部日程与聊天记录，且不可恢复。"
       confirm-text="注销账号"
       danger
       :loading="destroying"
